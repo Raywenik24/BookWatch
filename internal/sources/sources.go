@@ -8,8 +8,8 @@ import (
 	"regexp"
 	"strings"
 
-	"pagewatch/internal/scraper"
-	"pagewatch/internal/store"
+	"bookwatch/internal/scraper"
+	"bookwatch/internal/store"
 )
 
 type Resolver struct {

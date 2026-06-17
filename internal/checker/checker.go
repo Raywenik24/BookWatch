@@ -3,8 +3,8 @@
 package checker
 
 import (
-	"pagewatch/internal/scraper"
-	"pagewatch/internal/vault"
+	"bookwatch/internal/scraper"
+	"bookwatch/internal/vault"
 )
 
 // Result is the outcome for one entry.

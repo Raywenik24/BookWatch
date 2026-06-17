@@ -5,11 +5,11 @@ package service
 import (
 	"fmt"
 
-	"pagewatch/internal/checker"
-	"pagewatch/internal/scraper"
-	"pagewatch/internal/sources"
-	"pagewatch/internal/store"
-	"pagewatch/internal/vault"
+	"bookwatch/internal/checker"
+	"bookwatch/internal/scraper"
+	"bookwatch/internal/sources"
+	"bookwatch/internal/store"
+	"bookwatch/internal/vault"
 )
 
 // UpdateInfo is one detected new volume.

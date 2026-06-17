@@ -1,8 +1,8 @@
-// Command pagewatch.
+// Command bookwatch.
 //
-//	pagewatch serve                      run the HTTP server + scheduler
-//	pagewatch [check] [-root] [-quiet] [-record] [-write]
-//	pagewatch add URL [-vault] [-dir] [-attach]
+//	bookwatch serve                      run the HTTP server + scheduler
+//	bookwatch [check] [-root] [-quiet] [-record] [-write]
+//	bookwatch add URL [-vault] [-dir] [-attach]
 package main
 
 import (
@@ -12,14 +12,14 @@ import (
 	"net/http"
 	"os"
 
-	"pagewatch/internal/config"
-	"pagewatch/internal/notes"
-	"pagewatch/internal/scheduler"
-	"pagewatch/internal/scraper"
-	"pagewatch/internal/server"
-	"pagewatch/internal/service"
-	"pagewatch/internal/sources"
-	"pagewatch/internal/store"
+	"bookwatch/internal/config"
+	"bookwatch/internal/notes"
+	"bookwatch/internal/scheduler"
+	"bookwatch/internal/scraper"
+	"bookwatch/internal/server"
+	"bookwatch/internal/service"
+	"bookwatch/internal/sources"
+	"bookwatch/internal/store"
 )
 
 func main() {
@@ -43,7 +43,7 @@ func main() {
 func runServe(argv []string) {
 	cfg := config.Default()
 	if cfg.Password == "" {
-		log.Fatal("PAGEWATCH_PASSWORD is required to run the server (write endpoints need it)")
+		log.Fatal("BOOKWATCH_PASSWORD is required to run the server (write endpoints need it)")
 	}
 
 	st, err := store.Open(cfg.DBPath)
@@ -68,7 +68,7 @@ func runServe(argv []string) {
 
 	srv := server.New(cfg, st, sc, sched)
 	addr := ":" + cfg.Port
-	log.Printf("PageWatch listening on http://localhost%s (cron %q, scan %s)", addr, cfg.CheckCron, cfg.ScanRoot)
+	log.Printf("BookWatch listening on http://localhost%s (cron %q, scan %s)", addr, cfg.CheckCron, cfg.ScanRoot)
 	if err := http.ListenAndServe(addr, srv.Handler()); err != nil {
 		log.Fatal(err)
 	}
@@ -138,7 +138,7 @@ func runAdd(argv []string) {
 	fs.Parse(argv)
 
 	if fs.NArg() < 1 {
-		fmt.Fprintln(os.Stderr, "usage: pagewatch add <url> [-vault DIR] [-dir REL] [-attach REL]")
+		fmt.Fprintln(os.Stderr, "usage: bookwatch add <url> [-vault DIR] [-dir REL] [-attach REL]")
 		os.Exit(2)
 	}
 	url := fs.Arg(0)

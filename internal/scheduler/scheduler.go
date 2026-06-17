@@ -9,7 +9,7 @@ import (
 
 	"github.com/robfig/cron/v3"
 
-	"pagewatch/internal/service"
+	"bookwatch/internal/service"
 )
 
 // RunFunc performs one check run and returns its summary.

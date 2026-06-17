@@ -1,5 +1,5 @@
 # binaries
-/pagewatch
+/bookwatch
 *.exe
 
 # local SQLite db

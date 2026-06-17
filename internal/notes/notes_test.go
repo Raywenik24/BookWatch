@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"pagewatch/internal/scraper"
+	"bookwatch/internal/scraper"
 )
 
 func TestSanitize(t *testing.T) {

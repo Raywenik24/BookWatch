@@ -1,4 +1,4 @@
-module pagewatch
+module bookwatch
 
 go 1.26.4
 

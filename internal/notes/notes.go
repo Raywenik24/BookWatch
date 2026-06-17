@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"pagewatch/internal/scraper"
+	"bookwatch/internal/scraper"
 )
 
 // ErrDuplicate is returned when a note with the same Link already exists.

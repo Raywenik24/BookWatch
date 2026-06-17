@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PageWatch</title>
+<title>BookWatch</title>
 <style>
   /* Catppuccin palettes */
   html[data-theme="mocha"] {
@@ -52,7 +52,7 @@
 </head>
 <body>
   <header>
-    <h1>📖 PageWatch</h1>
+    <h1>📖 BookWatch</h1>
     <nav id="nav">
       <button data-s="updates" class="active">Updates</button>
       <button data-s="books">Books</button>
@@ -142,7 +142,7 @@ function saveToken(){ localStorage.setItem('pw_token', $('token').value); msg('T
 async function getJSON(u){ const r = await fetch(u); return r.json(); }
 async function send(method, u, body){
   const r = await fetch(u, { method,
-    headers: { 'Content-Type':'application/json', 'X-PageWatch-Token': token() },
+    headers: { 'Content-Type':'application/json', 'X-BookWatch-Token': token() },
     body: body ? JSON.stringify(body) : null });
   return { ok:r.ok, status:r.status, data: await r.json().catch(()=>({})) };
 }

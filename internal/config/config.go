@@ -25,18 +25,18 @@ type Config struct {
 
 // Default reads env vars, falling back to sane defaults.
 func Default() Config {
-	vault := env("PAGEWATCH_VAULT_DIR", `./vault`)
+	vault := env("BOOKWATCH_VAULT_DIR", `./vault`)
 	return Config{
-		UserAgent:      env("PAGEWATCH_USER_AGENT", "Mozilla/5.0 (page-watcher/1.0)"),
-		Timeout:        time.Duration(envInt("PAGEWATCH_TIMEOUT", 30)) * time.Second,
-		DBPath:         env("PAGEWATCH_DB_PATH", "pagewatch.db"),
+		UserAgent:      env("BOOKWATCH_USER_AGENT", "Mozilla/5.0 (page-watcher/1.0)"),
+		Timeout:        time.Duration(envInt("BOOKWATCH_TIMEOUT", 30)) * time.Second,
+		DBPath:         env("BOOKWATCH_DB_PATH", "bookwatch.db"),
 		VaultDir:       vault,
-		NewNoteDir:     env("PAGEWATCH_NEW_NOTE_DIR", "LightNovel"),
-		AttachmentsDir: env("PAGEWATCH_ATTACHMENTS_DIR", "LightNovel/_attachments"),
-		ScanRoot:       env("PAGEWATCH_SCAN_ROOT", vault+"/LightNovel"),
-		Port:           env("PAGEWATCH_PORT", "8080"),
-		Password:       env("PAGEWATCH_PASSWORD", ""),
-		CheckCron:      env("PAGEWATCH_CHECK_CRON", "0 9 * * *"),
+		NewNoteDir:     env("BOOKWATCH_NEW_NOTE_DIR", "LightNovel"),
+		AttachmentsDir: env("BOOKWATCH_ATTACHMENTS_DIR", "LightNovel/_attachments"),
+		ScanRoot:       env("BOOKWATCH_SCAN_ROOT", vault+"/LightNovel"),
+		Port:           env("BOOKWATCH_PORT", "8080"),
+		Password:       env("BOOKWATCH_PASSWORD", ""),
+		CheckCron:      env("BOOKWATCH_CHECK_CRON", "0 9 * * *"),
 	}
 }
 

@@ -10,12 +10,12 @@ import (
 	"strconv"
 	"time"
 
-	"pagewatch/internal/config"
-	"pagewatch/internal/notes"
-	"pagewatch/internal/scheduler"
-	"pagewatch/internal/scraper"
-	"pagewatch/internal/sources"
-	"pagewatch/internal/store"
+	"bookwatch/internal/config"
+	"bookwatch/internal/notes"
+	"bookwatch/internal/scheduler"
+	"bookwatch/internal/scraper"
+	"bookwatch/internal/sources"
+	"bookwatch/internal/store"
 )
 
 //go:embed web/index.html
@@ -56,7 +56,7 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) auth(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		token := r.Header.Get("X-PageWatch-Token")
+		token := r.Header.Get("X-BookWatch-Token")
 		if token == "" {
 			token = r.URL.Query().Get("token")
 		}
