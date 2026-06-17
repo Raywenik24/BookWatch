@@ -48,6 +48,10 @@
   a:visited { color: var(--lavender); }
   small, .muted { color: var(--subtext); }
   #msg { min-height: 1.3em; color: var(--peach); font-size: .9rem; margin: .4rem 0; }
+  .spin { display: inline-block; width: .9em; height: .9em; margin-right: .45em; vertical-align: -.1em;
+          border: 2px solid var(--surface1); border-top-color: var(--peach); border-radius: 50%;
+          animation: spin .7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
   .card { background: var(--mantle); border: 1px solid var(--surface0); border-radius: 8px; padding: .9rem; margin: .8rem 0; }
   .rule-grid { display: grid; grid-template-columns: 110px 1fr 1fr 70px; gap: .4rem; align-items: center; font-size: .85rem; }
   .rule-grid label { color: var(--subtext); }
@@ -96,7 +100,7 @@
       <h2>Add a book</h2>
       <div class="row">
         <input id="url" placeholder="https://jnovels.com/...-light-novel-epub/">
-        <button class="btn" onclick="addBook()">Add</button>
+        <button class="btn" id="addBtn" onclick="addBook()">Add</button>
       </div>
       <h2>Tracked books</h2>
       <table><thead><tr><th>Title</th><th>Vol</th><th>Link</th><th>Last checked</th></tr></thead>
@@ -163,6 +167,7 @@ const lsGet = k => { try { return localStorage.getItem(k); } catch(e){ return nu
 const lsSet = (k,v) => { try { localStorage.setItem(k,v); } catch(e){} };
 const token = () => lsGet('pw_token') || '';
 function msg(t){ $('msg').textContent = t; }
+function msgBusy(t){ $('msg').innerHTML = '<span class="spin"></span>' + esc(t); }
 function esc(s){ return String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
 /* ── fuzzySelect: reusable fuzzy-search dropdown ───────────────────
@@ -388,9 +393,18 @@ async function runCheck(){
 }
 async function addBook(){
   const url = $('url').value.trim(); if(!url) return msg('Enter a URL.');
-  msg('Adding…'); const r = await send('POST','/api/books',{url}); if(need(r)) return;
-  if(!r.ok) return msg('Error: ' + (r.data.error||r.status));
-  msg(`Added: ${r.data.title} (${r.data.volumes} vol)`); $('url').value=''; loadBooks();
+  const btn = $('addBtn'); btn.disabled = true; msgBusy('Adding… (scraping the page)');
+  try {
+    const r = await send('POST','/api/books',{url});
+    if(need(r)) return;                                     // need() shows the auth reason + clears spinner
+    if(r.status===409) return msg('Already tracked — this book is in your list.');
+    if(!r.ok) return msg('Error: ' + (r.data.error||r.status));
+    msg(`Added: ${r.data.title} (${r.data.volumes} vol)`); $('url').value=''; loadBooks();
+  } catch(e) {
+    msg('Error: ' + (e.message || 'request failed'));
+  } finally {
+    btn.disabled = false;                                   // always reach a terminal state
+  }
 }
 async function saveRules(id){
   const r = await send('PUT',`/api/sources/${id}/rules`,{rules:collectRules(id)}); if(need(r)) return;
