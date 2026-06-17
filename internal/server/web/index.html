@@ -48,7 +48,22 @@
   a:visited { color: var(--lavender); }
   td.nowrap, th.nowrap { white-space: nowrap; }
   small, .muted { color: var(--subtext); }
-  #msg { min-height: 1.3em; color: var(--peach); font-size: .9rem; margin: .4rem 0; }
+  /* toasts: stacked top-right, color-coded, auto-dismissing */
+  #toasts { position: fixed; top: .8rem; right: .8rem; z-index: 50; display: flex; flex-direction: column;
+            gap: .5rem; max-width: min(360px, calc(100vw - 1.6rem)); }
+  .toast { display: flex; align-items: center; gap: .5rem; padding: .55rem .7rem; border-radius: 8px;
+           background: var(--mantle); border: 1px solid var(--surface1); border-left: 3px solid var(--surface1);
+           color: var(--text); font-size: .9rem; box-shadow: 0 8px 24px rgba(0,0,0,.35); animation: toastIn .2s ease; }
+  .toast.success { border-left-color: var(--green); }
+  .toast.error   { border-left-color: var(--red); }
+  .toast.busy    { border-left-color: var(--peach); }
+  .toast.info    { border-left-color: var(--blue); }
+  .toast-text { flex: 1; }
+  .toast-x { background: transparent; border: 0; color: var(--subtext); cursor: pointer; font-size: 1.1rem;
+             line-height: 1; padding: 0 .1rem; }
+  .toast-x:hover { color: var(--text); }
+  .toast.out { opacity: 0; transform: translateX(12px); transition: opacity .2s ease, transform .2s ease; }
+  @keyframes toastIn { from { opacity: 0; transform: translateX(12px); } to { opacity: 1; transform: none; } }
   .spin { display: inline-block; width: .9em; height: .9em; margin-right: .45em; vertical-align: -.1em;
           border: 2px solid var(--surface1); border-top-color: var(--peach); border-radius: 50%;
           animation: spin .7s linear infinite; }
@@ -96,8 +111,9 @@
     <button class="btn" id="checkBtn" onclick="runCheck()">Run check</button>
   </header>
 
+  <div id="toasts"></div>
+
   <main>
-    <div id="msg"></div>
     <div id="progress" hidden>
       <div class="bar"><span id="progressFill"></span></div>
       <div id="progressLabel"></div>
@@ -177,9 +193,37 @@ const $ = id => document.getElementById(id);
 const lsGet = k => { try { return localStorage.getItem(k); } catch(e){ return null; } };
 const lsSet = (k,v) => { try { localStorage.setItem(k,v); } catch(e){} };
 const token = () => lsGet('pw_token') || '';
-function msg(t){ $('msg').textContent = t; }
-function msgBusy(t){ $('msg').innerHTML = '<span class="spin"></span>' + esc(t); }
 function esc(s){ return String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+/* ── toasts: stacked top-right notifications ───────────────────────
+   toast(text, type)   type = success | error | info | busy
+     success/info auto-dismiss (~4s), error lingers (~9s), busy persists.
+   returns a handle { update(text, type), close() } so a busy toast can
+   morph into a success/error toast when the action finishes. */
+const TOAST_TTL = { success: 4000, info: 4000, error: 9000 };
+function toast(text, type){
+  type = type || 'info';
+  const box = $('toasts'), el = document.createElement('div');
+  let timer;
+  function close(){
+    if(!el.parentNode) return;
+    clearTimeout(timer); el.classList.add('out');
+    setTimeout(() => el.remove(), 200);
+  }
+  function arm(){ clearTimeout(timer); if(type !== 'busy') timer = setTimeout(close, TOAST_TTL[type] ?? 4000); }
+  function render(){
+    el.className = 'toast ' + type;
+    el.innerHTML = (type === 'busy' ? '<span class="spin"></span>' : '')
+      + '<span class="toast-text">' + esc(text) + '</span>'
+      + '<button class="toast-x" aria-label="dismiss">&times;</button>';
+    el.querySelector('.toast-x').onclick = close;
+  }
+  render(); arm(); box.appendChild(el);
+  return {
+    update(t, ty){ text = t; if(ty) type = ty; render(); arm(); return this; },
+    close,
+  };
+}
 
 /* ── fuzzySelect: reusable fuzzy-search dropdown ───────────────────
    fuzzySelect(mount, { items, value, placeholder, onChange })
@@ -276,7 +320,7 @@ function fmtTime(utc){
     .reduce((o,x)=>(o[x.type]=x.value,o),{});
   return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}`;
 }
-function saveToken(){ lsSet('pw_token', $('token').value); msg('Token saved.'); }
+function saveToken(){ lsSet('pw_token', $('token').value); toast('Token saved.','success'); }
 
 async function getJSON(u){ const r = await fetch(u); return r.json(); }
 async function send(method, u, body){
@@ -285,7 +329,8 @@ async function send(method, u, body){
     body: body ? JSON.stringify(body) : null });
   return { ok:r.ok, status:r.status, data: await r.json().catch(()=>({})) };
 }
-function need(r){ if(r.status===401){ msg('Unauthorized — set the password in Settings.'); return true; } return false; }
+function need(r, h){ if(r.status===401){ const t='Unauthorized — set the password in Settings.';
+  h ? h.update(t,'error') : toast(t,'error'); return true; } return false; }
 
 /* nav */
 $('nav').addEventListener('click', e => {
@@ -332,10 +377,10 @@ async function untrack(id, btn){
   try {
     const r = await send('DELETE', '/api/books/'+id);
     if(need(r)){ btn.disabled = false; return; }
-    if(!r.ok){ btn.disabled = false; return msg('Error: ' + (r.data.error||r.status)); }
-    msg('Untracked — note kept; reappears on next check if it still exists.'); loadBooks();
+    if(!r.ok){ btn.disabled = false; return toast('Error: ' + (r.data.error||r.status),'error'); }
+    toast('Untracked — note kept; reappears on next check if it still exists.','success'); loadBooks();
   } catch(e) {
-    btn.disabled = false; msg('Error: ' + (e.message || 'request failed'));
+    btn.disabled = false; toast('Error: ' + (e.message || 'request failed'),'error');
   }
 }
 async function loadLogs(){
@@ -441,68 +486,69 @@ async function refreshStatus(){
 /* actions */
 async function runCheck(){
   const r = await send('POST','/api/check'); if(need(r)) return;
-  if(r.status===409) return msg('A check is already running.');
-  msg('Check running…'); $('checkBtn').disabled = true;
+  if(r.status===409) return toast('A check is already running.','info');
+  const h = toast('Check running…','busy'); $('checkBtn').disabled = true;
   const poll = setInterval(async () => {
     const s = await refreshStatus();
-    if(!s.busy){ clearInterval(poll); $('checkBtn').disabled=false; msg('Check done.');
+    if(!s.busy){ clearInterval(poll); $('checkBtn').disabled=false; h.update('Check done.','success');
       loadUpdates(); loadBooks(); loadLogs(); }
   }, 1500);
 }
 async function applyUpdates(){
-  const btn = $('applyBtn'); btn.disabled = true; msgBusy('Updating Obsidian…');
+  const btn = $('applyBtn'); btn.disabled = true; const h = toast('Updating Obsidian…','busy');
   try {
     const r = await send('POST','/api/apply');
-    if(need(r)){ btn.disabled = false; return; }
-    if(r.status===409) return msg('A check is running — try again when it finishes.');
-    if(!r.ok) return msg('Error: ' + (r.data.error||r.status));
+    if(need(r, h)) return;
+    if(r.status===409) return h.update('A check is running — try again when it finishes.','error');
+    if(!r.ok) return h.update('Error: ' + (r.data.error||r.status),'error');
     const d = r.data;
-    msg(`Updated Obsidian — ${d.applied} applied` + (d.failed ? `, ${d.failed} failed` : '') + '.');
+    h.update(`Updated Obsidian — ${d.applied} applied` + (d.failed ? `, ${d.failed} failed` : '') + '.','success');
     loadUpdates(); loadBooks(); refreshStatus();
   } catch(e) {
-    msg('Error: ' + (e.message || 'request failed'));
+    h.update('Error: ' + (e.message || 'request failed'),'error');
   } finally {
     btn.disabled = false;
   }
 }
 async function addBook(){
-  const url = $('url').value.trim(); if(!url) return msg('Enter a URL.');
-  const btn = $('addBtn'); btn.disabled = true; msgBusy('Adding… (scraping the page)');
+  const url = $('url').value.trim(); if(!url) return toast('Enter a URL.','error');
+  const btn = $('addBtn'); btn.disabled = true; const h = toast('Adding… (scraping the page)','busy');
   try {
     const r = await send('POST','/api/books',{url});
-    if(need(r)) return;                                     // need() shows the auth reason + clears spinner
-    if(r.status===409) return msg('Already tracked — this book is in your list.');
-    if(!r.ok) return msg('Error: ' + (r.data.error||r.status));
-    msg(`Added: ${r.data.title} (${r.data.volumes} vol)`); $('url').value=''; loadBooks();
+    if(need(r, h)) return;                                  // need() morphs the busy toast into the auth reason
+    if(r.status===409) return h.update('Already tracked — this book is in your list.','error');
+    if(!r.ok) return h.update('Error: ' + (r.data.error||r.status),'error');
+    h.update(`Added: ${r.data.title} (${r.data.volumes} vol)`,'success'); $('url').value=''; loadBooks();
   } catch(e) {
-    msg('Error: ' + (e.message || 'request failed'));
+    h.update('Error: ' + (e.message || 'request failed'),'error');
   } finally {
     btn.disabled = false;                                   // always reach a terminal state
   }
 }
 async function saveRules(id){
   const r = await send('PUT',`/api/sources/${id}/rules`,{rules:collectRules(id)}); if(need(r)) return;
-  msg(r.ok ? 'Rules saved.' : 'Error: '+(r.data.error||r.status));
+  toast(r.ok ? 'Rules saved.' : 'Error: '+(r.data.error||r.status), r.ok ? 'success' : 'error');
 }
 async function testSource(id){
-  const url = $('testUrl-'+id).value.trim(); if(!url) return msg('Enter a test URL.');
-  msg('Testing…'); const r = await send('POST','/api/sources/test',{url, rules:collectRules(id)}); if(need(r)) return;
+  const url = $('testUrl-'+id).value.trim(); if(!url) return toast('Enter a test URL.','error');
+  const h = toast('Testing…','busy');
+  const r = await send('POST','/api/sources/test',{url, rules:collectRules(id)}); if(need(r, h)) return;
   const p = $('preview-'+id); p.style.display='block';
-  if(!r.ok){ p.textContent = 'Error: '+(r.data.error||r.status); return; }
+  if(!r.ok){ p.textContent = 'Error: '+(r.data.error||r.status); return h.update('Test failed.','error'); }
   const d = r.data;
   p.textContent = `title:   ${d.title}\nvolumes: ${d.volumes}\ncover:   ${d.cover_url}\ndesc:    ${(d.description||'').slice(0,300)}`;
-  msg('Test ok.');
+  h.update('Test ok.','success');
 }
 async function addSource(){
   const name=$('newSrcName').value.trim(), domain=$('newSrcDomain').value.trim();
-  if(!name||!domain) return msg('Name + domain required.');
+  if(!name||!domain) return toast('Name + domain required.','error');
   const r = await send('POST','/api/sources',{name,domain,strategy:'rules',enabled:true}); if(need(r)) return;
-  msg(r.ok?'Source added.':'Error: '+(r.data.error||r.status));
+  toast(r.ok?'Source added.':'Error: '+(r.data.error||r.status), r.ok?'success':'error');
   $('newSrcName').value=''; $('newSrcDomain').value=''; loadSources();
 }
 async function delSource(id){
   const r = await send('DELETE',`/api/sources/${id}`); if(need(r)) return;
-  msg(r.ok?'Source deleted.':'Error'); loadSources();
+  toast(r.ok?'Source deleted.':'Error', r.ok?'success':'error'); loadSources();
 }
 async function saveSettings(){
   const body = { scan_root:$('setScanRoot').value.trim(), new_note_dir:$('setNewNoteDir').value.trim(),
@@ -510,7 +556,7 @@ async function saveSettings(){
                  timezone:tzPicker.getValue() };
   const r = await send('PUT','/api/settings',body); if(need(r)) return;
   if(r.ok){ TZ = tzPicker.getValue(); loadUpdates(); loadBooks(); loadLogs(); }
-  msg(r.ok?'Settings saved.':'Error: '+(r.data.error||r.status));
+  toast(r.ok?'Settings saved.':'Error: '+(r.data.error||r.status), r.ok?'success':'error');
 }
 
 /* init */
