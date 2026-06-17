@@ -43,9 +43,10 @@
   th, td { text-align: left; padding: .4rem .5rem; border-bottom: 1px solid var(--surface0); font-size: .9rem; vertical-align: top; }
   th { color: var(--subtext); font-weight: 600; }
   .new { color: var(--green); font-weight: 600; }
-  a { color: var(--blue); text-decoration: none; }
+  a { color: var(--mauve); text-decoration: none; }
   a:hover { text-decoration: underline; }
   a:visited { color: var(--lavender); }
+  td.nowrap, th.nowrap { white-space: nowrap; }
   small, .muted { color: var(--subtext); }
   #msg { min-height: 1.3em; color: var(--peach); font-size: .9rem; margin: .4rem 0; }
   .spin { display: inline-block; width: .9em; height: .9em; margin-right: .45em; vertical-align: -.1em;
@@ -310,7 +311,7 @@ async function loadUpdates(){
       : `<span class="badge pending">Pending</span>`;
     return `<tr><td class="new">${esc(x.title)}</td><td>${x.old_volumes} → ${x.new_volumes}</td>
      <td>${status}</td>
-     <td><a href="${esc(x.link)}" target="_blank">link</a></td><td><small>${esc(fmtTime(x.detected_at))}</small></td></tr>`;
+     <td><a href="${esc(x.link)}" target="_blank">link</a></td><td class="nowrap"><small>${esc(fmtTime(x.detected_at))}</small></td></tr>`;
    }).join('')
     : '<tr><td><span class="muted">no updates yet</span></td></tr>';
 }
@@ -318,7 +319,7 @@ async function loadBooks(){
   const b = await getJSON('/api/books');
   $('booksBody').innerHTML = (b&&b.length) ? b.map(x =>
     `<tr><td>${esc(x.title)}</td><td>${x.volumes}</td><td><a href="${esc(x.link)}" target="_blank">link</a></td>
-     <td><small>${esc(fmtTime(x.last_checked_at))}</small></td>
+     <td class="nowrap"><small>${esc(fmtTime(x.last_checked_at))}</small></td>
      <td><button class="btn ghost" title="Remove from this list only — the note and cover are kept. If the note still exists it reappears on the next check." onclick="untrack(${x.id}, this)">Untrack</button></td></tr>`).join('')
     : '<tr><td><span class="muted">none</span></td></tr>';
 }
@@ -336,7 +337,7 @@ async function untrack(id, btn){
 async function loadLogs(){
   const r = await getJSON('/api/runs');
   $('logsBody').innerHTML = (r&&r.length) ? r.map(x =>
-    `<tr><td>${x.id}</td><td><small>${esc(fmtTime(x.started_at))}</small></td><td>${x.checked}</td>
+    `<tr><td>${x.id}</td><td class="nowrap"><small>${esc(fmtTime(x.started_at))}</small></td><td>${x.checked}</td>
      <td>${x.updated}</td><td>${x.errors}</td><td><small>${esc(x.summary)}</small></td></tr>`).join('')
     : '<tr><td><span class="muted">no runs yet</span></td></tr>';
 }
