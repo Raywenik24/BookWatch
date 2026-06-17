@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="en" data-theme="mocha">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PageWatch</title>
+<style>
+  /* Catppuccin palettes */
+  html[data-theme="mocha"] {
+    --base:#1e1e2e; --mantle:#181825; --crust:#11111b; --surface0:#313244; --surface1:#45475a;
+    --text:#cdd6f4; --subtext:#a6adc8; --mauve:#cba6f7; --blue:#89b4fa; --green:#a6e3a1;
+    --red:#f38ba8; --peach:#fab387; --yellow:#f9e2af; color-scheme: dark;
+  }
+  html[data-theme="latte"] {
+    --base:#eff1f5; --mantle:#e6e9ef; --crust:#dce0e8; --surface0:#ccd0da; --surface1:#bcc0cc;
+    --text:#4c4f69; --subtext:#6c6f85; --mauve:#8839ef; --blue:#1e66f5; --green:#40a02b;
+    --red:#d20f39; --peach:#fe640b; --yellow:#df8e1d; color-scheme: light;
+  }
+  * { box-sizing: border-box; }
+  body { font: 15px/1.5 system-ui, sans-serif; margin: 0; background: var(--base); color: var(--text); }
+  header { background: var(--mantle); padding: .8rem 1.2rem; display: flex; align-items: center;
+           gap: 1rem; flex-wrap: wrap; border-bottom: 1px solid var(--surface0); position: sticky; top: 0; z-index: 5; }
+  header h1 { font-size: 1.2rem; margin: 0; color: var(--mauve); }
+  nav { display: flex; gap: .3rem; flex-wrap: wrap; }
+  nav button { background: transparent; color: var(--subtext); border: 0; padding: .4rem .7rem;
+               border-radius: 6px; cursor: pointer; font: inherit; }
+  nav button.active { background: var(--surface0); color: var(--text); }
+  .spacer { flex: 1; }
+  main { max-width: 900px; margin: 0 auto; padding: 1.2rem; }
+  section { display: none; } section.active { display: block; }
+  h2 { font-size: 1.05rem; color: var(--mauve); margin-top: 0; }
+  .row { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; margin: .6rem 0; }
+  input, select, button.btn { font: inherit; padding: .45rem .6rem; border-radius: 6px;
+        border: 1px solid var(--surface1); background: var(--mantle); color: var(--text); }
+  input { flex: 1; min-width: 160px; }
+  button.btn { background: var(--peach); border: 0; color: var(--crust); font-weight: 600; cursor: pointer; }
+  button.btn.ghost { background: var(--surface0); color: var(--text); }
+  button.btn:disabled { opacity: .5; cursor: default; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: .4rem .5rem; border-bottom: 1px solid var(--surface0); font-size: .9rem; vertical-align: top; }
+  th { color: var(--subtext); font-weight: 600; }
+  .new { color: var(--green); font-weight: 600; }
+  a { color: var(--blue); }
+  small, .muted { color: var(--subtext); }
+  #msg { min-height: 1.3em; color: var(--peach); font-size: .9rem; margin: .4rem 0; }
+  .card { background: var(--mantle); border: 1px solid var(--surface0); border-radius: 8px; padding: .9rem; margin: .8rem 0; }
+  .rule-grid { display: grid; grid-template-columns: 110px 1fr 1fr 70px; gap: .4rem; align-items: center; font-size: .85rem; }
+  .rule-grid label { color: var(--subtext); }
+  .preview { background: var(--crust); border-radius: 6px; padding: .6rem; font-size: .85rem; white-space: pre-wrap; }
+  .badge { font-size: .75rem; padding: .1rem .4rem; border-radius: 4px; background: var(--surface0); color: var(--subtext); }
+</style>
+</head>
+<body>
+  <header>
+    <h1>📖 PageWatch</h1>
+    <nav id="nav">
+      <button data-s="updates" class="active">Updates</button>
+      <button data-s="books">Books</button>
+      <button data-s="sources">Sources</button>
+      <button data-s="settings">Settings</button>
+      <button data-s="logs">Logs</button>
+    </nav>
+    <span class="spacer"></span>
+    <button class="btn" id="checkBtn" onclick="runCheck()">Run check</button>
+  </header>
+
+  <main>
+    <div class="row">
+      <input id="token" type="password" placeholder="password (for write actions)">
+      <button class="btn ghost" onclick="saveToken()">Save token</button>
+    </div>
+    <div id="msg"></div>
+
+    <!-- UPDATES -->
+    <section id="updates" class="active">
+      <h2>Recent updates</h2>
+      <table><thead><tr><th>Title</th><th>Volumes</th><th>Link</th><th>Detected</th></tr></thead>
+      <tbody id="updatesBody"><tr><td>loading…</td></tr></tbody></table>
+    </section>
+
+    <!-- BOOKS -->
+    <section id="books">
+      <h2>Add a book</h2>
+      <div class="row">
+        <input id="url" placeholder="https://jnovels.com/...-light-novel-epub/">
+        <button class="btn" onclick="addBook()">Add</button>
+      </div>
+      <h2>Tracked books</h2>
+      <table><thead><tr><th>Title</th><th>Vol</th><th>Link</th><th>Last checked</th></tr></thead>
+      <tbody id="booksBody"><tr><td>loading…</td></tr></tbody></table>
+    </section>
+
+    <!-- SOURCES -->
+    <section id="sources">
+      <h2>Sources &amp; scrape rules</h2>
+      <p class="muted">Edit selectors, then <b>Test</b> against a real URL before saving. Description accepts an ordered fallback list separated by <code>||</code>.</p>
+      <div id="sourcesList"></div>
+      <div class="card">
+        <h2>Add source</h2>
+        <div class="row">
+          <input id="newSrcName" placeholder="name (e.g. jnovels)">
+          <input id="newSrcDomain" placeholder="domain (e.g. jnovels.com)">
+          <button class="btn" onclick="addSource()">Add source</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section id="settings">
+      <h2>Settings</h2>
+      <div class="card">
+        <div class="rule-grid" style="grid-template-columns:160px 1fr">
+          <label>Theme</label>
+          <select id="setTheme" onchange="onThemeChange()">
+            <option value="mocha">Catppuccin Mocha (dark)</option>
+            <option value="latte">Catppuccin Latte (light)</option>
+          </select>
+          <label>Scan root</label><input id="setScanRoot" placeholder="folder scanned for #LightNovel">
+          <label>New-note folder</label><input id="setNewNoteDir" placeholder="relative to vault">
+          <label>Attachments folder</label><input id="setAttachDir" placeholder="relative to vault">
+        </div>
+        <div class="row"><button class="btn" onclick="saveSettings()">Save settings</button></div>
+        <p class="muted"><small>Folders/scan-root override the server's env defaults. Theme is shared across devices.</small></p>
+      </div>
+    </section>
+
+    <!-- LOGS -->
+    <section id="logs">
+      <h2>Check runs</h2>
+      <table><thead><tr><th>#</th><th>Started</th><th>Checked</th><th>Updated</th><th>Errors</th><th>Summary</th></tr></thead>
+      <tbody id="logsBody"><tr><td>loading…</td></tr></tbody></table>
+    </section>
+  </main>
+
+<script>
+const $ = id => document.getElementById(id);
+const token = () => localStorage.getItem('pw_token') || '';
+function msg(t){ $('msg').textContent = t; }
+function esc(s){ return String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function saveToken(){ localStorage.setItem('pw_token', $('token').value); msg('Token saved.'); }
+
+async function getJSON(u){ const r = await fetch(u); return r.json(); }
+async function send(method, u, body){
+  const r = await fetch(u, { method,
+    headers: { 'Content-Type':'application/json', 'X-PageWatch-Token': token() },
+    body: body ? JSON.stringify(body) : null });
+  return { ok:r.ok, status:r.status, data: await r.json().catch(()=>({})) };
+}
+function need(r){ if(r.status===401){ msg('Unauthorized — set the password (token).'); return true; } return false; }
+
+/* nav */
+$('nav').addEventListener('click', e => {
+  const b = e.target.closest('button[data-s]'); if(!b) return;
+  document.querySelectorAll('#nav button').forEach(x => x.classList.toggle('active', x===b));
+  document.querySelectorAll('section').forEach(s => s.classList.toggle('active', s.id===b.dataset.s));
+});
+
+/* theme */
+function applyTheme(t){ document.documentElement.setAttribute('data-theme', t==='latte'?'latte':'mocha'); }
+function onThemeChange(){ const t=$('setTheme').value; applyTheme(t); localStorage.setItem('pw_theme', t);
+  if(token()) send('PUT','/api/settings',{theme:t}); }
+
+/* loaders */
+async function loadUpdates(){
+  const u = await getJSON('/api/updates');
+  $('updatesBody').innerHTML = (u&&u.length) ? u.map(x =>
+    `<tr><td class="new">${esc(x.title)}</td><td>${x.old_volumes} → ${x.new_volumes}</td>
+     <td><a href="${esc(x.link)}" target="_blank">link</a></td><td><small>${esc(x.detected_at)}</small></td></tr>`).join('')
+    : '<tr><td><span class="muted">no updates yet</span></td></tr>';
+}
+async function loadBooks(){
+  const b = await getJSON('/api/books');
+  $('booksBody').innerHTML = (b&&b.length) ? b.map(x =>
+    `<tr><td>${esc(x.title)}</td><td>${x.volumes}</td><td><a href="${esc(x.link)}" target="_blank">link</a></td>
+     <td><small>${esc(x.last_checked_at)}</small></td></tr>`).join('')
+    : '<tr><td><span class="muted">none</span></td></tr>';
+}
+async function loadLogs(){
+  const r = await getJSON('/api/runs');
+  $('logsBody').innerHTML = (r&&r.length) ? r.map(x =>
+    `<tr><td>${x.id}</td><td><small>${esc(x.started_at)}</small></td><td>${x.checked}</td>
+     <td>${x.updated}</td><td>${x.errors}</td><td><small>${esc(x.summary)}</small></td></tr>`).join('')
+    : '<tr><td><span class="muted">no runs yet</span></td></tr>';
+}
+async function loadSettings(){
+  const s = await getJSON('/api/settings');
+  const eff = s.effective||{}, ov = s.overrides||{};
+  $('setScanRoot').value = eff.scan_root || '';
+  $('setNewNoteDir').value = eff.new_note_dir || '';
+  $('setAttachDir').value = eff.attachments_dir || '';
+  const theme = ov.theme || localStorage.getItem('pw_theme') || 'mocha';
+  $('setTheme').value = theme; applyTheme(theme);
+}
+const FIELDS = ['title','cover','volume_list','volume_item','description'];
+async function loadSources(){
+  const srcs = await getJSON('/api/sources') || [];
+  $('sourcesList').innerHTML = srcs.map(s => {
+    const byField = {}; (s.rules||[]).forEach(r => byField[r.field]=r);
+    const rows = FIELDS.map(f => {
+      const r = byField[f] || {selector:'',regex:'',attr:''};
+      return `<label>${f}</label>
+        <input data-src="${s.id}" data-field="${f}" data-k="selector" value="${esc(r.selector)}" placeholder="selector">
+        <input data-src="${s.id}" data-field="${f}" data-k="regex" value="${esc(r.regex)}" placeholder="regex">
+        <input data-src="${s.id}" data-field="${f}" data-k="attr" value="${esc(r.attr)}" placeholder="attr">`;
+    }).join('');
+    return `<div class="card">
+      <div class="row"><b>${esc(s.name)}</b> <span class="badge">${esc(s.domain)}</span>
+        <span class="badge">${s.enabled?'enabled':'disabled'}</span>
+        <span class="spacer"></span>
+        <button class="btn ghost" onclick="delSource(${s.id})">Delete</button></div>
+      <div class="rule-grid"><label></label><small>selector</small><small>regex</small><small>attr</small>${rows}</div>
+      <div class="row">
+        <input id="testUrl-${s.id}" placeholder="https://...  (test URL)">
+        <button class="btn ghost" onclick="testSource(${s.id})">Test</button>
+        <button class="btn" onclick="saveRules(${s.id})">Save rules</button>
+      </div>
+      <div class="preview" id="preview-${s.id}" style="display:none"></div>
+    </div>`;
+  }).join('') || '<p class="muted">no sources</p>';
+}
+function collectRules(srcId){
+  const rules = {};
+  document.querySelectorAll(`[data-src="${srcId}"]`).forEach(inp => {
+    const f = inp.dataset.field; rules[f] = rules[f] || {field:f, selector:'', regex:'', attr:''};
+    rules[f][inp.dataset.k] = inp.value;
+  });
+  return Object.values(rules);
+}
+
+/* actions */
+async function runCheck(){
+  const r = await send('POST','/api/check'); if(need(r)) return;
+  if(r.status===409) return msg('A check is already running.');
+  msg('Check running…'); $('checkBtn').disabled = true;
+  const poll = setInterval(async () => {
+    const s = await getJSON('/api/status');
+    if(!s.busy){ clearInterval(poll); $('checkBtn').disabled=false; msg('Check done.');
+      loadUpdates(); loadBooks(); loadLogs(); }
+  }, 2000);
+}
+async function addBook(){
+  const url = $('url').value.trim(); if(!url) return msg('Enter a URL.');
+  msg('Adding…'); const r = await send('POST','/api/books',{url}); if(need(r)) return;
+  if(!r.ok) return msg('Error: ' + (r.data.error||r.status));
+  msg(`Added: ${r.data.title} (${r.data.volumes} vol)`); $('url').value=''; loadBooks();
+}
+async function saveRules(id){
+  const r = await send('PUT',`/api/sources/${id}/rules`,{rules:collectRules(id)}); if(need(r)) return;
+  msg(r.ok ? 'Rules saved.' : 'Error: '+(r.data.error||r.status));
+}
+async function testSource(id){
+  const url = $('testUrl-'+id).value.trim(); if(!url) return msg('Enter a test URL.');
+  msg('Testing…'); const r = await send('POST','/api/sources/test',{url, rules:collectRules(id)}); if(need(r)) return;
+  const p = $('preview-'+id); p.style.display='block';
+  if(!r.ok){ p.textContent = 'Error: '+(r.data.error||r.status); return; }
+  const d = r.data;
+  p.textContent = `title:   ${d.title}\nvolumes: ${d.volumes}\ncover:   ${d.cover_url}\ndesc:    ${(d.description||'').slice(0,300)}`;
+  msg('Test ok.');
+}
+async function addSource(){
+  const name=$('newSrcName').value.trim(), domain=$('newSrcDomain').value.trim();
+  if(!name||!domain) return msg('Name + domain required.');
+  const r = await send('POST','/api/sources',{name,domain,strategy:'rules',enabled:true}); if(need(r)) return;
+  msg(r.ok?'Source added.':'Error: '+(r.data.error||r.status));
+  $('newSrcName').value=''; $('newSrcDomain').value=''; loadSources();
+}
+async function delSource(id){
+  const r = await send('DELETE',`/api/sources/${id}`); if(need(r)) return;
+  msg(r.ok?'Source deleted.':'Error'); loadSources();
+}
+async function saveSettings(){
+  const body = { scan_root:$('setScanRoot').value.trim(), new_note_dir:$('setNewNoteDir').value.trim(),
+                 attachments_dir:$('setAttachDir').value.trim(), theme:$('setTheme').value };
+  const r = await send('PUT','/api/settings',body); if(need(r)) return;
+  msg(r.ok?'Settings saved.':'Error: '+(r.data.error||r.status));
+}
+
+/* init */
+applyTheme(localStorage.getItem('pw_theme') || 'mocha');
+$('token').value = token();
+loadUpdates(); loadBooks(); loadLogs(); loadSources(); loadSettings();
+</script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+# binaries
+/pagewatch
+*.exe
+
+# local SQLite db
+*.db
+*.db-wal
+*.db-shm
