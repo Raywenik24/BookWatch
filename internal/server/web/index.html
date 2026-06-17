@@ -75,6 +75,7 @@
   .fz-list[hidden] { display: none; }
   .fz-opt { padding: .35rem .5rem; border-radius: 4px; cursor: pointer; font-size: .9rem; white-space: nowrap;
         overflow: hidden; text-overflow: ellipsis; }
+  .fz-opt.sel { background: var(--surface1); }
   .fz-opt.active, .fz-opt:hover { background: var(--surface0); }
   .fz-opt mark { background: transparent; color: var(--mauve); font-weight: 600; }
   .fz-empty { padding: .35rem .5rem; color: var(--subtext); font-size: .9rem; }
@@ -151,11 +152,7 @@
       </div>
       <div class="card">
         <div class="rule-grid" style="grid-template-columns:160px 1fr">
-          <label>Theme</label>
-          <select id="setTheme" onchange="onThemeChange()">
-            <option value="mocha">Catppuccin Mocha (dark)</option>
-            <option value="latte">Catppuccin Latte (light)</option>
-          </select>
+          <label>Theme</label><div id="setThemeMount"></div>
           <label>Timezone</label><div id="setTzMount"></div>
           <label>Scan root</label><input id="setScanRoot" placeholder="folder scanned for #LightNovel">
           <label>New-note folder</label><input id="setNewNoteDir" placeholder="relative to vault">
@@ -239,7 +236,7 @@ function fuzzySelect(mount, opts){
     if(active >= filtered.length) active = filtered.length - 1;
     if(active < 0 && filtered.length) active = 0;
     list.innerHTML = filtered.length
-      ? filtered.map((it,i) => `<li class="fz-opt${i===active?' active':''}" data-i="${i}">${fzHighlight(it.label, q)}</li>`).join('')
+      ? filtered.map((it,i) => `<li class="fz-opt${it.value===value?' sel':''}${i===active?' active':''}" data-i="${i}">${fzHighlight(it.label, q)}</li>`).join('')
       : '<li class="fz-empty">no matches</li>';
   }
   function openList(){ open = true; list.hidden = false; render(''); active = filtered.findIndex(it=>it.value===value); if(active<0)active=0; render(''); }
@@ -298,9 +295,16 @@ $('nav').addEventListener('click', e => {
 });
 
 /* theme */
+let themePicker = null;
 function applyTheme(t){ document.documentElement.setAttribute('data-theme', t==='latte'?'latte':'mocha'); }
-function onThemeChange(){ const t=$('setTheme').value; applyTheme(t); lsSet('pw_theme', t);
-  if(token()) send('PUT','/api/settings',{theme:t}); }
+function populateTheme(){
+  if(themePicker) return;
+  themePicker = fuzzySelect('setThemeMount', {
+    items: [{value:'mocha',label:'Catppuccin Mocha (dark)'},{value:'latte',label:'Catppuccin Latte (light)'}],
+    value: lsGet('pw_theme') || 'mocha', placeholder: 'theme…',
+    onChange: t => { applyTheme(t); lsSet('pw_theme', t); if(token()) send('PUT','/api/settings',{theme:t}); },
+  });
+}
 
 /* loaders */
 async function loadUpdates(){
@@ -364,7 +368,7 @@ function populateTz(){
   });
 }
 async function loadSettings(){
-  populateTz();
+  populateTz(); populateTheme();
   let s;
   try { s = await getJSON('/api/settings'); } catch(e){ return; }
   const eff = s.effective||{}, ov = s.overrides||{};
@@ -372,7 +376,7 @@ async function loadSettings(){
   $('setNewNoteDir').value = eff.new_note_dir || '';
   $('setAttachDir').value = eff.attachments_dir || '';
   const theme = ov.theme || lsGet('pw_theme') || 'mocha';
-  $('setTheme').value = theme; applyTheme(theme);
+  themePicker.setValue(theme); applyTheme(theme);
   if(ov.timezone){ TZ = ov.timezone; tzPicker.setValue(TZ); loadUpdates(); loadBooks(); loadLogs(); }
 }
 const FIELDS = ['title','cover','volume_list','volume_item','description'];
@@ -502,7 +506,7 @@ async function delSource(id){
 }
 async function saveSettings(){
   const body = { scan_root:$('setScanRoot').value.trim(), new_note_dir:$('setNewNoteDir').value.trim(),
-                 attachments_dir:$('setAttachDir').value.trim(), theme:$('setTheme').value,
+                 attachments_dir:$('setAttachDir').value.trim(), theme:themePicker.getValue(),
                  timezone:tzPicker.getValue() };
   const r = await send('PUT','/api/settings',body); if(need(r)) return;
   if(r.ok){ TZ = tzPicker.getValue(); loadUpdates(); loadBooks(); loadLogs(); }
