@@ -411,6 +411,13 @@ func (s *Store) BookExists(link string) (bool, error) {
 	return n > 0, err
 }
 
+// DeleteBook removes a book's DB row (and its updates, via cascade). The vault
+// note and cover are never touched — vault stays the source of truth.
+func (s *Store) DeleteBook(id int64) error {
+	_, err := s.db.Exec(`DELETE FROM books WHERE id=?`, id)
+	return err
+}
+
 // RecordUpdate logs a detected new-volume event.
 func (s *Store) RecordUpdate(bookID int64, oldV, newV int, link string) error {
 	_, err := s.db.Exec(

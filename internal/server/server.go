@@ -44,6 +44,7 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("POST /api/check", s.auth(s.handleCheck))
 	mux.HandleFunc("POST /api/books", s.auth(s.handleAddBook))
+	mux.HandleFunc("DELETE /api/books/{id}", s.auth(s.handleDeleteBook))
 	mux.HandleFunc("POST /api/sources", s.auth(s.handleUpsertSource))
 	mux.HandleFunc("DELETE /api/sources/{id}", s.auth(s.handleDeleteSource))
 	mux.HandleFunc("PUT /api/sources/{id}/rules", s.auth(s.handleSetRules))
@@ -168,6 +169,22 @@ func (s *Server) handleAddBook(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"title": res.Title, "volumes": res.Volumes, "path": res.Path,
 	})
+}
+
+// handleDeleteBook untracks a book: removes its DB row only. The vault note and
+// cover are left untouched, so the book reappears on the next check if the note
+// still exists.
+func (s *Server) handleDeleteBook(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errBody("bad id"))
+		return
+	}
+	if err := s.st.DeleteBook(id); err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "untracked"})
 }
 
 func (s *Server) handleUpsertSource(w http.ResponseWriter, r *http.Request) {

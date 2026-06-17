@@ -103,7 +103,7 @@
         <button class="btn" id="addBtn" onclick="addBook()">Add</button>
       </div>
       <h2>Tracked books</h2>
-      <table><thead><tr><th>Title</th><th>Vol</th><th>Link</th><th>Last checked</th></tr></thead>
+      <table><thead><tr><th>Title</th><th>Vol</th><th>Link</th><th>Last checked</th><th></th></tr></thead>
       <tbody id="booksBody"><tr><td>loading…</td></tr></tbody></table>
     </section>
 
@@ -300,8 +300,20 @@ async function loadBooks(){
   const b = await getJSON('/api/books');
   $('booksBody').innerHTML = (b&&b.length) ? b.map(x =>
     `<tr><td>${esc(x.title)}</td><td>${x.volumes}</td><td><a href="${esc(x.link)}" target="_blank">link</a></td>
-     <td><small>${esc(fmtTime(x.last_checked_at))}</small></td></tr>`).join('')
+     <td><small>${esc(fmtTime(x.last_checked_at))}</small></td>
+     <td><button class="btn ghost" title="Remove from this list only — the note and cover are kept. If the note still exists it reappears on the next check." onclick="untrack(${x.id}, this)">Untrack</button></td></tr>`).join('')
     : '<tr><td><span class="muted">none</span></td></tr>';
+}
+async function untrack(id, btn){
+  btn.disabled = true;
+  try {
+    const r = await send('DELETE', '/api/books/'+id);
+    if(need(r)){ btn.disabled = false; return; }
+    if(!r.ok){ btn.disabled = false; return msg('Error: ' + (r.data.error||r.status)); }
+    msg('Untracked — note kept; reappears on next check if it still exists.'); loadBooks();
+  } catch(e) {
+    btn.disabled = false; msg('Error: ' + (e.message || 'request failed'));
+  }
 }
 async function loadLogs(){
   const r = await getJSON('/api/runs');

@@ -4,6 +4,7 @@ package service
 
 import (
 	"fmt"
+	"os"
 
 	"bookwatch/internal/checker"
 	"bookwatch/internal/scraper"
@@ -88,6 +89,31 @@ func RunCheck(sc *scraper.Client, st *store.Store, scanRoot string, write bool,
 				return sum, e
 			}
 			if e := st.RecordUpdate(bookID, r.Entry.Volumes, r.Latest, r.Entry.Link); e != nil {
+				return sum, e
+			}
+		}
+	}
+
+	// Auto-prune: any tracked book absent from this scan (by link) whose note
+	// file is also gone from disk is a stale row → drop it. Vault is the source
+	// of truth, so a note that merely moved (still scanned) is never pruned.
+	if st != nil {
+		seen := make(map[string]bool, len(results))
+		for _, r := range results {
+			seen[r.Entry.Link] = true
+		}
+		tracked, e := st.ListBooks()
+		if e != nil {
+			return sum, e
+		}
+		for _, b := range tracked {
+			if seen[b.Link] {
+				continue
+			}
+			if _, err := os.Stat(b.Path); err == nil {
+				continue // note still on disk; leave it tracked
+			}
+			if e := st.DeleteBook(b.ID); e != nil {
 				return sum, e
 			}
 		}
