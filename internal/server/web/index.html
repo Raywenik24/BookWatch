@@ -134,6 +134,7 @@
         <button class="btn" id="addBtn" onclick="addBook()">Add</button>
       </div>
       <h2>Tracked books</h2>
+      <div class="row"><input id="bookFilter" placeholder="search title…" autocomplete="off" spellcheck="false" oninput="renderBooks(this.value)"></div>
       <table><thead><tr><th>Title</th><th>Vol</th><th>Link</th><th>Last checked</th><th></th></tr></thead>
       <tbody id="booksBody"><tr><td>loading…</td></tr></tbody></table>
     </section>
@@ -364,13 +365,22 @@ async function loadUpdates(){
    }).join('')
     : '<tr><td><span class="muted">no updates yet</span></td></tr>';
 }
+let booksData = [];
 async function loadBooks(){
-  const b = await getJSON('/api/books');
-  $('booksBody').innerHTML = (b&&b.length) ? b.map(x =>
-    `<tr><td>${esc(x.title)}</td><td>${x.volumes}</td><td><a href="${esc(x.link)}" target="_blank">link</a></td>
+  booksData = await getJSON('/api/books') || [];
+  renderBooks($('bookFilter') ? $('bookFilter').value : '');
+}
+function renderBooks(q){
+  q = (q || '').trim();
+  let list = booksData;
+  if(q) list = list.map(x => ({x, s: fzScore(q, x.title)})).filter(e => e.s >= 0)
+                   .sort((a,b) => b.s - a.s).map(e => e.x);
+  $('booksBody').innerHTML = list.length ? list.map(x =>
+    `<tr><td>${fzHighlight(x.title, q)}</td><td>${x.volumes}</td><td><a href="${esc(x.link)}" target="_blank">link</a></td>
      <td class="nowrap"><small>${esc(fmtTime(x.last_checked_at))}</small></td>
      <td><button class="btn ghost" title="Remove from this list only — the note and cover are kept. If the note still exists it reappears on the next check." onclick="untrack(${x.id}, this)">Untrack</button></td></tr>`).join('')
-    : '<tr><td><span class="muted">none</span></td></tr>';
+    : (q ? '<tr><td><span class="muted">no matches</span></td></tr>'
+         : '<tr><td><span class="muted">none</span></td></tr>');
 }
 async function untrack(id, btn){
   btn.disabled = true;
