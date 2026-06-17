@@ -17,6 +17,7 @@
     --red:#d20f39; --peach:#fe640b; --yellow:#df8e1d; --lavender:#7287fd; color-scheme: light;
   }
   * { box-sizing: border-box; }
+  ::selection { background: color-mix(in srgb, var(--mauve) 45%, transparent); color: var(--text); }
   body { font: 15px/1.5 system-ui, sans-serif; margin: 0; background: var(--base); color: var(--text); }
   header { background: var(--mantle); padding: .8rem 1.2rem; display: flex; align-items: center;
            gap: 1rem; flex-wrap: wrap; border-bottom: 1px solid var(--surface0); position: sticky; top: 0; z-index: 5; }
@@ -52,6 +53,18 @@
   .rule-grid label { color: var(--subtext); }
   .preview { background: var(--crust); border-radius: 6px; padding: .6rem; font-size: .85rem; white-space: pre-wrap; }
   .badge { font-size: .75rem; padding: .1rem .4rem; border-radius: 4px; background: var(--surface0); color: var(--subtext); }
+  /* fuzzy-select component */
+  .fz { position: relative; flex: 1; min-width: 160px; }
+  .fz > input { width: 100%; }
+  .fz-list { position: absolute; z-index: 20; left: 0; right: 0; top: calc(100% + 2px); margin: 0; padding: .25rem;
+        list-style: none; max-height: 260px; overflow-y: auto; background: var(--mantle);
+        border: 1px solid var(--surface1); border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,.35); }
+  .fz-list[hidden] { display: none; }
+  .fz-opt { padding: .35rem .5rem; border-radius: 4px; cursor: pointer; font-size: .9rem; white-space: nowrap;
+        overflow: hidden; text-overflow: ellipsis; }
+  .fz-opt.active, .fz-opt:hover { background: var(--surface0); }
+  .fz-opt mark { background: transparent; color: var(--mauve); font-weight: 600; }
+  .fz-empty { padding: .35rem .5rem; color: var(--subtext); font-size: .9rem; }
 </style>
 </head>
 <body>
@@ -125,12 +138,13 @@
             <option value="mocha">Catppuccin Mocha (dark)</option>
             <option value="latte">Catppuccin Latte (light)</option>
           </select>
+          <label>Timezone</label><div id="setTzMount"></div>
           <label>Scan root</label><input id="setScanRoot" placeholder="folder scanned for #LightNovel">
           <label>New-note folder</label><input id="setNewNoteDir" placeholder="relative to vault">
           <label>Attachments folder</label><input id="setAttachDir" placeholder="relative to vault">
         </div>
         <div class="row"><button class="btn" onclick="saveSettings()">Save settings</button></div>
-        <p class="muted"><small>Folders/scan-root override the server's env defaults. Theme is shared across devices.</small></p>
+        <p class="muted"><small>Folders/scan-root override the server's env defaults. Theme and timezone are shared across devices.</small></p>
       </div>
     </section>
 
@@ -144,10 +158,109 @@
 
 <script>
 const $ = id => document.getElementById(id);
-const token = () => localStorage.getItem('pw_token') || '';
+/* localStorage can throw in sandboxed/null-origin contexts (e.g. preview) — guard it */
+const lsGet = k => { try { return localStorage.getItem(k); } catch(e){ return null; } };
+const lsSet = (k,v) => { try { localStorage.setItem(k,v); } catch(e){} };
+const token = () => lsGet('pw_token') || '';
 function msg(t){ $('msg').textContent = t; }
 function esc(s){ return String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
-function saveToken(){ localStorage.setItem('pw_token', $('token').value); msg('Token saved.'); }
+
+/* ── fuzzySelect: reusable fuzzy-search dropdown ───────────────────
+   fuzzySelect(mount, { items, value, placeholder, onChange })
+     items: [{value, label, search?}]  (or a () => [...] thunk)
+       search: optional text matched against instead of label (label still shown)
+     onChange(value, item)    fired when user picks an option
+   returns { getValue, setValue(v), setItems(arr), focus() }
+   Self-contained, no deps. Matching = subsequence fuzzy with ranking. */
+/* separators (space, _, /, -) are interchangeable when matching */
+const fzNorm = c => { c = c.toLowerCase(); return /[\s_/\-]/.test(c) ? ' ' : c; };
+function fzScore(q, text){
+  if(!q) return 0;
+  q = q.toLowerCase(); const t = text.toLowerCase();
+  let qi = 0, score = 0, run = 0, prev = -1;
+  for(let i = 0; i < t.length && qi < q.length; i++){
+    if(fzNorm(t[i]) === fzNorm(q[qi])){
+      run++;
+      score += run * 2;                         // reward consecutive matches
+      if(i === 0 || /[\s/_\-(]/.test(t[i-1])) score += 4; // word-start bonus
+      if(prev === i - 1) score += 1;
+      prev = i; qi++;
+    } else run = 0;
+  }
+  return qi === q.length ? score - t.length * 0.01 : -1; // prefer shorter on ties
+}
+function fzHighlight(label, q){
+  if(!q) return esc(label);
+  q = q.toLowerCase(); let out = '', qi = 0;
+  for(const ch of label){
+    if(qi < q.length && fzNorm(ch) === fzNorm(q[qi])){ out += '<mark>' + esc(ch) + '</mark>'; qi++; }
+    else out += esc(ch);
+  }
+  return out;
+}
+function fuzzySelect(mount, opts){
+  opts = opts || {};
+  let items = typeof opts.items === 'function' ? opts.items() : (opts.items || []);
+  let value = opts.value ?? '';
+  const onChange = opts.onChange || (()=>{});
+  const el = typeof mount === 'string' ? $(mount) : mount;
+  el.classList.add('fz');
+  el.innerHTML = `<input type="text" autocomplete="off" spellcheck="false" placeholder="${esc(opts.placeholder||'')}">
+                  <ul class="fz-list" hidden></ul>`;
+  const input = el.querySelector('input'), list = el.querySelector('.fz-list');
+  let open = false, active = -1, filtered = [];
+
+  const labelFor = v => { const it = items.find(x => x.value === v); return it ? it.label : (v||''); };
+  function showLabel(){ input.value = labelFor(value); }
+
+  function render(q){
+    filtered = (q ? items.map(it => ({it, s: fzScore(q, it.search || it.label)})).filter(x => x.s >= 0)
+                      .sort((a,b) => b.s - a.s).map(x => x.it)
+                  : items.slice());
+    if(active >= filtered.length) active = filtered.length - 1;
+    if(active < 0 && filtered.length) active = 0;
+    list.innerHTML = filtered.length
+      ? filtered.map((it,i) => `<li class="fz-opt${i===active?' active':''}" data-i="${i}">${fzHighlight(it.label, q)}</li>`).join('')
+      : '<li class="fz-empty">no matches</li>';
+  }
+  function openList(){ open = true; list.hidden = false; render(''); active = filtered.findIndex(it=>it.value===value); if(active<0)active=0; render(''); }
+  function closeList(){ open = false; list.hidden = true; showLabel(); }
+  function pick(i){ const it = filtered[i]; if(!it) return; value = it.value; onChange(value, it); closeList(); }
+
+  input.addEventListener('focus', () => { input.select(); openList(); });
+  input.addEventListener('input', () => { open = true; list.hidden = false; active = 0; render(input.value.trim()); });
+  input.addEventListener('keydown', e => {
+    if(e.key === 'ArrowDown'){ e.preventDefault(); if(!open){openList();return;} active = Math.min(active+1, filtered.length-1); render(input.value.trim()); scrollActive(); }
+    else if(e.key === 'ArrowUp'){ e.preventDefault(); active = Math.max(active-1, 0); render(input.value.trim()); scrollActive(); }
+    else if(e.key === 'Enter'){ if(open){ e.preventDefault(); pick(active); } }
+    else if(e.key === 'Escape'){ if(open){ e.preventDefault(); closeList(); } }
+  });
+  list.addEventListener('mousedown', e => { const li = e.target.closest('.fz-opt'); if(li){ e.preventDefault(); pick(+li.dataset.i); } });
+  document.addEventListener('mousedown', e => { if(open && !el.contains(e.target)) closeList(); });
+  function scrollActive(){ const li = list.children[active]; if(li) li.scrollIntoView({block:'nearest'}); }
+
+  showLabel();
+  return {
+    getValue: () => value,
+    setValue: v => { value = v; showLabel(); },
+    setItems: arr => { items = arr; showLabel(); if(open) render(input.value.trim()); },
+    focus: () => input.focus(),
+  };
+}
+
+/* time: stored UTC (RFC3339), shown in chosen IANA zone as YYYY-MM-DD HH:MM */
+const browserTz = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch(e){ return 'UTC'; } };
+let TZ = browserTz();
+function fmtTime(utc){
+  if(!utc) return '';
+  const d = new Date(utc);
+  if(isNaN(d)) return utc;
+  const p = new Intl.DateTimeFormat('en-CA', { timeZone: TZ, hour12:false,
+    year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' }).formatToParts(d)
+    .reduce((o,x)=>(o[x.type]=x.value,o),{});
+  return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}`;
+}
+function saveToken(){ lsSet('pw_token', $('token').value); msg('Token saved.'); }
 
 async function getJSON(u){ const r = await fetch(u); return r.json(); }
 async function send(method, u, body){
@@ -167,7 +280,7 @@ $('nav').addEventListener('click', e => {
 
 /* theme */
 function applyTheme(t){ document.documentElement.setAttribute('data-theme', t==='latte'?'latte':'mocha'); }
-function onThemeChange(){ const t=$('setTheme').value; applyTheme(t); localStorage.setItem('pw_theme', t);
+function onThemeChange(){ const t=$('setTheme').value; applyTheme(t); lsSet('pw_theme', t);
   if(token()) send('PUT','/api/settings',{theme:t}); }
 
 /* loaders */
@@ -175,31 +288,56 @@ async function loadUpdates(){
   const u = await getJSON('/api/updates');
   $('updatesBody').innerHTML = (u&&u.length) ? u.map(x =>
     `<tr><td class="new">${esc(x.title)}</td><td>${x.old_volumes} → ${x.new_volumes}</td>
-     <td><a href="${esc(x.link)}" target="_blank">link</a></td><td><small>${esc(x.detected_at)}</small></td></tr>`).join('')
+     <td><a href="${esc(x.link)}" target="_blank">link</a></td><td><small>${esc(fmtTime(x.detected_at))}</small></td></tr>`).join('')
     : '<tr><td><span class="muted">no updates yet</span></td></tr>';
 }
 async function loadBooks(){
   const b = await getJSON('/api/books');
   $('booksBody').innerHTML = (b&&b.length) ? b.map(x =>
     `<tr><td>${esc(x.title)}</td><td>${x.volumes}</td><td><a href="${esc(x.link)}" target="_blank">link</a></td>
-     <td><small>${esc(x.last_checked_at)}</small></td></tr>`).join('')
+     <td><small>${esc(fmtTime(x.last_checked_at))}</small></td></tr>`).join('')
     : '<tr><td><span class="muted">none</span></td></tr>';
 }
 async function loadLogs(){
   const r = await getJSON('/api/runs');
   $('logsBody').innerHTML = (r&&r.length) ? r.map(x =>
-    `<tr><td>${x.id}</td><td><small>${esc(x.started_at)}</small></td><td>${x.checked}</td>
+    `<tr><td>${x.id}</td><td><small>${esc(fmtTime(x.started_at))}</small></td><td>${x.checked}</td>
      <td>${x.updated}</td><td>${x.errors}</td><td><small>${esc(x.summary)}</small></td></tr>`).join('')
     : '<tr><td><span class="muted">no runs yet</span></td></tr>';
 }
+/* current UTC offset for a zone, e.g. "+02:00" (DST-aware) */
+function tzOffset(z){
+  try {
+    const p = new Intl.DateTimeFormat('en-US', { timeZone: z, timeZoneName: 'longOffset' })
+      .formatToParts(new Date()).find(x => x.type === 'timeZoneName');
+    return p ? p.value.replace(/^(GMT|UTC)/, '') || '+00:00' : '';
+  } catch(e){ return ''; }
+}
+let tzPicker = null;
+function tzItems(){
+  let zones;
+  try { zones = Intl.supportedValuesOf('timeZone'); } catch(e){ zones = []; }
+  if(!zones.length) zones = [browserTz(), 'UTC'];
+  return zones.map(z => { const off = tzOffset(z); return { value: z, search: z, label: off ? `${z} (UTC${off})` : z }; });
+}
+function populateTz(){
+  if(tzPicker){ tzPicker.setValue(TZ); return; }
+  tzPicker = fuzzySelect('setTzMount', {
+    items: tzItems(), value: TZ, placeholder: 'search timezone…',
+    onChange: v => { TZ = v; loadUpdates(); loadBooks(); loadLogs(); },
+  });
+}
 async function loadSettings(){
-  const s = await getJSON('/api/settings');
+  populateTz();
+  let s;
+  try { s = await getJSON('/api/settings'); } catch(e){ return; }
   const eff = s.effective||{}, ov = s.overrides||{};
   $('setScanRoot').value = eff.scan_root || '';
   $('setNewNoteDir').value = eff.new_note_dir || '';
   $('setAttachDir').value = eff.attachments_dir || '';
-  const theme = ov.theme || localStorage.getItem('pw_theme') || 'mocha';
+  const theme = ov.theme || lsGet('pw_theme') || 'mocha';
   $('setTheme').value = theme; applyTheme(theme);
+  if(ov.timezone){ TZ = ov.timezone; tzPicker.setValue(TZ); loadUpdates(); loadBooks(); loadLogs(); }
 }
 const FIELDS = ['title','cover','volume_list','volume_item','description'];
 async function loadSources(){
@@ -280,13 +418,15 @@ async function delSource(id){
 }
 async function saveSettings(){
   const body = { scan_root:$('setScanRoot').value.trim(), new_note_dir:$('setNewNoteDir').value.trim(),
-                 attachments_dir:$('setAttachDir').value.trim(), theme:$('setTheme').value };
+                 attachments_dir:$('setAttachDir').value.trim(), theme:$('setTheme').value,
+                 timezone:tzPicker.getValue() };
   const r = await send('PUT','/api/settings',body); if(need(r)) return;
+  if(r.ok){ TZ = tzPicker.getValue(); loadUpdates(); loadBooks(); loadLogs(); }
   msg(r.ok?'Settings saved.':'Error: '+(r.data.error||r.status));
 }
 
 /* init */
-applyTheme(localStorage.getItem('pw_theme') || 'mocha');
+applyTheme(lsGet('pw_theme') || 'mocha');
 $('token').value = token();
 loadUpdates(); loadBooks(); loadLogs(); loadSources(); loadSettings();
 </script>
