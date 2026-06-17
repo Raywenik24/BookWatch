@@ -69,10 +69,6 @@
   </header>
 
   <main>
-    <div class="row">
-      <input id="token" type="password" placeholder="password (for write actions)">
-      <button class="btn ghost" onclick="saveToken()">Save token</button>
-    </div>
     <div id="msg"></div>
 
     <!-- UPDATES -->
@@ -114,6 +110,16 @@
       <h2>Settings</h2>
       <div class="card">
         <div class="rule-grid" style="grid-template-columns:160px 1fr">
+          <label>Password</label>
+          <div class="row" style="margin:0">
+            <input id="token" type="password" placeholder="password (for write actions)">
+            <button class="btn ghost" onclick="saveToken()">Save token</button>
+          </div>
+        </div>
+        <p class="muted"><small>Stored on this device. Needed for Books/Sources write actions and Run check.</small></p>
+      </div>
+      <div class="card">
+        <div class="rule-grid" style="grid-template-columns:160px 1fr">
           <label>Theme</label>
           <select id="setTheme" onchange="onThemeChange()">
             <option value="mocha">Catppuccin Mocha (dark)</option>
@@ -150,7 +156,7 @@ async function send(method, u, body){
     body: body ? JSON.stringify(body) : null });
   return { ok:r.ok, status:r.status, data: await r.json().catch(()=>({})) };
 }
-function need(r){ if(r.status===401){ msg('Unauthorized — set the password (token).'); return true; } return false; }
+function need(r){ if(r.status===401){ msg('Unauthorized — set the password in Settings.'); return true; } return false; }
 
 /* nav */
 $('nav').addEventListener('click', e => {
