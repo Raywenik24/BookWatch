@@ -12,8 +12,9 @@ import (
 	"bookwatch/internal/service"
 )
 
-// RunFunc performs one check run and returns its summary.
-type RunFunc func() (service.CheckSummary, error)
+// RunFunc performs one check run and returns its summary. progress is called
+// before each book so the scheduler can publish live check progress.
+type RunFunc func(progress func(i, total int, title string)) (service.CheckSummary, error)
 
 type Scheduler struct {
 	run RunFunc
@@ -22,6 +23,9 @@ type Scheduler struct {
 	mu      sync.Mutex
 	running bool
 	lastRun time.Time
+
+	cur, total int    // live progress of the in-flight run
+	curTitle   string
 }
 
 func New(run RunFunc) *Scheduler {
@@ -48,6 +52,14 @@ func (s *Scheduler) Busy() bool {
 	return s.running
 }
 
+// Progress returns the in-flight run's position (current, total, current title).
+// All zero/empty when idle.
+func (s *Scheduler) Progress() (cur, total int, title string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cur, s.total, s.curTitle
+}
+
 // Trigger starts a run in the background. Returns false if one is already
 // running (single-flight). source is just for logging.
 func (s *Scheduler) Trigger(source string) bool {
@@ -57,17 +69,25 @@ func (s *Scheduler) Trigger(source string) bool {
 		return false
 	}
 	s.running = true
+	s.cur, s.total, s.curTitle = 0, 0, ""
 	s.mu.Unlock()
+
+	progress := func(i, total int, title string) {
+		s.mu.Lock()
+		s.cur, s.total, s.curTitle = i, total, title
+		s.mu.Unlock()
+	}
 
 	go func() {
 		defer func() {
 			s.mu.Lock()
 			s.running = false
+			s.cur, s.total, s.curTitle = 0, 0, ""
 			s.lastRun = time.Now()
 			s.mu.Unlock()
 		}()
 		log.Printf("check started (%s)", source)
-		sum, err := s.run()
+		sum, err := s.run(progress)
 		if err != nil {
 			log.Printf("check error (%s): %v", source, err)
 			return

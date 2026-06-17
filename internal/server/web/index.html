@@ -57,6 +57,14 @@
   .rule-grid label { color: var(--subtext); }
   .preview { background: var(--crust); border-radius: 6px; padding: .6rem; font-size: .85rem; white-space: pre-wrap; }
   .badge { font-size: .75rem; padding: .1rem .4rem; border-radius: 4px; background: var(--surface0); color: var(--subtext); }
+  .badge.pending { background: color-mix(in srgb, var(--peach) 25%, var(--surface0)); color: var(--peach); }
+  .badge.applied { background: color-mix(in srgb, var(--green) 22%, var(--surface0)); color: var(--green); }
+  /* check progress bar */
+  #progress { margin: .4rem 0; }
+  #progress[hidden] { display: none; }
+  .bar { height: 6px; border-radius: 4px; background: var(--surface0); overflow: hidden; }
+  .bar > span { display: block; height: 100%; width: 0; background: var(--peach); transition: width .3s ease; }
+  #progressLabel { font-size: .85rem; color: var(--subtext); margin-top: .25rem; }
   /* fuzzy-select component */
   .fz { position: relative; flex: 1; min-width: 160px; }
   .fz > input { width: 100%; }
@@ -82,16 +90,21 @@
       <button data-s="logs">Logs</button>
     </nav>
     <span class="spacer"></span>
+    <button class="btn ghost" id="applyBtn" onclick="applyUpdates()" hidden>Update Obsidian</button>
     <button class="btn" id="checkBtn" onclick="runCheck()">Run check</button>
   </header>
 
   <main>
     <div id="msg"></div>
+    <div id="progress" hidden>
+      <div class="bar"><span id="progressFill"></span></div>
+      <div id="progressLabel"></div>
+    </div>
 
     <!-- UPDATES -->
     <section id="updates" class="active">
       <h2>Recent updates</h2>
-      <table><thead><tr><th>Title</th><th>Volumes</th><th>Link</th><th>Detected</th></tr></thead>
+      <table><thead><tr><th>Title</th><th>Volumes</th><th>Status</th><th>Link</th><th>Detected</th></tr></thead>
       <tbody id="updatesBody"><tr><td>loading…</td></tr></tbody></table>
     </section>
 
@@ -291,9 +304,14 @@ function onThemeChange(){ const t=$('setTheme').value; applyTheme(t); lsSet('pw_
 /* loaders */
 async function loadUpdates(){
   const u = await getJSON('/api/updates');
-  $('updatesBody').innerHTML = (u&&u.length) ? u.map(x =>
-    `<tr><td class="new">${esc(x.title)}</td><td>${x.old_volumes} → ${x.new_volumes}</td>
-     <td><a href="${esc(x.link)}" target="_blank">link</a></td><td><small>${esc(fmtTime(x.detected_at))}</small></td></tr>`).join('')
+  $('updatesBody').innerHTML = (u&&u.length) ? u.map(x => {
+    const status = x.applied
+      ? `<span class="badge applied" title="Written to the vault${x.applied_at?' on '+esc(fmtTime(x.applied_at)):''}">Applied</span>`
+      : `<span class="badge pending">Pending</span>`;
+    return `<tr><td class="new">${esc(x.title)}</td><td>${x.old_volumes} → ${x.new_volumes}</td>
+     <td>${status}</td>
+     <td><a href="${esc(x.link)}" target="_blank">link</a></td><td><small>${esc(fmtTime(x.detected_at))}</small></td></tr>`;
+   }).join('')
     : '<tr><td><span class="muted">no updates yet</span></td></tr>';
 }
 async function loadBooks(){
@@ -392,16 +410,55 @@ function collectRules(srcId){
   return Object.values(rules);
 }
 
+/* status: drives the pending "Update Obsidian" button + live progress bar */
+function renderPending(n){
+  const b = $('applyBtn');
+  if(n > 0){ b.hidden = false; b.disabled = false; b.textContent = `Update Obsidian (${n})`; }
+  else { b.hidden = true; }
+}
+function renderProgress(s){
+  const p = $('progress');
+  if(s.busy && s.total > 0){
+    p.hidden = false;
+    $('progressFill').style.width = Math.round(s.current / s.total * 100) + '%';
+    $('progressLabel').textContent = `${s.current}/${s.total}` + (s.current_title ? ' — ' + s.current_title : '');
+  } else if(s.busy){
+    p.hidden = false; $('progressFill').style.width = '0%'; $('progressLabel').textContent = 'starting…';
+  } else {
+    p.hidden = true;
+  }
+}
+async function refreshStatus(){
+  try { const s = await getJSON('/api/status'); renderPending(s.pending||0); renderProgress(s); return s; }
+  catch(e){ return {}; }
+}
+
 /* actions */
 async function runCheck(){
   const r = await send('POST','/api/check'); if(need(r)) return;
   if(r.status===409) return msg('A check is already running.');
   msg('Check running…'); $('checkBtn').disabled = true;
   const poll = setInterval(async () => {
-    const s = await getJSON('/api/status');
+    const s = await refreshStatus();
     if(!s.busy){ clearInterval(poll); $('checkBtn').disabled=false; msg('Check done.');
       loadUpdates(); loadBooks(); loadLogs(); }
-  }, 2000);
+  }, 1500);
+}
+async function applyUpdates(){
+  const btn = $('applyBtn'); btn.disabled = true; msgBusy('Updating Obsidian…');
+  try {
+    const r = await send('POST','/api/apply');
+    if(need(r)){ btn.disabled = false; return; }
+    if(r.status===409) return msg('A check is running — try again when it finishes.');
+    if(!r.ok) return msg('Error: ' + (r.data.error||r.status));
+    const d = r.data;
+    msg(`Updated Obsidian — ${d.applied} applied` + (d.failed ? `, ${d.failed} failed` : '') + '.');
+    loadUpdates(); loadBooks(); refreshStatus();
+  } catch(e) {
+    msg('Error: ' + (e.message || 'request failed'));
+  } finally {
+    btn.disabled = false;
+  }
 }
 async function addBook(){
   const url = $('url').value.trim(); if(!url) return msg('Enter a URL.');
@@ -454,7 +511,7 @@ async function saveSettings(){
 /* init */
 applyTheme(lsGet('pw_theme') || 'mocha');
 $('token').value = token();
-loadUpdates(); loadBooks(); loadLogs(); loadSources(); loadSettings();
+loadUpdates(); loadBooks(); loadLogs(); loadSources(); loadSettings(); refreshStatus();
 </script>
 </body>
 </html>

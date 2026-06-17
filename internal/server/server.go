@@ -14,8 +14,10 @@ import (
 	"bookwatch/internal/notes"
 	"bookwatch/internal/scheduler"
 	"bookwatch/internal/scraper"
+	"bookwatch/internal/service"
 	"bookwatch/internal/sources"
 	"bookwatch/internal/store"
+	"bookwatch/internal/vault"
 )
 
 //go:embed web/index.html
@@ -43,6 +45,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 
 	mux.HandleFunc("POST /api/check", s.auth(s.handleCheck))
+	mux.HandleFunc("POST /api/apply", s.auth(s.handleApply))
 	mux.HandleFunc("POST /api/books", s.auth(s.handleAddBook))
 	mux.HandleFunc("DELETE /api/books/{id}", s.auth(s.handleDeleteBook))
 	mux.HandleFunc("POST /api/sources", s.auth(s.handleUpsertSource))
@@ -105,7 +108,19 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"busy": s.sched.Busy()})
+	cur, total, title := s.sched.Progress()
+	pending, err := s.st.CountPending()
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"busy":          s.sched.Busy(),
+		"current":       cur,
+		"total":         total,
+		"current_title": title,
+		"pending":       pending,
+	})
 }
 
 func (s *Server) handleSources(w http.ResponseWriter, r *http.Request) {
@@ -137,6 +152,21 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "started"})
+}
+
+// handleApply writes all pending bumps to the vault (last check's stored
+// numbers — no re-scrape), bumps each book, and stamps the updates applied.
+func (s *Server) handleApply(w http.ResponseWriter, r *http.Request) {
+	if s.sched.Busy() {
+		writeJSON(w, http.StatusConflict, errBody("a check is running — try again when it finishes"))
+		return
+	}
+	res, err := service.ApplyPending(s.st, vault.Today())
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 func (s *Server) handleAddBook(w http.ResponseWriter, r *http.Request) {

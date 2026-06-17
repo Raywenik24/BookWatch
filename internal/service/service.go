@@ -80,6 +80,8 @@ func RunCheck(sc *scraper.Client, st *store.Store, scanRoot string, write bool,
 		})
 
 		if st != nil {
+			// Detect-only runs leave the book's volume count untouched and log the
+			// bump as pending; only an explicit apply (write) bumps it + stamps it.
 			vol := r.Entry.Volumes
 			if wrote {
 				vol = r.Latest
@@ -88,8 +90,14 @@ func RunCheck(sc *scraper.Client, st *store.Store, scanRoot string, write bool,
 			if e != nil {
 				return sum, e
 			}
-			if e := st.RecordUpdate(bookID, r.Entry.Volumes, r.Latest, r.Entry.Link); e != nil {
+			upID, e := st.UpsertPendingUpdate(bookID, r.Entry.Volumes, r.Latest, r.Entry.Link)
+			if e != nil {
 				return sum, e
+			}
+			if wrote {
+				if e := st.MarkApplied(upID, bookID, r.Latest); e != nil {
+					return sum, e
+				}
 			}
 		}
 	}
@@ -126,4 +134,37 @@ func RunCheck(sc *scraper.Client, st *store.Store, scanRoot string, write bool,
 		}
 	}
 	return sum, nil
+}
+
+// ApplyResult is the outcome of applying pending updates to the vault.
+type ApplyResult struct {
+	Applied int          `json:"applied"`
+	Failed  int          `json:"failed"`
+	Updates []UpdateInfo `json:"updates"`
+}
+
+// ApplyPending writes every pending update's stored volume count to its vault
+// note (vault.UpdateVolumes), bumps the book, and stamps the update applied. It
+// applies the LAST check's numbers — it does not re-scrape.
+func ApplyPending(st *store.Store, today string) (ApplyResult, error) {
+	pending, err := st.ListPending()
+	if err != nil {
+		return ApplyResult{}, fmt.Errorf("list pending: %w", err)
+	}
+	var res ApplyResult
+	for _, p := range pending {
+		if e := vault.UpdateVolumes(p.Path, p.NewVolumes, today); e != nil {
+			res.Failed++
+			continue
+		}
+		if e := st.MarkApplied(p.ID, p.BookID, p.NewVolumes); e != nil {
+			return res, e
+		}
+		res.Applied++
+		res.Updates = append(res.Updates, UpdateInfo{
+			Title: p.Title, Link: p.Link,
+			OldVolumes: p.OldVolumes, NewVolumes: p.NewVolumes, Wrote: true,
+		})
+	}
+	return res, nil
 }

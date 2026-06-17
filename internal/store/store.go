@@ -87,6 +87,11 @@ var migrations = []string{
 		key   TEXT PRIMARY KEY,
 		value TEXT NOT NULL
 	);`,
+	// v2: pending-updates model. An update is "pending" until applied to the
+	// vault; applying stamps applied=1 + applied_at. Re-detection reuses the
+	// pending row (see UpsertPendingUpdate), so at most one pending per book.
+	`ALTER TABLE updates ADD COLUMN applied    INTEGER NOT NULL DEFAULT 0;
+	 ALTER TABLE updates ADD COLUMN applied_at TEXT;`,
 }
 
 func (s *Store) migrate() error {
@@ -229,10 +234,13 @@ type Update struct {
 	NewVolumes int    `json:"new_volumes"`
 	Link       string `json:"link"`
 	DetectedAt string `json:"detected_at"`
+	Applied    bool   `json:"applied"`
+	AppliedAt  string `json:"applied_at"`
 }
 
 func (s *Store) ListUpdates(limit int) ([]Update, error) {
-	rows, err := s.db.Query(`SELECT u.id, b.title, u.old_volumes, u.new_volumes, u.link, u.detected_at
+	rows, err := s.db.Query(`SELECT u.id, b.title, u.old_volumes, u.new_volumes, u.link,
+		u.detected_at, u.applied, COALESCE(u.applied_at,'')
 		FROM updates u JOIN books b ON b.id = u.book_id
 		ORDER BY u.detected_at DESC, u.id DESC LIMIT ?`, limit)
 	if err != nil {
@@ -242,9 +250,12 @@ func (s *Store) ListUpdates(limit int) ([]Update, error) {
 	var out []Update
 	for rows.Next() {
 		var u Update
-		if err := rows.Scan(&u.ID, &u.Title, &u.OldVolumes, &u.NewVolumes, &u.Link, &u.DetectedAt); err != nil {
+		var applied int
+		if err := rows.Scan(&u.ID, &u.Title, &u.OldVolumes, &u.NewVolumes, &u.Link,
+			&u.DetectedAt, &applied, &u.AppliedAt); err != nil {
 			return nil, err
 		}
+		u.Applied = applied != 0
 		out = append(out, u)
 	}
 	return out, rows.Err()
@@ -418,10 +429,78 @@ func (s *Store) DeleteBook(id int64) error {
 	return err
 }
 
-// RecordUpdate logs a detected new-volume event.
-func (s *Store) RecordUpdate(bookID int64, oldV, newV int, link string) error {
-	_, err := s.db.Exec(
+// UpsertPendingUpdate records a detected new-volume event as PENDING. There is
+// at most one pending row per book: a re-detection refreshes the existing
+// pending row instead of stacking duplicates. Applied rows are history and are
+// left alone, so a fresh detection after an apply opens a new pending row.
+func (s *Store) UpsertPendingUpdate(bookID int64, oldV, newV int, link string) (int64, error) {
+	res, err := s.db.Exec(
+		`UPDATE updates SET old_volumes=?, new_volumes=?, link=?, detected_at=?
+		 WHERE book_id=? AND applied=0`,
+		oldV, newV, link, now(), bookID)
+	if err != nil {
+		return 0, err
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		var id int64
+		err = s.db.QueryRow(`SELECT id FROM updates WHERE book_id=? AND applied=0`, bookID).Scan(&id)
+		return id, err
+	}
+	res, err = s.db.Exec(
 		`INSERT INTO updates(book_id, old_volumes, new_volumes, link, detected_at) VALUES(?,?,?,?,?)`,
 		bookID, oldV, newV, link, now())
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+// PendingUpdate is a not-yet-applied bump joined to its book's note path.
+type PendingUpdate struct {
+	ID         int64
+	BookID     int64
+	Title      string
+	Path       string
+	Link       string
+	OldVolumes int
+	NewVolumes int
+}
+
+// ListPending returns every pending (un-applied) update with its book's path.
+func (s *Store) ListPending() ([]PendingUpdate, error) {
+	rows, err := s.db.Query(`SELECT u.id, u.book_id, b.title, b.path, u.link, u.old_volumes, u.new_volumes
+		FROM updates u JOIN books b ON b.id = u.book_id
+		WHERE u.applied=0 ORDER BY b.title COLLATE NOCASE`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []PendingUpdate
+	for rows.Next() {
+		var p PendingUpdate
+		if err := rows.Scan(&p.ID, &p.BookID, &p.Title, &p.Path, &p.Link, &p.OldVolumes, &p.NewVolumes); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// CountPending returns how many updates are waiting to be applied.
+func (s *Store) CountPending() (int, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM updates WHERE applied=0`).Scan(&n)
+	return n, err
+}
+
+// MarkApplied stamps an update applied and bumps its book to newVolumes.
+func (s *Store) MarkApplied(updateID, bookID int64, newVolumes int) error {
+	ts := now()
+	if _, err := s.db.Exec(
+		`UPDATE updates SET applied=1, applied_at=? WHERE id=?`, ts, updateID); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(
+		`UPDATE books SET volumes=?, updated_at=? WHERE id=?`, newVolumes, ts, bookID)
 	return err
 }

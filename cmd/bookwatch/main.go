@@ -54,12 +54,14 @@ func runServe(argv []string) {
 
 	sc := scraper.New(cfg.UserAgent, cfg.Timeout)
 
-	sched := scheduler.New(func() (service.CheckSummary, error) {
+	sched := scheduler.New(func(progress func(i, total int, title string)) (service.CheckSummary, error) {
 		scanRoot := cfg.ScanRoot
 		if v, ok, _ := st.GetSetting("scan_root"); ok && v != "" {
 			scanRoot = v
 		}
-		return service.RunCheck(sc, st, scanRoot, true, nil)
+		// Detect-only: a check never writes the vault. Writes happen on an
+		// explicit apply (POST /api/apply), never on a cron/manual check.
+		return service.RunCheck(sc, st, scanRoot, false, progress)
 	})
 	if err := sched.Start(cfg.CheckCron); err != nil {
 		log.Fatal("scheduler: ", err)
