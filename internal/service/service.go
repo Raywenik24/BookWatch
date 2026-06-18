@@ -60,7 +60,7 @@ func RunCheck(sc *scraper.Client, st *store.Store, scanRoot string, write bool,
 		}
 		if !r.HasNew {
 			if st != nil {
-				if _, e := st.UpsertBook(r.Entry.Title, r.Entry.Link, r.Entry.Path, r.Entry.Volumes); e != nil {
+				if _, e := st.UpsertBook(r.Entry.Title, r.Entry.Link, r.Entry.Path, r.Entry.Volumes, r.Entry.Cover); e != nil {
 					return sum, e
 				}
 			}
@@ -86,7 +86,7 @@ func RunCheck(sc *scraper.Client, st *store.Store, scanRoot string, write bool,
 			if wrote {
 				vol = r.Latest
 			}
-			bookID, e := st.UpsertBook(r.Entry.Title, r.Entry.Link, r.Entry.Path, vol)
+			bookID, e := st.UpsertBook(r.Entry.Title, r.Entry.Link, r.Entry.Path, vol, r.Entry.Cover)
 			if e != nil {
 				return sum, e
 			}

@@ -5,9 +5,14 @@ package server
 import (
 	"embed"
 	"encoding/json"
+	"io"
 	"log"
+	"mime"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 
 	"bookwatch/internal/config"
@@ -28,6 +33,9 @@ type Server struct {
 	st    *store.Store
 	sc    *scraper.Client
 	sched *scheduler.Scheduler
+
+	coverMu  sync.Mutex
+	coverIdx map[string]string // basename → abs path, lazy vault-wide cover index
 }
 
 func New(cfg config.Config, st *store.Store, sc *scraper.Client, sched *scheduler.Scheduler) *Server {
@@ -43,6 +51,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/status", s.handleStatus)
 	mux.HandleFunc("GET /api/sources", s.handleSources)
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
+	mux.HandleFunc("GET /api/cover/{id}", s.handleCover)
 
 	mux.HandleFunc("POST /api/check", s.auth(s.handleCheck))
 	mux.HandleFunc("POST /api/apply", s.auth(s.handleApply))
@@ -144,6 +153,42 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleCover streams a book's cover from the effective attachments dir.
+// Open like the other reads. filepath.Base guards against path escapes.
+func (s *Server) handleCover(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errBody("bad id"))
+		return
+	}
+	cover, err := s.st.BookCover(id)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if cover == "" {
+		http.NotFound(w, r)
+		return
+	}
+	p := s.resolveCover(cover)
+	if p == "" {
+		http.NotFound(w, r)
+		return
+	}
+	f, err := os.Open(p)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	defer f.Close()
+	ct := mime.TypeByExtension(filepath.Ext(p))
+	if ct == "" {
+		ct = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", ct)
+	io.Copy(w, f)
+}
+
 // ── write handlers ────────────────────────────────────────────
 
 func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
@@ -192,7 +237,7 @@ func (s *Server) handleAddBook(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, code, errBody(err.Error()))
 		return
 	}
-	if _, err := s.st.UpsertBook(res.Title, body.URL, res.Path, res.Volumes); err != nil {
+	if _, err := s.st.UpsertBook(res.Title, body.URL, res.Path, res.Volumes, res.Cover); err != nil {
 		writeErr(w, err)
 		return
 	}
@@ -310,6 +355,43 @@ func (s *Server) handleSetSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 // ── helpers ───────────────────────────────────────────────────
+
+// resolveCover maps a cover attachment filename to an absolute path. It checks
+// the configured attachments dir first, then (Obsidian-style) the rest of the
+// vault by basename — vaults often keep attachments in per-folder _attachments
+// dirs rather than one fixed location. The vault-wide index is built lazily and
+// cached; newly added covers land in the configured dir and hit the fast path.
+func (s *Server) resolveCover(name string) string {
+	name = filepath.Base(name)
+	vaultDir := s.effective("vault_dir", s.cfg.VaultDir)
+	direct := filepath.Join(vaultDir,
+		filepath.FromSlash(s.effective("attachments_dir", s.cfg.AttachmentsDir)), name)
+	if _, err := os.Stat(direct); err == nil {
+		return direct
+	}
+	s.coverMu.Lock()
+	defer s.coverMu.Unlock()
+	if s.coverIdx == nil {
+		s.coverIdx = indexVaultFiles(vaultDir)
+	}
+	return s.coverIdx[name]
+}
+
+// indexVaultFiles walks root once, mapping each file's basename to its path
+// (first occurrence wins). Used as the Obsidian-style fallback cover lookup.
+func indexVaultFiles(root string) map[string]string {
+	idx := map[string]string{}
+	filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		if _, ok := idx[d.Name()]; !ok {
+			idx[d.Name()] = p
+		}
+		return nil
+	})
+	return idx
+}
 
 // effective returns a settings-table override for key, else the cfg fallback.
 func (s *Server) effective(key, fallback string) string {

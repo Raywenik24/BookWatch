@@ -18,6 +18,7 @@ import (
 var (
 	linkRE    = regexp.MustCompile(`(?i)^Link:\s*(https?://\S+)`)
 	volumesRE = regexp.MustCompile(`(?i)^Volumes:\s*(\d+)`)
+	coverRE   = regexp.MustCompile(`(?i)^Cover:\s*"?\[\[(.+?)\]\]"?`)
 
 	// Prefix matchers for line-based rewriting.
 	volPrefixRE = regexp.MustCompile(`(?i)^Volumes:\s*`)
@@ -30,6 +31,7 @@ type Entry struct {
 	Link    string
 	Volumes int
 	Path    string
+	Cover   string // attachment filename from `Cover: "[[file]]"` (no path)
 }
 
 // Scan walks root for .md notes tagged #LightNovel that carry a Link,
@@ -69,6 +71,7 @@ func parse(path string) (Entry, bool, error) {
 	var (
 		link        string
 		volumes     int
+		cover       string
 		isLightNvl  bool
 		frontmatter bool
 		seenFence   bool
@@ -100,6 +103,9 @@ func parse(path string) (Entry, bool, error) {
 		if m := volumesRE.FindStringSubmatch(line); m != nil {
 			volumes, _ = strconv.Atoi(m[1])
 		}
+		if m := coverRE.FindStringSubmatch(line); m != nil {
+			cover = strings.TrimSpace(m[1])
+		}
 	}
 	if err := sc.Err(); err != nil {
 		return Entry{}, false, err
@@ -110,7 +116,7 @@ func parse(path string) (Entry, bool, error) {
 	}
 
 	title := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-	return Entry{Title: title, Link: link, Volumes: volumes, Path: path}, true, nil
+	return Entry{Title: title, Link: link, Volumes: volumes, Path: path, Cover: cover}, true, nil
 }
 
 // Today returns the date stamp used for Last Update (YYYY-MM-DD).

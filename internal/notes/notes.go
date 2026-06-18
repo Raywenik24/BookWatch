@@ -45,6 +45,7 @@ type Result struct {
 	Path    string
 	Title   string
 	Volumes int
+	Cover   string // cover attachment filename (no path)
 }
 
 // IsValidURL ports note_sanitization.is_valid_url.
@@ -136,7 +137,7 @@ func Create(o Options, sc *scraper.Client, dup DupChecker, rl scraper.Rules, sou
 		return Result{}, err
 	}
 
-	return Result{Path: mdPath, Title: title, Volumes: nd.Volumes}, nil
+	return Result{Path: mdPath, Title: title, Volumes: nd.Volumes, Cover: coverName}, nil
 }
 
 func coverExt(coverURL string) string {

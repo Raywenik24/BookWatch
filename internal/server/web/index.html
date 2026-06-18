@@ -38,6 +38,7 @@
   .rule-grid input { min-width: 0; width: 100%; }
   button.btn { background: var(--peach); border: 0; color: var(--crust); font-weight: 600; cursor: pointer; }
   button.btn.ghost { background: var(--surface0); color: var(--text); }
+  button.btn.ghost.active { background: var(--surface1); color: var(--text); }
   button.btn:disabled { opacity: .5; cursor: default; }
   table { width: 100%; border-collapse: collapse; }
   th, td { text-align: left; padding: .4rem .5rem; border-bottom: 1px solid var(--surface0); font-size: .9rem; vertical-align: top; }
@@ -75,6 +76,32 @@
   .badge { font-size: .75rem; padding: .1rem .4rem; border-radius: 4px; background: var(--surface0); color: var(--subtext); }
   .badge.pending { background: color-mix(in srgb, var(--peach) 25%, var(--surface0)); color: var(--peach); }
   .badge.applied { background: color-mix(in srgb, var(--green) 22%, var(--surface0)); color: var(--green); }
+  /* tracked-books grid (cover gallery) */
+  .viewtoggle { display: flex; gap: .25rem; flex: 0 0 auto; }
+  .viewtoggle .btn { padding: .35rem .7rem; }
+  .cover-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: .8rem; margin: .6rem 0; }
+  .cover-grid[hidden] { display: none; }
+  .cover-card { position: relative; background: var(--mantle); border: 1px solid var(--surface0);
+        border-radius: 8px; overflow: hidden; transition: border-color .15s; }
+  .cover-card:hover { border-color: var(--mauve); }
+  .cover-link { display: flex; flex-direction: column; color: var(--text); }
+  .cover-link:hover { text-decoration: none; }
+  .cover-link:visited { color: var(--text); }
+  .cover-img { width: 100%; aspect-ratio: 2 / 3; object-fit: cover; display: block; background: var(--surface0); }
+  .cover-card.nocover .cover-link { aspect-ratio: 2 / 3; align-items: center; justify-content: center; padding: .6rem; }
+  .cover-title { padding: .45rem .55rem; font-size: .85rem; line-height: 1.3;
+        overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
+  .cover-card.nocover .cover-title { text-align: center; }
+  .cover-title mark { background: transparent; color: var(--mauve); font-weight: 600; }
+  .cover-vol { position: absolute; top: .4rem; left: .4rem; font-size: .72rem; font-weight: 600; padding: .1rem .4rem;
+        border-radius: 4px; border: 1px solid var(--mauve); color: var(--mauve);
+        background: color-mix(in srgb, var(--crust) 90%, transparent); }
+  .cover-x { position: absolute; top: .3rem; right: .3rem; width: 1.5rem; height: 1.5rem; padding: 0;
+        border: 0; border-radius: 50%; cursor: pointer; font-size: 1.05rem; line-height: 1; opacity: 0;
+        background: color-mix(in srgb, var(--crust) 78%, transparent); color: var(--text); transition: opacity .15s; }
+  .cover-card:hover .cover-x, .cover-x:focus { opacity: 1; }
+  .cover-x:hover { background: var(--red); color: var(--crust); }
+  .cover-x:disabled { opacity: .5; cursor: default; }
   /* check progress bar */
   #progress { margin: .4rem 0; }
   #progress[hidden] { display: none; }
@@ -134,9 +161,16 @@
         <button class="btn" id="addBtn" onclick="addBook()">Add</button>
       </div>
       <h2>Tracked books</h2>
-      <div class="row"><input id="bookFilter" placeholder="search title…" autocomplete="off" spellcheck="false" oninput="renderBooks(this.value)"></div>
-      <table><thead><tr><th>Title</th><th>Vol</th><th>Link</th><th>Last checked</th><th></th></tr></thead>
+      <div class="row">
+        <input id="bookFilter" placeholder="search title…" autocomplete="off" spellcheck="false" oninput="renderBooks(this.value)">
+        <div class="viewtoggle">
+          <button id="viewTable" class="btn ghost" onclick="setBookView('table')">Table</button>
+          <button id="viewGrid" class="btn ghost" onclick="setBookView('grid')">Grid</button>
+        </div>
+      </div>
+      <table id="booksTable"><thead><tr><th>Title</th><th>Vol</th><th>Link</th><th>Last checked</th><th></th></tr></thead>
       <tbody id="booksBody"><tr><td>loading…</td></tr></tbody></table>
+      <div id="booksGrid" class="cover-grid" hidden></div>
     </section>
 
     <!-- SOURCES -->
@@ -370,17 +404,45 @@ async function loadBooks(){
   booksData = await getJSON('/api/books') || [];
   renderBooks($('bookFilter') ? $('bookFilter').value : '');
 }
+let bookView = lsGet('book_view') === 'grid' ? 'grid' : 'table';
+function setBookView(v){
+  bookView = (v === 'grid') ? 'grid' : 'table';
+  lsSet('book_view', bookView);
+  $('viewTable').classList.toggle('active', bookView === 'table');
+  $('viewGrid').classList.toggle('active', bookView === 'grid');
+  $('booksTable').hidden = bookView !== 'table';
+  $('booksGrid').hidden  = bookView !== 'grid';
+  renderBooks($('bookFilter') ? $('bookFilter').value : '');
+}
+const UNTRACK_TIP = 'Remove from this list only — the note and cover are kept. If the note still exists it reappears on the next check.';
 function renderBooks(q){
   q = (q || '').trim();
   let list = booksData;
   if(q) list = list.map(x => ({x, s: fzScore(q, x.title)})).filter(e => e.s >= 0)
                    .sort((a,b) => b.s - a.s).map(e => e.x);
+  if(bookView === 'grid') renderBooksGrid(list, q); else renderBooksTable(list, q);
+}
+function renderBooksTable(list, q){
   $('booksBody').innerHTML = list.length ? list.map(x =>
     `<tr><td>${fzHighlight(x.title, q)}</td><td>${x.volumes}</td><td><a href="${esc(x.link)}" target="_blank">link</a></td>
      <td class="nowrap"><small>${esc(fmtTime(x.last_checked_at))}</small></td>
-     <td><button class="btn ghost" title="Remove from this list only — the note and cover are kept. If the note still exists it reappears on the next check." onclick="untrack(${x.id}, this)">Untrack</button></td></tr>`).join('')
+     <td><button class="btn ghost" title="${esc(UNTRACK_TIP)}" onclick="untrack(${x.id}, this)">Untrack</button></td></tr>`).join('')
     : (q ? '<tr><td><span class="muted">no matches</span></td></tr>'
          : '<tr><td><span class="muted">none</span></td></tr>');
+}
+function renderBooksGrid(list, q){
+  $('booksGrid').innerHTML = list.length ? list.map(x => {
+    const img = x.cover
+      ? `<img class="cover-img" src="/api/cover/${x.id}" alt="" loading="lazy" onerror="this.closest('.cover-card').classList.add('nocover');this.remove();">`
+      : '';
+    const vol = x.volumes ? `<span class="cover-vol" title="${x.volumes} volume${x.volumes===1?'':'s'}">${x.volumes}</span>` : '';
+    return `<div class="cover-card${x.cover ? '' : ' nocover'}">
+      <a class="cover-link" href="${esc(x.link)}" target="_blank" title="${esc(x.title)}">
+        ${img}<span class="cover-title">${fzHighlight(x.title, q)}</span></a>
+      ${vol}
+      <button class="cover-x" title="${esc(UNTRACK_TIP)}" aria-label="Untrack" onclick="untrack(${x.id}, this)">&times;</button>
+    </div>`;
+  }).join('') : `<div class="muted">${q ? 'no matches' : 'none'}</div>`;
 }
 async function untrack(id, btn){
   btn.disabled = true;
@@ -572,6 +634,7 @@ async function saveSettings(){
 /* init */
 applyTheme(lsGet('pw_theme') || 'mocha');
 $('token').value = token();
+setBookView(bookView);
 loadUpdates(); loadBooks(); loadLogs(); loadSources(); loadSettings(); refreshStatus();
 </script>
 </body>

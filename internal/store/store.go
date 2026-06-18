@@ -178,17 +178,21 @@ func (s *Store) FinishRun(id int64, checked, updated, errors int, summary string
 	return err
 }
 
-// UpsertBook inserts or updates a book by link, returning its id.
-func (s *Store) UpsertBook(title, link, path string, volumes int) (int64, error) {
+// UpsertBook inserts or updates a book by link, returning its id. An empty
+// cover never clears an existing one — a re-check before the next note parse
+// keeps whatever was already stored.
+func (s *Store) UpsertBook(title, link, path string, volumes int, cover string) (int64, error) {
 	ts := now()
 	_, err := s.db.Exec(`
-		INSERT INTO books(title, link, path, volumes, created_at, updated_at, last_checked_at)
-		VALUES(?,?,?,?,?,?,?)
+		INSERT INTO books(title, link, path, volumes, cover, created_at, updated_at, last_checked_at)
+		VALUES(?,?,?,?,?,?,?,?)
 		ON CONFLICT(link) DO UPDATE SET
 			title=excluded.title, path=excluded.path,
-			volumes=excluded.volumes, updated_at=excluded.updated_at,
+			volumes=excluded.volumes,
+			cover=CASE WHEN excluded.cover='' THEN books.cover ELSE excluded.cover END,
+			updated_at=excluded.updated_at,
 			last_checked_at=excluded.last_checked_at`,
-		title, link, path, volumes, ts, ts, ts)
+		title, link, path, volumes, cover, ts, ts, ts)
 	if err != nil {
 		return 0, err
 	}
@@ -205,12 +209,13 @@ type Book struct {
 	Link          string `json:"link"`
 	Path          string `json:"path"`
 	Volumes       int    `json:"volumes"`
+	Cover         string `json:"cover"`
 	UpdatedAt     string `json:"updated_at"`
 	LastCheckedAt string `json:"last_checked_at"`
 }
 
 func (s *Store) ListBooks() ([]Book, error) {
-	rows, err := s.db.Query(`SELECT id, title, link, path, volumes, updated_at,
+	rows, err := s.db.Query(`SELECT id, title, link, path, volumes, cover, updated_at,
 		COALESCE(last_checked_at,'') FROM books ORDER BY title COLLATE NOCASE`)
 	if err != nil {
 		return nil, err
@@ -219,7 +224,7 @@ func (s *Store) ListBooks() ([]Book, error) {
 	var out []Book
 	for rows.Next() {
 		var b Book
-		if err := rows.Scan(&b.ID, &b.Title, &b.Link, &b.Path, &b.Volumes, &b.UpdatedAt, &b.LastCheckedAt); err != nil {
+		if err := rows.Scan(&b.ID, &b.Title, &b.Link, &b.Path, &b.Volumes, &b.Cover, &b.UpdatedAt, &b.LastCheckedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, b)
@@ -420,6 +425,16 @@ func (s *Store) BookExists(link string) (bool, error) {
 	var n int
 	err := s.db.QueryRow(`SELECT COUNT(*) FROM books WHERE link=?`, link).Scan(&n)
 	return n > 0, err
+}
+
+// BookCover returns a book's cover attachment filename (empty if none / no row).
+func (s *Store) BookCover(id int64) (string, error) {
+	var cover string
+	err := s.db.QueryRow(`SELECT cover FROM books WHERE id=?`, id).Scan(&cover)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return cover, err
 }
 
 // DeleteBook removes a book's DB row (and its updates, via cascade). The vault
