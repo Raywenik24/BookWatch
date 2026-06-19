@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -64,6 +66,50 @@ func TestCheck_flagsNewAndCapturesErrors(t *testing.T) {
 	}
 	if progressCalls != 3 {
 		t.Errorf("progress called %d times, want 3", progressCalls)
+	}
+}
+
+func TestCheck_concurrencyBoundedAndOrdered(t *testing.T) {
+	t.Setenv("BOOKWATCH_CHECK_CONCURRENCY", "3")
+	var inflight, maxSeen int32
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&inflight, 1)
+		mu.Lock()
+		if n > maxSeen {
+			maxSeen = n
+		}
+		mu.Unlock()
+		time.Sleep(20 * time.Millisecond)
+		atomic.AddInt32(&inflight, -1)
+		w.Write([]byte(novelHTML(2)))
+	}))
+	defer srv.Close()
+
+	sc := scraper.New("t", 5*time.Second)
+	resolve := func(string) scraper.Rules { return scraper.DefaultRules() }
+	var entries []vault.Entry
+	for i := 0; i < 12; i++ {
+		entries = append(entries, vault.Entry{
+			Title: fmt.Sprintf("B%02d", i), Link: srv.URL + fmt.Sprintf("/%d", i), Volumes: 1,
+		})
+	}
+
+	res := Check(entries, sc, resolve, nil)
+
+	if int(maxSeen) > 3 {
+		t.Errorf("max concurrent fetches = %d, want <= 3", maxSeen)
+	}
+	if int(maxSeen) < 2 {
+		t.Errorf("expected parallelism, max concurrent = %d", maxSeen)
+	}
+	for i := range entries {
+		if res[i].Entry.Title != entries[i].Title {
+			t.Errorf("result %d out of order: %q != %q", i, res[i].Entry.Title, entries[i].Title)
+		}
+		if !res[i].HasNew || res[i].Latest != 2 {
+			t.Errorf("result %d wrong: %+v", i, res[i])
+		}
 	}
 }
 
