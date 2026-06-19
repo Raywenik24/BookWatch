@@ -1,6 +1,8 @@
 package store
 
 import (
+	"context"
+	"database/sql"
 	"path/filepath"
 	"testing"
 )
@@ -133,6 +135,64 @@ func TestPendingUpdate_onePerBookAndApply(t *testing.T) {
 	}
 	if n, _ := st.CountPending(); n != 1 {
 		t.Errorf("expected 1 new pending, got %d", n)
+	}
+}
+
+// Pragmas must apply to every pooled connection, not just the one Open ran on.
+// Holding c1 forces the pool to open a second physical connection for c2; with
+// the old once-via-Exec approach that second connection would report
+// foreign_keys=0 / busy_timeout=0. Regression guard for the DSN-pragma fix.
+func TestOpen_pragmasOnEveryConnection(t *testing.T) {
+	st := openTemp(t)
+	st.db.SetMaxOpenConns(3)
+	ctx := context.Background()
+
+	c1, err := st.db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c1.Close()
+	c2, err := st.db.Conn(ctx) // forced new conn: c1 is still held
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c2.Close()
+
+	for i, c := range []*sql.Conn{c1, c2} {
+		var fk, bt int
+		if err := c.QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&fk); err != nil {
+			t.Fatal(err)
+		}
+		if fk != 1 {
+			t.Errorf("conn %d: foreign_keys=%d, want 1", i, fk)
+		}
+		if err := c.QueryRowContext(ctx, "PRAGMA busy_timeout").Scan(&bt); err != nil {
+			t.Fatal(err)
+		}
+		if bt != 5000 {
+			t.Errorf("conn %d: busy_timeout=%d, want 5000", i, bt)
+		}
+	}
+}
+
+// Cascade delete must work even on a connection that did not run Open's pragmas.
+func TestDeleteBook_cascadesOnFreshConnection(t *testing.T) {
+	st := openTemp(t)
+	st.db.SetMaxOpenConns(2)
+	// Pin one connection so the delete below is forced onto a different one.
+	pin, err := st.db.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pin.Close()
+
+	bookID, _ := st.UpsertBook("T", "https://x/casc", "/p.md", 2, "")
+	st.UpsertPendingUpdate(bookID, 2, 3, "https://x/casc")
+	if err := st.DeleteBook(bookID); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := st.CountPending(); n != 0 {
+		t.Errorf("cascade did not fire on a fresh connection: %d updates remain", n)
 	}
 }
 

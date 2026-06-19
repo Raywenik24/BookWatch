@@ -16,13 +16,17 @@ type Store struct{ db *sql.DB }
 
 // Open opens (creating if needed) the DB, runs migrations, and seeds defaults.
 func Open(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", path)
+	// Pragmas live in the DSN so they apply to EVERY connection the pool opens,
+	// not just the first. foreign_keys and busy_timeout are per-connection
+	// settings: running them once via db.Exec would leave every other pooled
+	// connection with foreign_keys=OFF (breaking ON DELETE CASCADE → orphan
+	// updates/rules rows) and busy_timeout=0 (instant "database is locked" when
+	// the scheduler goroutine and an HTTP write collide). journal_mode=WAL is
+	// persisted in the file header, but is set here too for a fresh DB. modernc
+	// runs each _pragma on connect.
+	dsn := path + "?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)"
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
-		return nil, err
-	}
-	// busy_timeout lets a writer wait instead of failing instantly with
-	// "database is locked" when the scheduler goroutine and an HTTP write collide.
-	if _, err := db.Exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;`); err != nil {
 		return nil, err
 	}
 	s := &Store{db: db}
