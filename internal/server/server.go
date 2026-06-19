@@ -44,7 +44,13 @@ type Server struct {
 
 	coverMu  sync.Mutex
 	coverIdx map[string]string // basename → abs path, lazy vault-wide cover index
+	coverAt  time.Time         // when coverIdx was last built (for TTL invalidation)
 }
+
+// coverIdxTTL is how long the vault-wide cover index is reused before a rebuild,
+// so covers added after startup eventually resolve without a restart. A var so
+// tests can force a rebuild.
+var coverIdxTTL = 5 * time.Minute
 
 func New(cfg config.Config, st *store.Store, sc *scraper.Client, sched *scheduler.Scheduler) *Server {
 	return &Server{cfg: cfg, st: st, sc: sc, sched: sched}
@@ -414,12 +420,29 @@ func (s *Server) resolveCover(name string) string {
 	if _, err := os.Stat(direct); err == nil {
 		return direct
 	}
+	return s.coverIndex(vaultDir)[name]
+}
+
+// coverIndex returns the vault-wide basename→path index, rebuilding it when it's
+// missing or older than coverIdxTTL. The vault walk runs WITHOUT the lock held,
+// so concurrent cover requests aren't serialized behind a full-vault walk; the
+// lock is only taken to read and to swap in the rebuilt map. A rare double-walk
+// from two simultaneous misses is harmless (both produce the same map).
+func (s *Server) coverIndex(vaultDir string) map[string]string {
 	s.coverMu.Lock()
-	defer s.coverMu.Unlock()
-	if s.coverIdx == nil {
-		s.coverIdx = indexVaultFiles(vaultDir)
+	idx := s.coverIdx
+	fresh := idx != nil && time.Since(s.coverAt) < coverIdxTTL
+	s.coverMu.Unlock()
+	if fresh {
+		return idx
 	}
-	return s.coverIdx[name]
+
+	built := indexVaultFiles(vaultDir) // walk off-lock
+
+	s.coverMu.Lock()
+	s.coverIdx, s.coverAt = built, time.Now()
+	s.coverMu.Unlock()
+	return built
 }
 
 // indexVaultFiles walks root once, mapping each file's basename to its path

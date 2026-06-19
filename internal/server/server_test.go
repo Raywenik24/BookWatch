@@ -143,6 +143,31 @@ func TestBadID_400(t *testing.T) {
 	}
 }
 
+// A cover added after the index was first built must resolve without a restart
+// (TTL forced to 0 here so the rebuild happens immediately).
+func TestCover_indexInvalidates(t *testing.T) {
+	old := coverIdxTTL
+	coverIdxTTL = 0
+	defer func() { coverIdxTTL = old }()
+
+	h, st, vaultDir := newTestServer(t)
+	// Non-standard dir → resolution must go through the vault-wide index, not the
+	// fast direct-path check.
+	sub := filepath.Join(vaultDir, "elsewhere")
+	os.MkdirAll(sub, 0o755)
+	id, _ := st.UpsertBook("Late", "https://x/late", "", 1, "late.png")
+
+	// Not on disk yet → 404, and the index gets built without it.
+	if rec := do(h, "GET", fmt.Sprintf("/api/cover/%d", id), "", ""); rec.Code != http.StatusNotFound {
+		t.Fatalf("pre-create: got %d, want 404", rec.Code)
+	}
+	os.WriteFile(filepath.Join(sub, "late.png"), []byte("LATEPNG"), 0o644)
+	rec := do(h, "GET", fmt.Sprintf("/api/cover/%d", id), "", "")
+	if rec.Code != http.StatusOK || rec.Body.String() != "LATEPNG" {
+		t.Errorf("post-create without restart: code=%d body=%q", rec.Code, rec.Body.String())
+	}
+}
+
 func TestCover_serveMissingAndTraversalGuard(t *testing.T) {
 	h, st, vaultDir := newTestServer(t)
 
