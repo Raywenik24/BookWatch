@@ -9,10 +9,12 @@ import (
 
 // Result is the outcome for one entry.
 type Result struct {
-	Entry  vault.Entry
-	Latest int
-	HasNew bool // Latest > Entry.Volumes
-	Err    error
+	Entry      vault.Entry
+	Latest     int
+	Count      int  // volume-list items found; 0 (with no error) usually means the rules broke
+	HasNew     bool // Latest > Entry.Volumes
+	Suspicious bool // scrape succeeded but looks wrong — likely broken rules (see Check)
+	Err        error
 }
 
 // Check fetches each entry's latest volume and flags new ones. resolve maps a
@@ -29,12 +31,20 @@ func Check(
 		if progress != nil {
 			progress(i+1, len(entries), e.Title)
 		}
-		latest, _, err := sc.LatestVolume(e.Link, resolve(e.Link))
+		latest, count, err := sc.LatestVolume(e.Link, resolve(e.Link))
+		hasNew := err == nil && latest > e.Volumes
+		// A 200 that yields no list items (count==0) or fewer volumes than we
+		// already recorded (a regression) almost always means the site's layout
+		// changed and the selectors no longer match — flag it rather than
+		// silently report "no update".
+		suspicious := err == nil && !hasNew && (count == 0 || latest < e.Volumes)
 		results = append(results, Result{
-			Entry:  e,
-			Latest: latest,
-			HasNew: err == nil && latest > e.Volumes,
-			Err:    err,
+			Entry:      e,
+			Latest:     latest,
+			Count:      count,
+			HasNew:     hasNew,
+			Suspicious: suspicious,
+			Err:        err,
 		})
 	}
 	return results

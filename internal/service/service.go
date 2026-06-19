@@ -26,10 +26,11 @@ type UpdateInfo struct {
 
 // CheckSummary is the outcome of a run.
 type CheckSummary struct {
-	Checked int          `json:"checked"`
-	Updated int          `json:"updated"`
-	Errors  int          `json:"errors"`
-	Updates []UpdateInfo `json:"updates"`
+	Checked    int          `json:"checked"`
+	Updated    int          `json:"updated"`
+	Errors     int          `json:"errors"`
+	Suspicious int          `json:"suspicious"` // scraped OK but looked wrong (broken rules?)
+	Updates    []UpdateInfo `json:"updates"`
 }
 
 // RunCheck scans scanRoot, checks each book, optionally writes vault updates,
@@ -61,6 +62,18 @@ func RunCheck(sc *scraper.Client, st *store.Store, scanRoot string, write bool,
 			continue
 		}
 		if !r.HasNew {
+			// A scrape that succeeded but read no list items / fewer volumes than
+			// recorded is logged so a silently-broken source can't masquerade as
+			// "no update". The book's volumes are left as-is (we don't trust the
+			// bad read).
+			if r.Suspicious {
+				sum.Suspicious++
+				if st != nil {
+					st.LogEvent("anomaly", fmt.Sprintf(
+						"%q: scrape read %d volume(s) (have %d) — the source's rules may be broken",
+						r.Entry.Title, r.Latest, r.Entry.Volumes))
+				}
+			}
 			if st != nil {
 				if _, e := st.UpsertBook(r.Entry.Title, r.Entry.Link, r.Entry.Path, r.Entry.Volumes, r.Entry.Cover); e != nil {
 					return sum, e
@@ -134,7 +147,7 @@ func RunCheck(sc *scraper.Client, st *store.Store, scanRoot string, write bool,
 	}
 
 	if st != nil {
-		summary := fmt.Sprintf("%d notes, %d updates, %d errors", sum.Checked, sum.Updated, sum.Errors)
+		summary := fmt.Sprintf("%d notes, %d updates, %d errors, %d suspicious", sum.Checked, sum.Updated, sum.Errors, sum.Suspicious)
 		if e := st.FinishRun(runID, sum.Checked, sum.Updated, sum.Errors, summary); e != nil {
 			return sum, e
 		}

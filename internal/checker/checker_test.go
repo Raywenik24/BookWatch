@@ -66,3 +66,36 @@ func TestCheck_flagsNewAndCapturesErrors(t *testing.T) {
 		t.Errorf("progress called %d times, want 3", progressCalls)
 	}
 }
+
+func TestCheck_flagsSuspiciousScrapes(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/broken":
+			// 200, valid-ish page, but no volume list at all → count 0.
+			w.Write([]byte(`<html><body><h1 class="post-title entry-title">X</h1></body></html>`))
+		default:
+			w.Write([]byte(novelHTML(3)))
+		}
+	}))
+	defer srv.Close()
+
+	sc := scraper.New("t", 5*time.Second)
+	resolve := func(string) scraper.Rules { return scraper.DefaultRules() }
+
+	entries := []vault.Entry{
+		{Title: "Broken", Link: srv.URL + "/broken", Volumes: 5},     // count 0 → suspicious
+		{Title: "Regress", Link: srv.URL + "/regress", Volumes: 10},  // reads 3 < 10 → suspicious
+		{Title: "Healthy", Link: srv.URL + "/ok", Volumes: 3},        // reads 3 == 3 → fine
+	}
+	res := Check(entries, sc, resolve, nil)
+
+	if !res[0].Suspicious || res[0].HasNew {
+		t.Errorf("no-list page should be suspicious, not new: %+v", res[0])
+	}
+	if !res[1].Suspicious || res[1].HasNew {
+		t.Errorf("volume regression should be suspicious: %+v", res[1])
+	}
+	if res[2].Suspicious {
+		t.Errorf("a healthy unchanged book must not be flagged: %+v", res[2])
+	}
+}

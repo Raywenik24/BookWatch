@@ -97,6 +97,41 @@ func TestRunCheck_detectOnlyThenApply(t *testing.T) {
 	}
 }
 
+func TestRunCheck_logsScrapeAnomaly(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 200 but no volume list → count 0 → suspicious, not an error.
+		w.Write([]byte(`<html><body><h1 class="post-title entry-title">N</h1></body></html>`))
+	}))
+	defer srv.Close()
+
+	vaultDir := t.TempDir()
+	writeNote(t, vaultDir, "Broken", srv.URL+"/x", 4)
+	st := openStore(t)
+	sc := scraper.New("t", 5*time.Second)
+
+	sum, err := RunCheck(sc, st, vaultDir, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.Suspicious != 1 || sum.Updated != 0 || sum.Errors != 0 {
+		t.Fatalf("expected 1 suspicious / 0 updates / 0 errors: %+v", sum)
+	}
+	evs, _ := st.ListEvents(10)
+	found := false
+	for _, e := range evs {
+		if e.Kind == "anomaly" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected an anomaly event to be logged, got %+v", evs)
+	}
+	// The bad read must not change the recorded volume count.
+	if books, _ := st.ListBooks(); len(books) != 1 || books[0].Volumes != 4 {
+		t.Errorf("suspicious scrape must not change stored volumes: %+v", books)
+	}
+}
+
 func TestRunCheck_prunesOnlyMissingNotes(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(novelHTML(1)))
