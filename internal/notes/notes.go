@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
@@ -17,10 +18,17 @@ import (
 	"time"
 
 	"bookwatch/internal/scraper"
+	"bookwatch/internal/vault"
 )
 
 // ErrDuplicate is returned when a note with the same Link already exists.
 var ErrDuplicate = errors.New("a note with this link already exists")
+
+// ErrNoteExists is returned when a note file with the target name already
+// exists on disk. Two different links can sanitize to the same filename, and
+// the link-based duplicate check wouldn't catch that — so refuse rather than
+// silently overwrite a note the user may have edited.
+var ErrNoteExists = errors.New("a note with this filename already exists")
 
 // maxCoverBytes caps a downloaded cover image so a runaway response can't fill
 // the disk. Cover art is well under this.
@@ -120,6 +128,17 @@ func Create(o Options, sc *scraper.Client, dup DupChecker, rl scraper.Rules, sou
 	title := Sanitize(nd.Title, false)
 	today := time.Now().Format("2006-01-02")
 
+	// Refuse to overwrite an existing note. Checked before the cover download so
+	// a duplicate filename neither clobbers the note nor its cover. Stat errors
+	// other than "not exist" are surfaced rather than assumed safe.
+	noteAbs := filepath.Join(o.VaultDir, filepath.FromSlash(o.NewNoteDir))
+	mdPath := filepath.Join(noteAbs, title+".md")
+	if _, err := os.Stat(mdPath); err == nil {
+		return Result{}, fmt.Errorf("%w: %s.md", ErrNoteExists, title)
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return Result{}, err
+	}
+
 	// Download cover.
 	coverName := "cover_" + Sanitize(nd.Title, true) + coverExt(nd.CoverURL)
 	attachAbs := filepath.Join(o.VaultDir, filepath.FromSlash(o.AttachmentsDir))
@@ -130,14 +149,13 @@ func Create(o Options, sc *scraper.Client, dup DupChecker, rl scraper.Rules, sou
 		return Result{}, fmt.Errorf("cover download: %w", err)
 	}
 
-	// Write note.
-	noteAbs := filepath.Join(o.VaultDir, filepath.FromSlash(o.NewNoteDir))
+	// Write note atomically (temp + rename) so a crash mid-write can't leave a
+	// half-written note.
 	if err := os.MkdirAll(noteAbs, 0o755); err != nil {
 		return Result{}, err
 	}
-	mdPath := filepath.Join(noteAbs, title+".md")
 	content := BuildNote(nd, sourceURL, coverName, today)
-	if err := os.WriteFile(mdPath, []byte(content), 0o644); err != nil {
+	if err := vault.AtomicWrite(mdPath, []byte(content), 0o644); err != nil {
 		return Result{}, err
 	}
 

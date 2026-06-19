@@ -184,13 +184,14 @@ func UpdateVolumes(path string, newVolume int, today string) error {
 		lines = insertAt(lines, closeIdx, "Last Update: "+today)
 	}
 
-	return atomicWrite(path, []byte(strings.Join(lines, nl)), 0o644)
+	return AtomicWrite(path, []byte(strings.Join(lines, nl)), 0o644)
 }
 
-// atomicWrite writes data to a temp file in the same directory and renames it
+// AtomicWrite writes data to a temp file in the same directory and renames it
 // over path, so a crash or error mid-write can never leave a half-written note
 // (os.Rename replaces the destination atomically on the same filesystem).
-func atomicWrite(path string, data []byte, perm os.FileMode) error {
+// Shared with note creation so both write paths are crash-safe.
+func AtomicWrite(path string, data []byte, perm os.FileMode) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".bw-*.tmp")
 	if err != nil {
 		return err

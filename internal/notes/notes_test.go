@@ -1,11 +1,59 @@
 package notes
 
 import (
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"bookwatch/internal/scraper"
 )
+
+// Create scrapes + writes a note; a second add whose title sanitizes to the
+// same filename must be refused (ErrNoteExists) and leave the original intact.
+func TestCreate_atomicAndRefusesOverwrite(t *testing.T) {
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/cover.webp" {
+			w.Header().Set("Content-Type", "image/webp")
+			w.Write([]byte("fake-image-bytes"))
+			return
+		}
+		fmt.Fprintf(w, `<html><body>
+<h1 class="post-title entry-title">Dupe Title Epub</h1>
+<div class="featured-media"><img src="%s/cover.webp"></div>
+<div class="synopsis-description"><p>Desc.</p></div>
+<ol><li>VOLUME 1</li></ol>
+</body></html>`, srv.URL)
+	}))
+	defer srv.Close()
+
+	o := Options{VaultDir: t.TempDir(), NewNoteDir: "LN", AttachmentsDir: "LN/_att"}
+	sc := scraper.New("test", 5*time.Second)
+
+	res, err := Create(o, sc, nil, scraper.DefaultRules(), srv.URL)
+	if err != nil {
+		t.Fatalf("first create: %v", err)
+	}
+	before, err := os.ReadFile(res.Path)
+	if err != nil {
+		t.Fatalf("note not written: %v", err)
+	}
+
+	// Different link, same sanitized title → same path → must refuse.
+	_, err = Create(o, sc, nil, scraper.DefaultRules(), srv.URL+"/other")
+	if !errors.Is(err, ErrNoteExists) {
+		t.Fatalf("expected ErrNoteExists, got %v", err)
+	}
+	after, _ := os.ReadFile(res.Path)
+	if string(before) != string(after) {
+		t.Error("existing note was modified by the refused create")
+	}
+}
 
 func TestSanitize(t *testing.T) {
 	cases := []struct {

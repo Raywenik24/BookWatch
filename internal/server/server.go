@@ -5,6 +5,7 @@ package server
 import (
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -241,7 +242,7 @@ func (s *Server) handleAddBook(w http.ResponseWriter, r *http.Request) {
 	res, err := notes.Create(opts, s.sc, s.st, rl, body.URL)
 	if err != nil {
 		code := http.StatusBadRequest
-		if err == notes.ErrDuplicate {
+		if errors.Is(err, notes.ErrDuplicate) || errors.Is(err, notes.ErrNoteExists) {
 			code = http.StatusConflict
 		}
 		writeJSON(w, code, errBody(err.Error()))
