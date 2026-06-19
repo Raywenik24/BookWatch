@@ -96,3 +96,41 @@ func TestUpdateVolumes_preservesCRLF(t *testing.T) {
 		t.Errorf("CRLF newlines not preserved")
 	}
 }
+
+func TestScan_tagAndLinkFilter(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, content string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("good.md", sample)                                                            // tagged + Link → in
+	write("nolink.md", "---\ntags:\n  - \"#LightNovel\"\n---\n")                         // tagged, no Link → out
+	write("notag.md", "---\nLink: https://example.com/x\n---\n")                         // Link, no tag → out
+	write("readme.txt", sample)                                                          // not .md → ignored
+	sub := filepath.Join(dir, "nested")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Folder-agnostic: a tagged note in a subdir is found too.
+	deep := strings.Replace(sample, "https://example.com/test", "https://example.com/deep", 1)
+	if err := os.WriteFile(filepath.Join(sub, "deep.md"), []byte(deep), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := Scan(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 LN notes, got %d: %+v", len(entries), entries)
+	}
+	for _, e := range entries {
+		if e.Cover != "cover.jpg" {
+			t.Errorf("cover not parsed: %q", e.Cover)
+		}
+		if e.Volumes != 2 {
+			t.Errorf("volumes not parsed: %d", e.Volumes)
+		}
+	}
+}

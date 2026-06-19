@@ -174,7 +174,30 @@ func UpdateVolumes(path string, newVolume int, today string) error {
 		lines = insertAt(lines, closeIdx, "Last Update: "+today)
 	}
 
-	return os.WriteFile(path, []byte(strings.Join(lines, nl)), 0o644)
+	return atomicWrite(path, []byte(strings.Join(lines, nl)), 0o644)
+}
+
+// atomicWrite writes data to a temp file in the same directory and renames it
+// over path, so a crash or error mid-write can never leave a half-written note
+// (os.Rename replaces the destination atomically on the same filesystem).
+func atomicWrite(path string, data []byte, perm os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".bw-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // no-op once the rename has moved it
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpName, perm); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
 }
 
 func insertAt(lines []string, idx int, val string) []string {

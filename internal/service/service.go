@@ -3,7 +3,9 @@
 package service
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 
 	"bookwatch/internal/checker"
@@ -118,8 +120,11 @@ func RunCheck(sc *scraper.Client, st *store.Store, scanRoot string, write bool,
 			if seen[b.Link] {
 				continue
 			}
-			if _, err := os.Stat(b.Path); err == nil {
-				continue // note still on disk; leave it tracked
+			if _, err := os.Stat(b.Path); err == nil || !errors.Is(err, fs.ErrNotExist) {
+				// Keep the book if the note is on disk OR if we can't confirm it's
+				// gone: a permission/IO/OneDrive-sync hiccup must not trigger a
+				// prune. Only a definite "does not exist" drops the row.
+				continue
 			}
 			if e := st.DeleteBook(b.ID); e != nil {
 				return sum, e

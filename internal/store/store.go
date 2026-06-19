@@ -20,7 +20,9 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := db.Exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;`); err != nil {
+	// busy_timeout lets a writer wait instead of failing instantly with
+	// "database is locked" when the scheduler goroutine and an HTTP write collide.
+	if _, err := db.Exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;`); err != nil {
 		return nil, err
 	}
 	s := &Store{db: db}

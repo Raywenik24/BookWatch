@@ -5,6 +5,7 @@ package scraper
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -13,6 +14,10 @@ import (
 
 	"github.com/PuerkitoBio/goquery"
 )
+
+// maxBodyBytes caps a fetched page so a runaway/huge response can't balloon
+// memory. Novel pages are well under this.
+const maxBodyBytes = 8 << 20 // 8 MiB
 
 // VolumeRE matches "VOLUME 12", "Volume12", etc. (default item regex).
 var VolumeRE = regexp.MustCompile(`(?i)VOLUME\s*(\d+)`)
@@ -64,7 +69,7 @@ func (c *Client) fetch(url string) (*goquery.Document, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("status %d", resp.StatusCode)
 	}
-	return goquery.NewDocumentFromReader(resp.Body)
+	return goquery.NewDocumentFromReader(io.LimitReader(resp.Body, maxBodyBytes))
 }
 
 // LatestVolume returns the max volume number + item count using rl.

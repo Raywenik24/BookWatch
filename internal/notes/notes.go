@@ -22,6 +22,10 @@ import (
 // ErrDuplicate is returned when a note with the same Link already exists.
 var ErrDuplicate = errors.New("a note with this link already exists")
 
+// maxCoverBytes caps a downloaded cover image so a runaway response can't fill
+// the disk. Cover art is well under this.
+const maxCoverBytes = 16 << 20 // 16 MiB
+
 var (
 	dlPrefixRE = regexp.MustCompile(`(?i)^Download\s+`)
 	epubSufRE  = regexp.MustCompile(`(?i)\s*(Light Novel )?Epub$`)
@@ -164,6 +168,6 @@ func download(url, dest string) error {
 		return err
 	}
 	defer f.Close()
-	_, err = io.Copy(f, resp.Body)
+	_, err = io.Copy(f, io.LimitReader(resp.Body, maxCoverBytes))
 	return err
 }
