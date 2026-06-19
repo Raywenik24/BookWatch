@@ -61,6 +61,10 @@ func TestAuth_writeRequiresToken(t *testing.T) {
 	if rec := do(h, "POST", "/api/check", "secret", ""); rec.Code != http.StatusAccepted {
 		t.Errorf("correct token: got %d, want 202", rec.Code)
 	}
+	// The ?token= query fallback was removed — it must no longer authenticate.
+	if rec := do(h, "POST", "/api/check?token=secret", "", ""); rec.Code != http.StatusUnauthorized {
+		t.Errorf("query-param token should not auth: got %d, want 401", rec.Code)
+	}
 }
 
 func TestReadEndpoints_openAndJSON(t *testing.T) {

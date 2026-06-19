@@ -73,10 +73,11 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) auth(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Header only — a query-param token would leak the password into proxy
+		// access logs, browser history, and Referer headers (and weakens CSRF
+		// posture, since a custom header can't be set cross-origin without a
+		// preflight). The embedded UI only ever sends the header.
 		token := r.Header.Get("X-BookWatch-Token")
-		if token == "" {
-			token = r.URL.Query().Get("token")
-		}
 		// Constant-time compare so the response timing doesn't leak how many
 		// leading bytes of the password matched.
 		if subtle.ConstantTimeCompare([]byte(token), []byte(s.cfg.Password)) != 1 {
