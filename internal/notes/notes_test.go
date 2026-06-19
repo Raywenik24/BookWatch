@@ -177,10 +177,10 @@ func TestBuildNote(t *testing.T) {
 
 func TestCoverExt(t *testing.T) {
 	cases := map[string]string{
-		"https://x/y/cover.webp":     ".webp",
-		"https://x/y/cover.JPG":      ".jpg",
-		"https://x/y/cover":          ".jpg",
-		"https://x/y/cover.png?v=2":  ".png",
+		"https://x/y/cover.webp":    ".webp",
+		"https://x/y/cover.JPG":     ".jpg",
+		"https://x/y/cover":         ".jpg",
+		"https://x/y/cover.png?v=2": ".png",
 	}
 	for in, want := range cases {
 		if got := coverExt(in); got != want {

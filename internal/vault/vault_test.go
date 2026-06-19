@@ -129,10 +129,10 @@ func TestScan_tagAndLinkFilter(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	write("good.md", sample)                                                            // tagged + Link → in
-	write("nolink.md", "---\ntags:\n  - \"#LightNovel\"\n---\n")                         // tagged, no Link → out
-	write("notag.md", "---\nLink: https://example.com/x\n---\n")                         // Link, no tag → out
-	write("readme.txt", sample)                                                          // not .md → ignored
+	write("good.md", sample)                                     // tagged + Link → in
+	write("nolink.md", "---\ntags:\n  - \"#LightNovel\"\n---\n") // tagged, no Link → out
+	write("notag.md", "---\nLink: https://example.com/x\n---\n") // Link, no tag → out
+	write("readme.txt", sample)                                  // not .md → ignored
 	sub := filepath.Join(dir, "nested")
 	if err := os.MkdirAll(sub, 0o755); err != nil {
 		t.Fatal(err)

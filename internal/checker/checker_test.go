@@ -129,9 +129,9 @@ func TestCheck_flagsSuspiciousScrapes(t *testing.T) {
 	resolve := func(string) scraper.Rules { return scraper.DefaultRules() }
 
 	entries := []vault.Entry{
-		{Title: "Broken", Link: srv.URL + "/broken", Volumes: 5},     // count 0 → suspicious
-		{Title: "Regress", Link: srv.URL + "/regress", Volumes: 10},  // reads 3 < 10 → suspicious
-		{Title: "Healthy", Link: srv.URL + "/ok", Volumes: 3},        // reads 3 == 3 → fine
+		{Title: "Broken", Link: srv.URL + "/broken", Volumes: 5},    // count 0 → suspicious
+		{Title: "Regress", Link: srv.URL + "/regress", Volumes: 10}, // reads 3 < 10 → suspicious
+		{Title: "Healthy", Link: srv.URL + "/ok", Volumes: 3},       // reads 3 == 3 → fine
 	}
 	res := Check(entries, sc, resolve, nil)
 
