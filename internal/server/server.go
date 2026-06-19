@@ -3,6 +3,7 @@
 package server
 
 import (
+	"crypto/subtle"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -76,7 +77,9 @@ func (s *Server) auth(h http.HandlerFunc) http.HandlerFunc {
 		if token == "" {
 			token = r.URL.Query().Get("token")
 		}
-		if token != s.cfg.Password {
+		// Constant-time compare so the response timing doesn't leak how many
+		// leading bytes of the password matched.
+		if subtle.ConstantTimeCompare([]byte(token), []byte(s.cfg.Password)) != 1 {
 			writeJSON(w, http.StatusUnauthorized, errBody("unauthorized"))
 			return
 		}
