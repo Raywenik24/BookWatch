@@ -19,6 +19,8 @@ import (
 	"bookwatch/internal/store"
 )
 
+func init() { scraper.AllowPrivateHosts = true } // httptest binds to loopback
+
 func newTestServer(t *testing.T) (http.Handler, *store.Store, string) {
 	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "t.db"))

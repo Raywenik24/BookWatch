@@ -13,6 +13,8 @@ import (
 	"bookwatch/internal/scraper"
 )
 
+func init() { scraper.AllowPrivateHosts = true } // httptest binds to loopback
+
 // Create scrapes + writes a note; a second add whose title sanitizes to the
 // same filename must be refused (ErrNoteExists) and leave the original intact.
 func TestCreate_atomicAndRefusesOverwrite(t *testing.T) {

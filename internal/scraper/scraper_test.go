@@ -1,11 +1,49 @@
 package scraper
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
+
+// httptest binds to loopback, which the SSRF guard blocks by default — allow it
+// for this package's fetch tests. The guard itself is exercised below with the
+// flag flipped back off.
+func init() { AllowPrivateHosts = true }
+
+func TestIsBlockedIP(t *testing.T) {
+	blocked := []string{"127.0.0.1", "::1", "10.0.0.5", "192.168.1.1", "172.16.0.1",
+		"169.254.1.1", "0.0.0.0", "fe80::1", "fc00::1"}
+	allowed := []string{"8.8.8.8", "1.1.1.1", "93.184.216.34", "2606:4700:4700::1111"}
+	for _, s := range blocked {
+		if !isBlockedIP(net.ParseIP(s)) {
+			t.Errorf("%s should be blocked", s)
+		}
+	}
+	for _, s := range allowed {
+		if isBlockedIP(net.ParseIP(s)) {
+			t.Errorf("%s should be allowed", s)
+		}
+	}
+}
+
+func TestFetch_ssrfGuardBlocksLoopback(t *testing.T) {
+	prev := AllowPrivateHosts
+	AllowPrivateHosts = false
+	defer func() { AllowPrivateHosts = prev }()
+
+	c := New("t", 3*time.Second)
+	_, _, err := c.LatestVolume("http://127.0.0.1:9/", DefaultRules())
+	if err == nil {
+		t.Fatal("expected the SSRF guard to block a loopback fetch")
+	}
+	if !strings.Contains(err.Error(), "ssrf guard") {
+		t.Errorf("expected an ssrf-guard error, got: %v", err)
+	}
+}
 
 const novelPage = `<!doctype html><html><body>
 <h1 class="post-title entry-title">Test Novel Epub</h1>

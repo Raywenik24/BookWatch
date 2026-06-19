@@ -6,10 +6,13 @@ package scraper
 import (
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
@@ -18,6 +21,16 @@ import (
 // maxBodyBytes caps a fetched page so a runaway/huge response can't balloon
 // memory. Novel pages are well under this.
 const maxBodyBytes = 8 << 20 // 8 MiB
+
+// maxRedirects caps how many redirects a fetch follows; every hop is re-checked
+// by the SSRF guard (guardDial runs on each dial).
+const maxRedirects = 5
+
+// AllowPrivateHosts disables the SSRF guard that blocks fetches to
+// loopback/private/link-local addresses. Off in production; the test suite sets
+// it true (httptest binds to loopback), and BOOKWATCH_ALLOW_PRIVATE_FETCH=1
+// enables it for a deliberately LAN-only deployment.
+var AllowPrivateHosts = os.Getenv("BOOKWATCH_ALLOW_PRIVATE_FETCH") == "1"
 
 // VolumeRE matches "VOLUME 12", "Volume12", etc. (default item regex).
 var VolumeRE = regexp.MustCompile(`(?i)VOLUME\s*(\d+)`)
@@ -52,7 +65,55 @@ type Client struct {
 }
 
 func New(userAgent string, timeout time.Duration) *Client {
-	return &Client{http: &http.Client{Timeout: timeout}, userAgent: userAgent}
+	return &Client{http: NewGuardedHTTPClient(timeout), userAgent: userAgent}
+}
+
+// NewGuardedHTTPClient returns a client whose transport refuses to connect to
+// loopback/private/link-local addresses (the SSRF guard, enforced at dial time
+// so it also covers redirect targets and DNS rebinding) and that caps redirects.
+// Shared by page fetches and cover downloads so both paths are guarded.
+func NewGuardedHTTPClient(timeout time.Duration) *http.Client {
+	dialer := &net.Dialer{Timeout: 10 * time.Second, Control: guardDial}
+	tr := http.DefaultTransport.(*http.Transport).Clone() // keep proxy/HTTP2/idle defaults
+	tr.DialContext = dialer.DialContext
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: tr,
+		CheckRedirect: func(_ *http.Request, via []*http.Request) error {
+			if len(via) >= maxRedirects {
+				return fmt.Errorf("stopped after %d redirects", maxRedirects)
+			}
+			return nil
+		},
+	}
+}
+
+// guardDial runs after DNS resolution with the concrete IP:port about to be
+// dialed, so it blocks SSRF targets even across redirects.
+func guardDial(_, address string, _ syscall.RawConn) error {
+	if AllowPrivateHosts {
+		return nil
+	}
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		host = address
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return fmt.Errorf("ssrf guard: cannot parse dial address %q", address)
+	}
+	if isBlockedIP(ip) {
+		return fmt.Errorf("ssrf guard: refusing to connect to %s", ip)
+	}
+	return nil
+}
+
+// isBlockedIP reports whether ip is one the server must never be tricked into
+// fetching: loopback, private (RFC1918 + unique-local fc00::/7), link-local, or
+// the unspecified address.
+func isBlockedIP(ip net.IP) bool {
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() ||
+		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast()
 }
 
 func (c *Client) fetch(url string) (*goquery.Document, error) {

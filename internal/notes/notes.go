@@ -172,7 +172,9 @@ func coverExt(coverURL string) string {
 }
 
 func download(url, dest string) error {
-	client := &http.Client{Timeout: 30 * time.Second}
+	// Guarded client: the cover URL comes from a scraped page, so a malicious
+	// source could point it at an internal address — same SSRF guard as fetch.
+	client := scraper.NewGuardedHTTPClient(30 * time.Second)
 	resp, err := client.Get(url)
 	if err != nil {
 		return err

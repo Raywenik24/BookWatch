@@ -11,6 +11,8 @@ import (
 	"bookwatch/internal/vault"
 )
 
+func init() { scraper.AllowPrivateHosts = true } // httptest binds to loopback
+
 func novelHTML(vols int) string {
 	items := ""
 	for i := 1; i <= vols; i++ {
