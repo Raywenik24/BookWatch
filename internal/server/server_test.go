@@ -104,6 +104,15 @@ func TestDeleteBook_untracksAndLogsEvent(t *testing.T) {
 	}
 }
 
+func TestWriteBody_sizeCapped(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	big := `{"url":"` + strings.Repeat("a", 2<<20) + `"}` // > 1 MiB cap
+	rec := do(h, "POST", "/api/books", "secret", big)
+	if rec.Code == http.StatusOK || rec.Code == http.StatusCreated {
+		t.Errorf("oversized body accepted: got %d", rec.Code)
+	}
+}
+
 func TestAddBook_badBody(t *testing.T) {
 	h, _, _ := newTestServer(t)
 	if rec := do(h, "POST", "/api/books", "secret", `{}`); rec.Code != http.StatusBadRequest {

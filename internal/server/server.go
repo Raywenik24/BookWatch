@@ -31,6 +31,11 @@ import (
 //go:embed web/index.html
 var webFS embed.FS
 
+// maxAPIBodyBytes caps inbound request bodies on write routes. Every JSON
+// payload here (a URL, a few rules, a handful of settings) is tiny; 1 MiB is
+// already generous and stops a client streaming an unbounded body.
+const maxAPIBodyBytes = 1 << 20
+
 type Server struct {
 	cfg   config.Config
 	st    *store.Store
@@ -73,6 +78,8 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) auth(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Cap the body on every write route — they all decode small JSON.
+		r.Body = http.MaxBytesReader(w, r.Body, maxAPIBodyBytes)
 		// Header only — a query-param token would leak the password into proxy
 		// access logs, browser history, and Referer headers (and weakens CSRF
 		// posture, since a custom header can't be set cross-origin without a
