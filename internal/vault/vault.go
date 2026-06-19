@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -41,7 +42,15 @@ func Scan(root string) ([]Entry, error) {
 
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			return err
+			// A traversal error on the root itself is fatal — there's nothing to
+			// scan. Anything deeper (an unreadable dir/file, a OneDrive
+			// files-on-demand placeholder that won't open) is logged and skipped
+			// so one bad entry can't abort the whole check.
+			if path == root {
+				return err
+			}
+			log.Printf("vault scan: skipping %s: %v", path, err)
+			return nil
 		}
 		if d.IsDir() || !strings.EqualFold(filepath.Ext(path), ".md") {
 			return nil
@@ -49,7 +58,8 @@ func Scan(root string) ([]Entry, error) {
 
 		e, ok, perr := parse(path)
 		if perr != nil {
-			return perr
+			log.Printf("vault scan: skipping %s: %v", path, perr)
+			return nil
 		}
 		if ok {
 			entries = append(entries, e)

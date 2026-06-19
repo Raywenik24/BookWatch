@@ -30,6 +30,31 @@ func writeTemp(t *testing.T, content string) string {
 	return p
 }
 
+// A note that can't be parsed (here: a frontmatter line larger than the
+// scanner's 1 MiB buffer, the portable stand-in for a locked file / unhydrated
+// OneDrive placeholder) must be skipped, not abort the whole scan.
+func TestScan_skipsUnparseableNote(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, content string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("good.md", sample)
+	deep := strings.Replace(sample, "https://example.com/test", "https://example.com/two", 1)
+	write("good2.md", deep)
+	// Single line > 1 MiB → bufio.Scanner returns "token too long" → parse errors.
+	write("bad.md", "---\n"+strings.Repeat("x", 2<<20)+"\n---\n")
+
+	entries, err := Scan(dir)
+	if err != nil {
+		t.Fatalf("one bad note aborted the scan: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("expected the 2 good notes, got %d: %+v", len(entries), entries)
+	}
+}
+
 func TestUpdateVolumes_bumpAndInsertLastUpdate(t *testing.T) {
 	p := writeTemp(t, sample)
 
