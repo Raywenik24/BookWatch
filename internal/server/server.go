@@ -71,7 +71,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/sources/{id}/rules", s.auth(s.handleSetRules))
 	mux.HandleFunc("POST /api/sources/test", s.auth(s.handleTest))
 	mux.HandleFunc("PUT /api/settings", s.auth(s.handleSetSettings))
-	return logging(mux)
+	return secure(logging(mux))
 }
 
 // ── middleware ────────────────────────────────────────────────
@@ -93,6 +93,24 @@ func (s *Server) auth(h http.HandlerFunc) http.HandlerFunc {
 		}
 		h(w, r)
 	}
+}
+
+// secure sets defense-in-depth response headers. The embedded UI is a single
+// page with inline <style>, inline <script>, and inline event handlers, so the
+// CSP must allow 'unsafe-inline' for style/script; everything else is locked to
+// 'self' (covers come from /api/cover). External links are navigations, which
+// CSP doesn't restrict, so they keep working.
+func secure(next http.Handler) http.Handler {
+	const csp = "default-src 'self'; img-src 'self' data:; " +
+		"style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; " +
+		"base-uri 'none'; form-action 'self'"
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("Content-Security-Policy", csp)
+		next.ServeHTTP(w, r)
+	})
 }
 
 func logging(next http.Handler) http.Handler {

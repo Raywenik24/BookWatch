@@ -6,11 +6,15 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"bookwatch/internal/config"
 	"bookwatch/internal/notes"
@@ -70,9 +74,27 @@ func runServe(argv []string) {
 
 	srv := server.New(cfg, st, sc, sched)
 	addr := ":" + cfg.Port
-	log.Printf("BookWatch listening on http://localhost%s (cron %q, scan %s)", addr, cfg.CheckCron, cfg.ScanRoot)
-	if err := http.ListenAndServe(addr, srv.Handler()); err != nil {
-		log.Fatal(err)
+	httpSrv := &http.Server{Addr: addr, Handler: srv.Handler()}
+
+	// Listen on a goroutine so the main path can wait for a shutdown signal and
+	// drain cleanly — letting the deferred sched.Stop()/st.Close() actually run
+	// (log.Fatal would have skipped them) and any in-flight vault write finish.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	go func() {
+		log.Printf("BookWatch listening on http://localhost%s (cron %q, scan %s)", addr, cfg.CheckCron, cfg.ScanRoot)
+		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatal(err)
+		}
+	}()
+
+	<-ctx.Done()
+	stop() // restore default signal handling so a second Ctrl+C force-quits
+	log.Println("shutting down…")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("graceful shutdown: %v", err)
 	}
 }
 

@@ -67,6 +67,17 @@ func TestAuth_writeRequiresToken(t *testing.T) {
 	}
 }
 
+func TestSecurityHeaders(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := do(h, "GET", "/", "", "")
+	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Errorf("X-Content-Type-Options = %q, want nosniff", got)
+	}
+	if rec.Header().Get("Content-Security-Policy") == "" {
+		t.Error("Content-Security-Policy header missing")
+	}
+}
+
 func TestReadEndpoints_openAndJSON(t *testing.T) {
 	h, st, _ := newTestServer(t)
 	st.UpsertBook("A", "https://x/1", "", 2, "")
