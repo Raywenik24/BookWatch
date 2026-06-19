@@ -92,6 +92,14 @@ var migrations = []string{
 	// pending row (see UpsertPendingUpdate), so at most one pending per book.
 	`ALTER TABLE updates ADD COLUMN applied    INTEGER NOT NULL DEFAULT 0;
 	 ALTER TABLE updates ADD COLUMN applied_at TEXT;`,
+	// v3: activity/event log — discrete actions (book added/untracked, updates
+	// applied, auto-prune) so the Logs tab shows more than just check runs.
+	`CREATE TABLE events (
+		id      INTEGER PRIMARY KEY,
+		at      TEXT NOT NULL,
+		kind    TEXT NOT NULL,
+		message TEXT NOT NULL
+	);`,
 }
 
 func (s *Store) migrate() error {
@@ -294,6 +302,40 @@ func (s *Store) ListRuns(limit int) ([]Run, error) {
 	return out, rows.Err()
 }
 
+// ── events (activity log) ─────────────────────────────────────
+
+type Event struct {
+	ID      int64  `json:"id"`
+	At      string `json:"at"`
+	Kind    string `json:"kind"`
+	Message string `json:"message"`
+}
+
+// LogEvent records one discrete action (book added/untracked, updates applied,
+// auto-prune). Best-effort: callers ignore the error so logging never breaks
+// the action it describes.
+func (s *Store) LogEvent(kind, message string) error {
+	_, err := s.db.Exec(`INSERT INTO events(at, kind, message) VALUES(?,?,?)`, now(), kind, message)
+	return err
+}
+
+func (s *Store) ListEvents(limit int) ([]Event, error) {
+	rows, err := s.db.Query(`SELECT id, at, kind, message FROM events ORDER BY id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Event
+	for rows.Next() {
+		var e Event
+		if err := rows.Scan(&e.ID, &e.At, &e.Kind, &e.Message); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
 // ── sources + rules ───────────────────────────────────────────
 
 type Rule struct {
@@ -435,6 +477,17 @@ func (s *Store) BookCover(id int64) (string, error) {
 		return "", nil
 	}
 	return cover, err
+}
+
+// BookTitle returns a book's title (empty if no row). Used to name an untrack
+// event before the row is deleted.
+func (s *Store) BookTitle(id int64) (string, error) {
+	var title string
+	err := s.db.QueryRow(`SELECT title FROM books WHERE id=?`, id).Scan(&title)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return title, err
 }
 
 // DeleteBook removes a book's DB row (and its updates, via cascade). The vault

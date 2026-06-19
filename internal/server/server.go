@@ -5,6 +5,7 @@ package server
 import (
 	"embed"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"mime"
@@ -48,6 +49,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/books", s.handleBooks)
 	mux.HandleFunc("GET /api/updates", s.handleUpdates)
 	mux.HandleFunc("GET /api/runs", s.handleRuns)
+	mux.HandleFunc("GET /api/events", s.handleEvents)
 	mux.HandleFunc("GET /api/status", s.handleStatus)
 	mux.HandleFunc("GET /api/sources", s.handleSources)
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
@@ -113,6 +115,11 @@ func (s *Server) handleUpdates(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	v, err := s.st.ListRuns(50)
+	respond(w, v, err)
+}
+
+func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	v, err := s.st.ListEvents(100)
 	respond(w, v, err)
 }
 
@@ -211,6 +218,9 @@ func (s *Server) handleApply(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	if res.Applied > 0 || res.Failed > 0 {
+		s.st.LogEvent("apply", fmt.Sprintf("Applied %d update(s) to Obsidian, %d failed", res.Applied, res.Failed))
+	}
 	writeJSON(w, http.StatusOK, res)
 }
 
@@ -241,6 +251,7 @@ func (s *Server) handleAddBook(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	s.st.LogEvent("add", fmt.Sprintf("Added %q (%s)", res.Title, body.URL))
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"title": res.Title, "volumes": res.Volumes, "path": res.Path,
 	})
@@ -255,9 +266,13 @@ func (s *Server) handleDeleteBook(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errBody("bad id"))
 		return
 	}
+	title, _ := s.st.BookTitle(id)
 	if err := s.st.DeleteBook(id); err != nil {
 		writeErr(w, err)
 		return
+	}
+	if title != "" {
+		s.st.LogEvent("untrack", fmt.Sprintf("Untracked %q", title))
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "untracked"})
 }

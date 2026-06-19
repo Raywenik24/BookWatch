@@ -216,6 +216,9 @@
 
     <!-- LOGS -->
     <section id="logs">
+      <h2>Activity</h2>
+      <table><thead><tr><th>Time</th><th>Event</th><th>Detail</th></tr></thead>
+      <tbody id="eventsBody"><tr><td>loading…</td></tr></tbody></table>
       <h2>Check runs</h2>
       <table><thead><tr><th>#</th><th>Started</th><th>Checked</th><th>Updated</th><th>Errors</th><th>Summary</th></tr></thead>
       <tbody id="logsBody"><tr><td>loading…</td></tr></tbody></table>
@@ -462,6 +465,14 @@ async function loadLogs(){
      <td>${x.updated}</td><td>${x.errors}</td><td><small>${esc(x.summary)}</small></td></tr>`).join('')
     : '<tr><td><span class="muted">no runs yet</span></td></tr>';
 }
+const EVENT_LABELS = { add:'Book added', untrack:'Book untracked', apply:'Updates applied', prune:'Auto-pruned' };
+async function loadEvents(){
+  const r = await getJSON('/api/events');
+  $('eventsBody').innerHTML = (r&&r.length) ? r.map(x =>
+    `<tr><td class="nowrap"><small>${esc(fmtTime(x.at))}</small></td>
+     <td>${esc(EVENT_LABELS[x.kind] || x.kind)}</td><td><small>${esc(x.message)}</small></td></tr>`).join('')
+    : '<tr><td><span class="muted">no activity yet</span></td></tr>';
+}
 /* current UTC offset for a zone, e.g. "+02:00" (DST-aware) */
 function tzOffset(z){
   try {
@@ -481,7 +492,7 @@ function populateTz(){
   if(tzPicker){ tzPicker.setValue(TZ); return; }
   tzPicker = fuzzySelect('setTzMount', {
     items: tzItems(), value: TZ, placeholder: 'search timezone…',
-    onChange: v => { TZ = v; loadUpdates(); loadBooks(); loadLogs(); },
+    onChange: v => { TZ = v; loadUpdates(); loadBooks(); loadLogs(); loadEvents(); },
   });
 }
 async function loadSettings(){
@@ -494,7 +505,7 @@ async function loadSettings(){
   $('setAttachDir').value = eff.attachments_dir || '';
   const theme = ov.theme || lsGet('pw_theme') || 'mocha';
   themePicker.setValue(theme); applyTheme(theme);
-  if(ov.timezone){ TZ = ov.timezone; tzPicker.setValue(TZ); loadUpdates(); loadBooks(); loadLogs(); }
+  if(ov.timezone){ TZ = ov.timezone; tzPicker.setValue(TZ); loadUpdates(); loadBooks(); loadLogs(); loadEvents(); }
 }
 const FIELDS = ['title','cover','volume_list','volume_item','description'];
 async function loadSources(){
@@ -563,7 +574,7 @@ async function runCheck(){
   const poll = setInterval(async () => {
     const s = await refreshStatus();
     if(!s.busy){ clearInterval(poll); $('checkBtn').disabled=false; h.update('Check done.','success');
-      loadUpdates(); loadBooks(); loadLogs(); }
+      loadUpdates(); loadBooks(); loadLogs(); loadEvents(); }
   }, 1500);
 }
 async function applyUpdates(){
@@ -627,7 +638,7 @@ async function saveSettings(){
                  attachments_dir:$('setAttachDir').value.trim(), theme:themePicker.getValue(),
                  timezone:tzPicker.getValue() };
   const r = await send('PUT','/api/settings',body); if(need(r)) return;
-  if(r.ok){ TZ = tzPicker.getValue(); loadUpdates(); loadBooks(); loadLogs(); }
+  if(r.ok){ TZ = tzPicker.getValue(); loadUpdates(); loadBooks(); loadLogs(); loadEvents(); }
   toast(r.ok?'Settings saved.':'Error: '+(r.data.error||r.status), r.ok?'success':'error');
 }
 
@@ -635,7 +646,7 @@ async function saveSettings(){
 applyTheme(lsGet('pw_theme') || 'mocha');
 $('token').value = token();
 setBookView(bookView);
-loadUpdates(); loadBooks(); loadLogs(); loadSources(); loadSettings(); refreshStatus();
+loadUpdates(); loadBooks(); loadLogs(); loadEvents(); loadSources(); loadSettings(); refreshStatus();
 </script>
 </body>
 </html>

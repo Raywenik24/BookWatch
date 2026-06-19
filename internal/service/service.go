@@ -124,6 +124,7 @@ func RunCheck(sc *scraper.Client, st *store.Store, scanRoot string, write bool,
 			if e := st.DeleteBook(b.ID); e != nil {
 				return sum, e
 			}
+			st.LogEvent("prune", fmt.Sprintf("Auto-pruned stale book %q (note gone from disk)", b.Title))
 		}
 	}
 
