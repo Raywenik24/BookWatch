@@ -144,11 +144,11 @@ func TestRunCheck_prunesOnlyMissingNotes(t *testing.T) {
 	sc := scraper.New("t", 5*time.Second)
 
 	// Stale: not in the scan (note gone) → must be pruned.
-	st.UpsertBook("Stale", "https://nope/x", filepath.Join(vaultDir, "gone.md"), 1, "")
+	st.UpsertBook("Stale", "https://nope/x", filepath.Join(vaultDir, "gone.md"), 1, "", "", nil)
 	// Not in the scan (note exists but lacks Template_used filter) → also pruned.
 	existing := filepath.Join(vaultDir, "untagged.md")
 	os.WriteFile(existing, []byte("not a LN note"), 0o644)
-	st.UpsertBook("OnDisk", "https://nope/y", existing, 1, "")
+	st.UpsertBook("OnDisk", "https://nope/y", existing, 1, "", "", nil)
 
 	if _, err := RunCheck(sc, st, vaultDir, false, nil); err != nil {
 		t.Fatal(err)

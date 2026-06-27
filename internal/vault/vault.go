@@ -17,10 +17,13 @@ import (
 
 // Ported regexes from metadata_extractor.py.
 var (
-	linkRE       = regexp.MustCompile(`(?i)^Link:\s*(https?://\S+)`)
-	volumesRE    = regexp.MustCompile(`(?i)^Volumes:\s*(\d+)`)
-	coverRE      = regexp.MustCompile(`(?i)^Cover:\s*"?\[\[(.+?)\]\]"?`)
-	templateUsed = regexp.MustCompile(`(?i)^Template_used:\s*LightNovelTemplate\s*$`)
+	linkRE            = regexp.MustCompile(`(?i)^Link:\s*(https?://\S+)`)
+	volumesRE         = regexp.MustCompile(`(?i)^Volumes:\s*(\d+)`)
+	coverRE           = regexp.MustCompile(`(?i)^Cover:\s*"?\[\[(.+?)\]\]"?`)
+	templateUsed      = regexp.MustCompile(`(?i)^Template_used:\s*LightNovelTemplate\s*$`)
+	statusRE          = regexp.MustCompile(`(?i)^Status:\s*(.*)$`)
+	statusListItemRE  = regexp.MustCompile(`^\s*-\s*(.+)$`)
+	readVolumesRE     = regexp.MustCompile(`(?i)^Read Volumes:\s*(\d+)`)
 
 	// Prefix matchers for line-based rewriting.
 	volPrefixRE = regexp.MustCompile(`(?i)^Volumes:\s*`)
@@ -29,11 +32,14 @@ var (
 
 // Entry is one tracked novel.
 type Entry struct {
-	Title   string
-	Link    string
-	Volumes int
-	Path    string
-	Cover   string // attachment filename from `Cover: "[[file]]"` (no path)
+	Title          string
+	Link           string
+	Volumes        int
+	Path           string
+	Cover          string // attachment filename from `Cover: "[[file]]"` (no path)
+	Status         string // e.g. "Queue", "Completed", "Dropped"
+	ReadVolumes    int
+	HasReadVolumes bool // false when the field is blank/absent
 }
 
 // Scan walks root for .md notes tagged #LightNovel that carry a Link,
@@ -80,13 +86,17 @@ func parse(path string) (Entry, bool, error) {
 	defer f.Close()
 
 	var (
-		link        string
-		volumes     int
-		cover       string
-		isLightNvl  bool
-		hasTemplate bool
-		frontmatter bool
-		seenFence   bool
+		link           string
+		volumes        int
+		cover          string
+		status         string
+		readVolumes    int
+		hasReadVolumes bool
+		pendingStatus  bool
+		isLightNvl     bool
+		hasTemplate    bool
+		frontmatter    bool
+		seenFence      bool
 	)
 
 	sc := bufio.NewScanner(f)
@@ -106,6 +116,12 @@ func parse(path string) (Entry, bool, error) {
 			continue
 		}
 
+		if pendingStatus {
+			if m := statusListItemRE.FindStringSubmatch(line); m != nil {
+				status = strings.TrimSpace(m[1])
+			}
+			pendingStatus = false
+		}
 		if strings.Contains(line, "#LightNovel") {
 			isLightNvl = true
 		}
@@ -121,6 +137,18 @@ func parse(path string) (Entry, bool, error) {
 		if m := coverRE.FindStringSubmatch(line); m != nil {
 			cover = strings.TrimSpace(m[1])
 		}
+		if m := statusRE.FindStringSubmatch(line); m != nil {
+			val := strings.TrimSpace(m[1])
+			if val != "" {
+				status = val
+			} else {
+				pendingStatus = true
+			}
+		}
+		if m := readVolumesRE.FindStringSubmatch(line); m != nil {
+			readVolumes, _ = strconv.Atoi(m[1])
+			hasReadVolumes = true
+		}
 	}
 	if err := sc.Err(); err != nil {
 		return Entry{}, false, err
@@ -131,7 +159,8 @@ func parse(path string) (Entry, bool, error) {
 	}
 
 	title := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-	return Entry{Title: title, Link: link, Volumes: volumes, Path: path, Cover: cover}, true, nil
+	return Entry{Title: title, Link: link, Volumes: volumes, Path: path, Cover: cover,
+		Status: status, ReadVolumes: readVolumes, HasReadVolumes: hasReadVolumes}, true, nil
 }
 
 // Today returns the date stamp used for Last Update (YYYY-MM-DD).

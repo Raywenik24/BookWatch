@@ -82,7 +82,7 @@ func TestSecurityHeaders(t *testing.T) {
 
 func TestReadEndpoints_openAndJSON(t *testing.T) {
 	h, st, _ := newTestServer(t)
-	st.UpsertBook("A", "https://x/1", "", 2, "")
+	st.UpsertBook("A", "https://x/1", "", 2, "", "", nil)
 
 	for _, path := range []string{"/api/books", "/api/updates", "/api/runs", "/api/events", "/api/status", "/api/sources", "/api/settings"} {
 		rec := do(h, "GET", path, "", "")
@@ -103,7 +103,7 @@ func TestReadEndpoints_openAndJSON(t *testing.T) {
 
 func TestDeleteBook_untracksAndLogsEvent(t *testing.T) {
 	h, st, _ := newTestServer(t)
-	id, _ := st.UpsertBook("A", "https://x/1", "", 2, "")
+	id, _ := st.UpsertBook("A", "https://x/1", "", 2, "", "", nil)
 
 	if rec := do(h, "DELETE", fmt.Sprintf("/api/books/%d", id), "secret", ""); rec.Code != http.StatusOK {
 		t.Fatalf("got %d", rec.Code)
@@ -155,7 +155,7 @@ func TestCover_indexInvalidates(t *testing.T) {
 	// fast direct-path check.
 	sub := filepath.Join(vaultDir, "elsewhere")
 	os.MkdirAll(sub, 0o755)
-	id, _ := st.UpsertBook("Late", "https://x/late", "", 1, "late.png")
+	id, _ := st.UpsertBook("Late", "https://x/late", "", 1, "late.png", "", nil)
 
 	// Not on disk yet → 404, and the index gets built without it.
 	if rec := do(h, "GET", fmt.Sprintf("/api/cover/%d", id), "", ""); rec.Code != http.StatusNotFound {
@@ -172,7 +172,7 @@ func TestCover_serveMissingAndTraversalGuard(t *testing.T) {
 	h, st, vaultDir := newTestServer(t)
 
 	// Book with no cover → 404.
-	noCover, _ := st.UpsertBook("A", "https://x/1", "", 1, "")
+	noCover, _ := st.UpsertBook("A", "https://x/1", "", 1, "", "", nil)
 	if rec := do(h, "GET", fmt.Sprintf("/api/cover/%d", noCover), "", ""); rec.Code != http.StatusNotFound {
 		t.Errorf("no-cover book: got %d", rec.Code)
 	}
@@ -181,7 +181,7 @@ func TestCover_serveMissingAndTraversalGuard(t *testing.T) {
 	attach := filepath.Join(vaultDir, "_attachments")
 	os.MkdirAll(attach, 0o755)
 	os.WriteFile(filepath.Join(attach, "c.png"), []byte("PNGDATA"), 0o644)
-	withCover, _ := st.UpsertBook("B", "https://x/2", "", 1, "c.png")
+	withCover, _ := st.UpsertBook("B", "https://x/2", "", 1, "c.png", "", nil)
 	rec := do(h, "GET", fmt.Sprintf("/api/cover/%d", withCover), "", "")
 	if rec.Code != http.StatusOK || rec.Body.String() != "PNGDATA" {
 		t.Errorf("cover serve: code=%d body=%q", rec.Code, rec.Body.String())
@@ -191,7 +191,7 @@ func TestCover_serveMissingAndTraversalGuard(t *testing.T) {
 	// so it cannot escape the vault; the basename isn't present → 404, not a leak.
 	secret := filepath.Join(t.TempDir(), "secret.txt")
 	os.WriteFile(secret, []byte("TOPSECRET"), 0o644)
-	evil, _ := st.UpsertBook("C", "https://x/3", "", 1, "../../../"+secret)
+	evil, _ := st.UpsertBook("C", "https://x/3", "", 1, "../../../"+secret, "", nil)
 	rec = do(h, "GET", fmt.Sprintf("/api/cover/%d", evil), "", "")
 	if rec.Body.String() == "TOPSECRET" {
 		t.Error("path traversal escaped the vault — cover guard failed")

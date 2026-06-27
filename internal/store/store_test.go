@@ -48,12 +48,12 @@ func TestOpen_migrateIdempotentAndSeedOnce(t *testing.T) {
 
 func TestUpsertBook_insertUpdateAndCoverPreserve(t *testing.T) {
 	st := openTemp(t)
-	id, err := st.UpsertBook("Title", "https://x/1", "/p/1.md", 2, "cover.jpg")
+	id, err := st.UpsertBook("Title", "https://x/1", "/p/1.md", 2, "cover.jpg", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Update with an empty cover must preserve the existing cover.
-	id2, err := st.UpsertBook("Title v2", "https://x/1", "/p/1.md", 3, "")
+	id2, err := st.UpsertBook("Title v2", "https://x/1", "/p/1.md", 3, "", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func TestUpsertBook_insertUpdateAndCoverPreserve(t *testing.T) {
 		t.Errorf("title not updated: %q", b.Title)
 	}
 	// A non-empty cover does update.
-	st.UpsertBook("Title v2", "https://x/1", "/p/1.md", 3, "new.png")
+	st.UpsertBook("Title v2", "https://x/1", "/p/1.md", 3, "new.png", "", nil)
 	books, _ = st.ListBooks()
 	if books[0].Cover != "new.png" {
 		t.Errorf("cover not updated: %q", books[0].Cover)
@@ -87,7 +87,7 @@ func TestBookExists(t *testing.T) {
 	if ex, _ := st.BookExists("https://x/none"); ex {
 		t.Error("unexpected exists")
 	}
-	st.UpsertBook("T", "https://x/1", "", 1, "")
+	st.UpsertBook("T", "https://x/1", "", 1, "", "", nil)
 	if ex, _ := st.BookExists("https://x/1"); !ex {
 		t.Error("expected exists")
 	}
@@ -95,7 +95,7 @@ func TestBookExists(t *testing.T) {
 
 func TestPendingUpdate_onePerBookAndApply(t *testing.T) {
 	st := openTemp(t)
-	bookID, _ := st.UpsertBook("T", "https://x/1", "/p.md", 2, "")
+	bookID, _ := st.UpsertBook("T", "https://x/1", "/p.md", 2, "", "", nil)
 
 	// Detecting twice must not stack — one pending row, refreshed.
 	u1, err := st.UpsertPendingUpdate(bookID, 2, 3, "https://x/1")
@@ -186,7 +186,7 @@ func TestDeleteBook_cascadesOnFreshConnection(t *testing.T) {
 	}
 	defer pin.Close()
 
-	bookID, _ := st.UpsertBook("T", "https://x/casc", "/p.md", 2, "")
+	bookID, _ := st.UpsertBook("T", "https://x/casc", "/p.md", 2, "", "", nil)
 	st.UpsertPendingUpdate(bookID, 2, 3, "https://x/casc")
 	if err := st.DeleteBook(bookID); err != nil {
 		t.Fatal(err)
@@ -198,7 +198,7 @@ func TestDeleteBook_cascadesOnFreshConnection(t *testing.T) {
 
 func TestDeleteBook_cascadesUpdates(t *testing.T) {
 	st := openTemp(t)
-	bookID, _ := st.UpsertBook("T", "https://x/1", "/p.md", 2, "")
+	bookID, _ := st.UpsertBook("T", "https://x/1", "/p.md", 2, "", "", nil)
 	st.UpsertPendingUpdate(bookID, 2, 3, "https://x/1")
 	if err := st.DeleteBook(bookID); err != nil {
 		t.Fatal(err)
@@ -303,7 +303,7 @@ func TestBookCoverAndTitle(t *testing.T) {
 	if ti, _ := st.BookTitle(999); ti != "" {
 		t.Error("expected empty title for missing book")
 	}
-	id, _ := st.UpsertBook("My Book", "https://x/1", "", 1, "c.jpg")
+	id, _ := st.UpsertBook("My Book", "https://x/1", "", 1, "c.jpg", "", nil)
 	if c, _ := st.BookCover(id); c != "c.jpg" {
 		t.Errorf("cover: %q", c)
 	}

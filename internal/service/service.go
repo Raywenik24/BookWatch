@@ -72,7 +72,8 @@ func RunCheck(sc *scraper.Client, st *store.Store, scanRoot string, write bool,
 				}
 			}
 			if st != nil {
-				if _, e := st.UpsertBook(r.Entry.Title, r.Entry.Link, r.Entry.Path, r.Entry.Volumes, r.Entry.Cover); e != nil {
+				rv := entryReadVolumes(r.Entry)
+				if _, e := st.UpsertBook(r.Entry.Title, r.Entry.Link, r.Entry.Path, r.Entry.Volumes, r.Entry.Cover, r.Entry.Status, rv); e != nil {
 					return sum, e
 				}
 			}
@@ -98,7 +99,8 @@ func RunCheck(sc *scraper.Client, st *store.Store, scanRoot string, write bool,
 			if wrote {
 				vol = r.Latest
 			}
-			bookID, e := st.UpsertBook(r.Entry.Title, r.Entry.Link, r.Entry.Path, vol, r.Entry.Cover)
+			rv := entryReadVolumes(r.Entry)
+			bookID, e := st.UpsertBook(r.Entry.Title, r.Entry.Link, r.Entry.Path, vol, r.Entry.Cover, r.Entry.Status, rv)
 			if e != nil {
 				return sum, e
 			}
@@ -145,6 +147,14 @@ func RunCheck(sc *scraper.Client, st *store.Store, scanRoot string, write bool,
 		}
 	}
 	return sum, nil
+}
+
+func entryReadVolumes(e vault.Entry) *int {
+	if !e.HasReadVolumes {
+		return nil
+	}
+	v := e.ReadVolumes
+	return &v
 }
 
 // ApplyResult is the outcome of applying pending updates to the vault.

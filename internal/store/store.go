@@ -106,6 +106,10 @@ var migrations = []string{
 		kind    TEXT NOT NULL,
 		message TEXT NOT NULL
 	);`,
+	// v4: vault frontmatter fields surfaced in the API — filter buttons (issue #4)
+	// and auto-correction (issue #5) both depend on these.
+	`ALTER TABLE books ADD COLUMN status TEXT NOT NULL DEFAULT '';
+	 ALTER TABLE books ADD COLUMN read_volumes INTEGER;`,
 }
 
 func (s *Store) migrate() error {
@@ -193,20 +197,22 @@ func (s *Store) FinishRun(id int64, checked, updated, errors int, summary string
 }
 
 // UpsertBook inserts or updates a book by link, returning its id. An empty
-// cover never clears an existing one — a re-check before the next note parse
-// keeps whatever was already stored.
-func (s *Store) UpsertBook(title, link, path string, volumes int, cover string) (int64, error) {
+// cover or status never clears an existing value. A nil readVolumes leaves
+// the existing read_volumes column untouched.
+func (s *Store) UpsertBook(title, link, path string, volumes int, cover, status string, readVolumes *int) (int64, error) {
 	ts := now()
 	_, err := s.db.Exec(`
-		INSERT INTO books(title, link, path, volumes, cover, created_at, updated_at, last_checked_at)
-		VALUES(?,?,?,?,?,?,?,?)
+		INSERT INTO books(title, link, path, volumes, cover, status, read_volumes, created_at, updated_at, last_checked_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(link) DO UPDATE SET
 			title=excluded.title, path=excluded.path,
 			volumes=excluded.volumes,
 			cover=CASE WHEN excluded.cover='' THEN books.cover ELSE excluded.cover END,
+			status=CASE WHEN excluded.status='' THEN books.status ELSE excluded.status END,
+			read_volumes=COALESCE(excluded.read_volumes, books.read_volumes),
 			updated_at=excluded.updated_at,
 			last_checked_at=excluded.last_checked_at`,
-		title, link, path, volumes, cover, ts, ts, ts)
+		title, link, path, volumes, cover, status, readVolumes, ts, ts, ts)
 	if err != nil {
 		return 0, err
 	}
@@ -224,12 +230,14 @@ type Book struct {
 	Path          string `json:"path"`
 	Volumes       int    `json:"volumes"`
 	Cover         string `json:"cover"`
+	Status        string `json:"status"`
+	ReadVolumes   *int   `json:"read_volumes"`
 	UpdatedAt     string `json:"updated_at"`
 	LastCheckedAt string `json:"last_checked_at"`
 }
 
 func (s *Store) ListBooks() ([]Book, error) {
-	rows, err := s.db.Query(`SELECT id, title, link, path, volumes, cover, updated_at,
+	rows, err := s.db.Query(`SELECT id, title, link, path, volumes, cover, status, read_volumes, updated_at,
 		COALESCE(last_checked_at,'') FROM books ORDER BY title COLLATE NOCASE`)
 	if err != nil {
 		return nil, err
@@ -238,7 +246,7 @@ func (s *Store) ListBooks() ([]Book, error) {
 	var out []Book
 	for rows.Next() {
 		var b Book
-		if err := rows.Scan(&b.ID, &b.Title, &b.Link, &b.Path, &b.Volumes, &b.Cover, &b.UpdatedAt, &b.LastCheckedAt); err != nil {
+		if err := rows.Scan(&b.ID, &b.Title, &b.Link, &b.Path, &b.Volumes, &b.Cover, &b.Status, &b.ReadVolumes, &b.UpdatedAt, &b.LastCheckedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, b)
