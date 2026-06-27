@@ -231,11 +231,15 @@
 
     <!-- LOGS -->
     <section id="logs">
-      <h2>Activity</h2>
-      <table><thead><tr><th>Time</th><th>Event</th><th>Detail</th></tr></thead>
+      <div class="row" style="margin-bottom:.6rem">
+        <div class="viewtoggle">
+          <button id="logTabActivity" class="btn ghost active" onclick="setLogTab('activity')">Activity</button>
+          <button id="logTabRuns"     class="btn ghost"        onclick="setLogTab('runs')">Check Runs</button>
+        </div>
+      </div>
+      <table id="logsActivityTable"><thead><tr><th>Time</th><th>Event</th><th>Detail</th></tr></thead>
       <tbody id="eventsBody"><tr><td>loading…</td></tr></tbody></table>
-      <h2>Check runs</h2>
-      <table><thead><tr><th>#</th><th>Started</th><th>Checked</th><th>Updated</th><th>Errors</th><th>Summary</th></tr></thead>
+      <table id="logsRunsTable" hidden><thead><tr><th>#</th><th>Started</th><th>Checked</th><th>Updated</th><th>Errors</th><th>Summary</th></tr></thead>
       <tbody id="logsBody"><tr><td>loading…</td></tr></tbody></table>
     </section>
   </main>
@@ -421,6 +425,15 @@ let booksData = [];
 async function loadBooks(){
   booksData = await getJSON('/api/books') || [];
   renderBooks($('bookFilter') ? $('bookFilter').value : '');
+}
+let logTab = lsGet('log_tab') || 'activity';
+function setLogTab(t){
+  logTab = t;
+  lsSet('log_tab', t);
+  $('logTabActivity').classList.toggle('active', t === 'activity');
+  $('logTabRuns').classList.toggle('active', t === 'runs');
+  $('logsActivityTable').hidden = t !== 'activity';
+  $('logsRunsTable').hidden    = t !== 'runs';
 }
 let bookView = lsGet('book_view') || 'grid';
 let statusFilter = '';
@@ -681,6 +694,7 @@ applyTheme(lsGet('pw_theme') || 'mocha');
 $('token').value = token();
 $('sortBtn').textContent = bookSort === 'asc' ? '↑ A–Z' : '↓ Z–A';
 setBookView(bookView);
+setLogTab(logTab);
 loadUpdates(); loadBooks(); loadLogs(); loadEvents(); loadSources(); loadSettings(); refreshStatus();
 </script>
 </body>
