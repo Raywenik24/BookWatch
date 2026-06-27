@@ -51,7 +51,7 @@
   td.nowrap, th.nowrap { white-space: nowrap; }
   small, .muted { color: var(--subtext); }
   /* toasts: stacked top-right, color-coded, auto-dismissing */
-  #toasts { position: fixed; top: .8rem; right: .8rem; z-index: 50; display: flex; flex-direction: column;
+  #toasts { position: fixed; top: 4rem; right: .8rem; z-index: 50; display: flex; flex-direction: column;
             gap: .5rem; max-width: min(360px, calc(100vw - 1.6rem)); }
   .toast { display: flex; align-items: center; gap: .5rem; padding: .55rem .7rem; border-radius: 8px;
            background: var(--mantle); border: 1px solid var(--surface1); border-left: 3px solid var(--surface1);
@@ -140,7 +140,6 @@
     </nav>
     <span class="spacer"></span>
     <button class="btn ghost" id="applyBtn" onclick="applyUpdates()" hidden>Update Obsidian</button>
-    <button class="btn" id="checkBtn" onclick="runCheck()">Run check</button>
   </header>
 
   <div id="toasts"></div>
@@ -153,7 +152,10 @@
 
     <!-- UPDATES -->
     <section id="updates" class="active">
-      <h2>Recent updates</h2>
+      <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:.4rem">
+        <h2 style="margin:0">Recent updates</h2>
+        <button class="btn" id="checkBtn" onclick="runCheck()">Run check</button>
+      </div>
       <table><thead><tr><th>Title</th><th>Volumes</th><th>Status</th><th>Link</th><th>Detected</th></tr></thead>
       <tbody id="updatesBody"><tr><td>loading…</td></tr></tbody></table>
     </section>
