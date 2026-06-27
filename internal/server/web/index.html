@@ -80,6 +80,10 @@
   /* tracked-books grid (cover gallery) */
   .viewtoggle { display: flex; gap: .25rem; flex: 0 0 auto; }
   .viewtoggle .btn { padding: .35rem .7rem; }
+  .filter-bar { flex-wrap: nowrap; overflow-x: auto; gap: .3rem; }
+  .filter-btn { opacity: .45; transition: opacity .15s; white-space: nowrap; }
+  .filter-btn.active { opacity: 1; color: var(--mauve); border-color: color-mix(in srgb, var(--mauve) 60%, transparent); }
+  .filter-validate { margin-left: auto; }
   .cover-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: .8rem; margin: .6rem 0; }
   .cover-grid[hidden] { display: none; }
   .cover-card { position: relative; background: var(--mantle); border: 1px solid var(--surface0);
@@ -165,9 +169,17 @@
       <div class="row">
         <input id="bookFilter" placeholder="search title…" autocomplete="off" spellcheck="false" oninput="renderBooks(this.value)">
         <div class="viewtoggle">
+          <button id="sortBtn" class="btn ghost" onclick="toggleSort()">↑ A–Z</button>
           <button id="viewTable" class="btn ghost" onclick="setBookView('table')">Table</button>
           <button id="viewGrid" class="btn ghost" onclick="setBookView('grid')">Grid</button>
         </div>
+      </div>
+      <div class="row filter-bar">
+        <button class="btn ghost filter-btn active" data-f="" onclick="setStatusFilter('')">All</button>
+        <button class="btn ghost filter-btn" data-f="queue" onclick="setStatusFilter('queue')">Queue</button>
+        <button class="btn ghost filter-btn" data-f="completed" onclick="setStatusFilter('completed')">Completed</button>
+        <button class="btn ghost filter-btn" data-f="dropped" onclick="setStatusFilter('dropped')">Dropped</button>
+        <button class="btn ghost filter-btn filter-validate" data-f="validate" onclick="setStatusFilter('validate')">Validate</button>
       </div>
       <table id="booksTable"><thead><tr><th>Title</th><th>Vol</th><th>Link</th><th>Last checked</th><th></th></tr></thead>
       <tbody id="booksBody"><tr><td>loading…</td></tr></tbody></table>
@@ -409,6 +421,8 @@ async function loadBooks(){
   renderBooks($('bookFilter') ? $('bookFilter').value : '');
 }
 let bookView = lsGet('book_view') || 'grid';
+let statusFilter = '';
+let bookSort = lsGet('book_sort') || 'asc';
 function setBookView(v){
   bookView = (v === 'grid') ? 'grid' : 'table';
   lsSet('book_view', bookView);
@@ -419,11 +433,28 @@ function setBookView(v){
   renderBooks($('bookFilter') ? $('bookFilter').value : '');
 }
 const UNTRACK_TIP = 'Remove from this list only — the note and cover are kept. If the note still exists it reappears on the next check.';
+function setStatusFilter(f){
+  statusFilter = f;
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.toggle('active', b.dataset.f === f));
+  renderBooks($('bookFilter') ? $('bookFilter').value : '');
+}
+function toggleSort(){
+  bookSort = bookSort === 'asc' ? 'desc' : 'asc';
+  lsSet('book_sort', bookSort);
+  $('sortBtn').textContent = bookSort === 'asc' ? '↑ A–Z' : '↓ Z–A';
+  renderBooks($('bookFilter') ? $('bookFilter').value : '');
+}
 function renderBooks(q){
   q = (q || '').trim();
   let list = booksData;
   if(q) list = list.map(x => ({x, s: fzScore(q, x.title)})).filter(e => e.s >= 0)
                    .sort((a,b) => b.s - a.s).map(e => e.x);
+  if(statusFilter === 'validate'){
+    list = list.filter(x => x.read_volumes != null && x.read_volumes > x.volumes);
+  } else if(statusFilter){
+    list = list.filter(x => (x.status||'').toLowerCase() === statusFilter);
+  }
+  list = list.slice().sort((a,b) => bookSort === 'asc' ? a.title.localeCompare(b.title) : b.title.localeCompare(a.title));
   if(bookView === 'grid') renderBooksGrid(list, q); else renderBooksTable(list, q);
 }
 function renderBooksTable(list, q){
@@ -646,6 +677,7 @@ async function saveSettings(){
 /* init */
 applyTheme(lsGet('pw_theme') || 'mocha');
 $('token').value = token();
+$('sortBtn').textContent = bookSort === 'asc' ? '↑ A–Z' : '↓ Z–A';
 setBookView(bookView);
 loadUpdates(); loadBooks(); loadLogs(); loadEvents(); loadSources(); loadSettings(); refreshStatus();
 </script>
