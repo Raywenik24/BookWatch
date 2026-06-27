@@ -17,9 +17,10 @@ import (
 
 // Ported regexes from metadata_extractor.py.
 var (
-	linkRE    = regexp.MustCompile(`(?i)^Link:\s*(https?://\S+)`)
-	volumesRE = regexp.MustCompile(`(?i)^Volumes:\s*(\d+)`)
-	coverRE   = regexp.MustCompile(`(?i)^Cover:\s*"?\[\[(.+?)\]\]"?`)
+	linkRE       = regexp.MustCompile(`(?i)^Link:\s*(https?://\S+)`)
+	volumesRE    = regexp.MustCompile(`(?i)^Volumes:\s*(\d+)`)
+	coverRE      = regexp.MustCompile(`(?i)^Cover:\s*"?\[\[(.+?)\]\]"?`)
+	templateUsed = regexp.MustCompile(`(?i)^Template_used:\s*LightNovelTemplate\s*$`)
 
 	// Prefix matchers for line-based rewriting.
 	volPrefixRE = regexp.MustCompile(`(?i)^Volumes:\s*`)
@@ -83,6 +84,7 @@ func parse(path string) (Entry, bool, error) {
 		volumes     int
 		cover       string
 		isLightNvl  bool
+		hasTemplate bool
 		frontmatter bool
 		seenFence   bool
 	)
@@ -107,6 +109,9 @@ func parse(path string) (Entry, bool, error) {
 		if strings.Contains(line, "#LightNovel") {
 			isLightNvl = true
 		}
+		if templateUsed.MatchString(line) {
+			hasTemplate = true
+		}
 		if m := linkRE.FindStringSubmatch(line); m != nil {
 			link = m[1]
 		}
@@ -121,7 +126,7 @@ func parse(path string) (Entry, bool, error) {
 		return Entry{}, false, err
 	}
 
-	if !isLightNvl || link == "" {
+	if !isLightNvl || !hasTemplate || link == "" {
 		return Entry{}, false, nil
 	}
 

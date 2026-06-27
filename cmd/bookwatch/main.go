@@ -100,15 +100,14 @@ func runServe(argv []string) {
 
 // ── check ─────────────────────────────────────────────────────
 func runCheck(argv []string) {
+	cfg := config.Default()
+
 	fs := flag.NewFlagSet("check", flag.ExitOnError)
-	root := fs.String("root", `./vault/LightNovel`,
-		"vault folder to scan for #LightNovel notes")
+	root := fs.String("root", cfg.ScanRoot, "vault folder to scan for #LightNovel notes")
 	quiet := fs.Bool("quiet", false, "suppress per-novel progress")
 	record := fs.Bool("record", false, "persist run + updates to the SQLite DB")
 	write := fs.Bool("write", false, "APPLY updates to the vault (bump Volumes + Last Update)")
 	fs.Parse(argv)
-
-	cfg := config.Default()
 	sc := scraper.New(cfg.UserAgent, cfg.Timeout)
 
 	var st *store.Store

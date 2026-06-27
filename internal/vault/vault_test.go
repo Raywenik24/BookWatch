@@ -16,6 +16,7 @@ Status: reading
 Cover: "[[cover.jpg]]"
 tags:
   - "#LightNovel"
+Template_used: LightNovelTemplate
 ---
 ### Test Novel
 body text

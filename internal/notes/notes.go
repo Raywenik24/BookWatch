@@ -91,6 +91,8 @@ Cover: "[[%s]]"
 tags:
   - "#LightNovel"
 Status:
+  - Queue
+Template_used: LightNovelTemplate
 Series Status:
 created: %s
 modified: %s

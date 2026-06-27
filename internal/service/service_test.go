@@ -31,7 +31,7 @@ func novelHTML(vols int) string {
 
 func writeNote(t *testing.T, dir, name, link string, vols int) string {
 	t.Helper()
-	content := fmt.Sprintf("---\nLink: %s\nVolumes: %d\ntags:\n  - \"#LightNovel\"\n---\n### %s\n", link, vols, name)
+	content := fmt.Sprintf("---\nLink: %s\nVolumes: %d\ntags:\n  - \"#LightNovel\"\nTemplate_used: LightNovelTemplate\n---\n### %s\n", link, vols, name)
 	p := filepath.Join(dir, name+".md")
 	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
@@ -143,10 +143,9 @@ func TestRunCheck_prunesOnlyMissingNotes(t *testing.T) {
 	st := openStore(t)
 	sc := scraper.New("t", 5*time.Second)
 
-	// Stale: not in the scan AND its note path is gone → must be pruned.
+	// Stale: not in the scan (note gone) → must be pruned.
 	st.UpsertBook("Stale", "https://nope/x", filepath.Join(vaultDir, "gone.md"), 1, "")
-	// Not in the scan but its path still exists on disk → must be kept
-	// (guards against a transient stat failure wrongly pruning).
+	// Not in the scan (note exists but lacks Template_used filter) → also pruned.
 	existing := filepath.Join(vaultDir, "untagged.md")
 	os.WriteFile(existing, []byte("not a LN note"), 0o644)
 	st.UpsertBook("OnDisk", "https://nope/y", existing, 1, "")
@@ -163,7 +162,7 @@ func TestRunCheck_prunesOnlyMissingNotes(t *testing.T) {
 	if links["https://nope/x"] {
 		t.Error("stale book with a missing note should have been pruned")
 	}
-	if !links["https://nope/y"] {
-		t.Error("book whose note still exists on disk must be kept")
+	if links["https://nope/y"] {
+		t.Error("book whose note lacks Template_used should have been pruned")
 	}
 }

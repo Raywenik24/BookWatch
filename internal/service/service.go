@@ -3,10 +3,7 @@
 package service
 
 import (
-	"errors"
 	"fmt"
-	"io/fs"
-	"os"
 
 	"bookwatch/internal/checker"
 	"bookwatch/internal/scraper"
@@ -117,9 +114,10 @@ func RunCheck(sc *scraper.Client, st *store.Store, scanRoot string, write bool,
 		}
 	}
 
-	// Auto-prune: any tracked book absent from this scan (by link) whose note
-	// file is also gone from disk is a stale row → drop it. Vault is the source
-	// of truth, so a note that merely moved (still scanned) is never pruned.
+	// Auto-prune: any tracked book absent from this scan is a stale row → drop
+	// it. The scan is the source of truth: a note not returned by vault.Scan
+	// (missing, moved without the tag, or no longer matching the filter) should
+	// not remain in the DB.
 	if st != nil {
 		seen := make(map[string]bool, len(results))
 		for _, r := range results {
@@ -133,16 +131,10 @@ func RunCheck(sc *scraper.Client, st *store.Store, scanRoot string, write bool,
 			if seen[b.Link] {
 				continue
 			}
-			if _, err := os.Stat(b.Path); err == nil || !errors.Is(err, fs.ErrNotExist) {
-				// Keep the book if the note is on disk OR if we can't confirm it's
-				// gone: a permission/IO/OneDrive-sync hiccup must not trigger a
-				// prune. Only a definite "does not exist" drops the row.
-				continue
-			}
 			if e := st.DeleteBook(b.ID); e != nil {
 				return sum, e
 			}
-			st.LogEvent("prune", fmt.Sprintf("Auto-pruned stale book %q (note gone from disk)", b.Title))
+			st.LogEvent("prune", fmt.Sprintf("Auto-pruned %q (not in scan)", b.Title))
 		}
 	}
 
