@@ -28,6 +28,7 @@
   nav button.active { background: var(--surface0); color: var(--text); }
   .spacer { flex: 1; }
   main { max-width: 900px; margin: 0 auto; padding: 1.2rem; }
+  #booksGrid { width: 100vw; margin-left: calc(-50vw + 50%); padding: 0 2.4rem; box-sizing: border-box; margin-top: 2rem; }
   section { display: none; } section.active { display: block; }
   h2 { font-size: 1.05rem; color: var(--mauve); margin-top: 0; }
   .row { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; margin: .6rem 0; }
@@ -79,11 +80,11 @@
   /* tracked-books grid (cover gallery) */
   .viewtoggle { display: flex; gap: .25rem; flex: 0 0 auto; }
   .viewtoggle .btn { padding: .35rem .7rem; }
-  .cover-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: .8rem; margin: .6rem 0; }
+  .cover-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: .8rem; margin: .6rem 0; }
   .cover-grid[hidden] { display: none; }
   .cover-card { position: relative; background: var(--mantle); border: 1px solid var(--surface0);
-        border-radius: 8px; overflow: hidden; transition: border-color .15s; }
-  .cover-card:hover { border-color: var(--mauve); }
+        border-radius: 8px; overflow: hidden; transition: border-color .15s, transform 0.15s ease, box-shadow 0.15s ease; }
+  .cover-card:hover { border-color: var(--mauve); transform: translateY(-3px); box-shadow: 0 6px 20px rgba(0,0,0,.4); }
   .cover-link { display: flex; flex-direction: column; color: var(--text); }
   .cover-link:hover { text-decoration: none; }
   .cover-link:visited { color: var(--text); }
@@ -407,7 +408,7 @@ async function loadBooks(){
   booksData = await getJSON('/api/books') || [];
   renderBooks($('bookFilter') ? $('bookFilter').value : '');
 }
-let bookView = lsGet('book_view') === 'grid' ? 'grid' : 'table';
+let bookView = lsGet('book_view') || 'grid';
 function setBookView(v){
   bookView = (v === 'grid') ? 'grid' : 'table';
   lsSet('book_view', bookView);
