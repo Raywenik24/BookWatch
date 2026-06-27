@@ -221,6 +221,74 @@ func UpdateVolumes(path string, newVolume int, today string) error {
 	return AtomicWrite(path, []byte(strings.Join(lines, nl)), 0o644)
 }
 
+// UpdateStatus rewrites the `Status:` field inside the note's frontmatter,
+// always writing in list format:
+//
+//	Status:
+//	  - <newStatus>
+//
+// Both scalar (Status: Value) and list (Status:\n  - Value) forms are handled.
+// If no Status field exists it is inserted before the closing fence.
+func UpdateStatus(path, newStatus string) error {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+
+	nl := "\n"
+	if bytes.Contains(raw, []byte("\r\n")) {
+		nl = "\r\n"
+	}
+	lines := strings.Split(strings.ReplaceAll(string(raw), "\r\n", "\n"), "\n")
+
+	fence := 0
+	closeIdx := -1
+	statusIdx := -1
+	statusIsScalar := false
+
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "---" {
+			fence++
+			if fence == 2 {
+				closeIdx = i
+				break
+			}
+			continue
+		}
+		if fence == 1 {
+			if m := statusRE.FindStringSubmatch(line); m != nil && statusIdx == -1 {
+				statusIdx = i
+				statusIsScalar = strings.TrimSpace(m[1]) != ""
+			}
+		}
+	}
+
+	if closeIdx == -1 {
+		return fmt.Errorf("no frontmatter in %s", path)
+	}
+
+	switch {
+	case statusIdx != -1 && statusIsScalar:
+		// "Status: Value" → "Status:" + "  - newStatus"
+		lines[statusIdx] = "Status:"
+		lines = insertAt(lines, statusIdx+1, "  - "+newStatus)
+	case statusIdx != -1:
+		// List form: next line is "  - OldValue"
+		next := statusIdx + 1
+		if next < len(lines) && statusListItemRE.MatchString(lines[next]) {
+			lines[next] = "  - " + newStatus
+		} else {
+			lines = insertAt(lines, next, "  - "+newStatus)
+		}
+	default:
+		// No Status field: insert key + list item before closing fence.
+		lines = insertAt(lines, closeIdx, "Status:")
+		lines = insertAt(lines, closeIdx+1, "  - "+newStatus)
+	}
+
+	return AtomicWrite(path, []byte(strings.Join(lines, nl)), 0o644)
+}
+
 // AtomicWrite writes data to a temp file in the same directory and renames it
 // over path, so a crash or error mid-write can never leave a half-written note
 // (os.Rename replaces the destination atomically on the same filesystem).

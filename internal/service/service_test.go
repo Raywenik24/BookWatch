@@ -132,6 +132,93 @@ func TestRunCheck_logsScrapeAnomaly(t *testing.T) {
 	}
 }
 
+func writeNoteWithStatus(t *testing.T, dir, name, link string, vols, readVols int, status string) string {
+	t.Helper()
+	content := fmt.Sprintf(
+		"---\nLink: %s\nVolumes: %d\nRead Volumes: %d\nStatus: %s\ntags:\n  - \"#LightNovel\"\nTemplate_used: LightNovelTemplate\n---\n### %s\n",
+		link, vols, readVols, status, name)
+	p := filepath.Join(dir, name+".md")
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestDetermineStatusCorrection(t *testing.T) {
+	cases := []struct {
+		name   string
+		e      vault.Entry
+		hasNew bool
+		want   string
+	}{
+		{"dropped ignored", vault.Entry{Status: "Dropped", Volumes: 5, ReadVolumes: 3, HasReadVolumes: true}, false, ""},
+		{"hasNew completed -> queue", vault.Entry{Status: "Completed", Volumes: 5, ReadVolumes: 5, HasReadVolumes: true}, true, "Queue"},
+		{"readVols < vols completed -> queue", vault.Entry{Status: "Completed", Volumes: 5, ReadVolumes: 3, HasReadVolumes: true}, false, "Queue"},
+		{"readVols == vols queue -> completed", vault.Entry{Status: "Queue", Volumes: 5, ReadVolumes: 5, HasReadVolumes: true}, false, "Completed"},
+		{"readVols > vols no change", vault.Entry{Status: "Completed", Volumes: 3, ReadVolumes: 5, HasReadVolumes: true}, false, ""},
+		{"blank readVols treated as 0 completed", vault.Entry{Status: "Completed", Volumes: 3, HasReadVolumes: false}, false, "Queue"},
+		{"blank readVols treated as 0 queue no change", vault.Entry{Status: "Queue", Volumes: 5, HasReadVolumes: false}, false, ""},
+		{"hasNew queue no change", vault.Entry{Status: "Queue", Volumes: 5, ReadVolumes: 5, HasReadVolumes: true}, true, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := determineStatusCorrection(tc.e, tc.hasNew)
+			if got != tc.want {
+				t.Errorf("got %q want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRunCheck_statusAutoCorrection(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(novelHTML(2)))
+	}))
+	defer srv.Close()
+
+	vaultDir := t.TempDir()
+	sc := scraper.New("t", 5*time.Second)
+	st := openStore(t)
+
+	// HasNew + Completed → Queue
+	pathHasNew := writeNoteWithStatus(t, vaultDir, "HasNewCompleted", srv.URL+"/a", 1, 1, "Completed")
+	// !HasNew, ReadVols(1) < Vols(2), Completed → Queue
+	pathLowRead := writeNoteWithStatus(t, vaultDir, "LowRead", srv.URL+"/b", 2, 1, "Completed")
+	// !HasNew, ReadVols == Vols, Queue → Completed
+	pathQueueDone := writeNoteWithStatus(t, vaultDir, "QueueDone", srv.URL+"/c", 2, 2, "Queue")
+	// Dropped → never touched
+	pathDropped := writeNoteWithStatus(t, vaultDir, "Dropped", srv.URL+"/d", 2, 2, "Dropped")
+
+	if _, err := RunCheck(sc, st, vaultDir, false, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	checkContains := func(path, want string) {
+		t.Helper()
+		raw, _ := os.ReadFile(path)
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("%s: expected %q in:\n%s", filepath.Base(path), want, raw)
+		}
+	}
+
+	checkContains(pathHasNew, "  - Queue")
+	checkContains(pathLowRead, "  - Queue")
+	checkContains(pathQueueDone, "  - Completed")
+	// Dropped note should not have been rewritten to list format (no correction applied)
+	checkContains(pathDropped, "Dropped")
+
+	evs, _ := st.ListEvents(20)
+	fixCount := 0
+	for _, e := range evs {
+		if e.Kind == "status-fix" {
+			fixCount++
+		}
+	}
+	if fixCount != 3 {
+		t.Errorf("expected 3 status-fix events, got %d: %+v", fixCount, evs)
+	}
+}
+
 func TestRunCheck_prunesOnlyMissingNotes(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(novelHTML(1)))

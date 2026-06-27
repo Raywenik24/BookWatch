@@ -4,6 +4,7 @@ package service
 
 import (
 	"fmt"
+	"strings"
 
 	"bookwatch/internal/checker"
 	"bookwatch/internal/scraper"
@@ -71,6 +72,7 @@ func RunCheck(sc *scraper.Client, st *store.Store, scanRoot string, write bool,
 						r.Entry.Title, r.Latest, r.Entry.Volumes))
 				}
 			}
+			applyStatusCorrection(&r, st)
 			if st != nil {
 				rv := entryReadVolumes(r.Entry)
 				if _, e := st.UpsertBook(r.Entry.Title, r.Entry.Link, r.Entry.Path, r.Entry.Volumes, r.Entry.Cover, r.Entry.Status, rv); e != nil {
@@ -91,6 +93,8 @@ func RunCheck(sc *scraper.Client, st *store.Store, scanRoot string, write bool,
 			Title: r.Entry.Title, Link: r.Entry.Link,
 			OldVolumes: r.Entry.Volumes, NewVolumes: r.Latest, Wrote: wrote,
 		})
+
+		applyStatusCorrection(&r, st)
 
 		if st != nil {
 			// Detect-only runs leave the book's volume count untouched and log the
@@ -147,6 +151,42 @@ func RunCheck(sc *scraper.Client, st *store.Store, scanRoot string, write bool,
 		}
 	}
 	return sum, nil
+}
+
+// determineStatusCorrection returns the corrected status for an entry given
+// the check result, or "" if no correction is needed. Dropped is never touched.
+func determineStatusCorrection(e vault.Entry, hasNew bool) string {
+	if strings.EqualFold(e.Status, "Dropped") {
+		return ""
+	}
+	readVols := e.ReadVolumes // 0 when !HasReadVolumes
+	if hasNew && strings.EqualFold(e.Status, "Completed") {
+		return "Queue"
+	}
+	if readVols < e.Volumes && strings.EqualFold(e.Status, "Completed") {
+		return "Queue"
+	}
+	if !hasNew && e.Volumes > 0 && readVols == e.Volumes && strings.EqualFold(e.Status, "Queue") {
+		return "Completed"
+	}
+	return ""
+}
+
+// applyStatusCorrection writes the corrected status to the vault note when the
+// rules fire, then mutates r.Entry.Status so subsequent store writes use it.
+// Vault writes are not gated by the run's write flag — corrections are immediate.
+func applyStatusCorrection(r *checker.Result, st *store.Store) {
+	newStatus := determineStatusCorrection(r.Entry, r.HasNew)
+	if newStatus == "" || newStatus == r.Entry.Status {
+		return
+	}
+	if err := vault.UpdateStatus(r.Entry.Path, newStatus); err != nil {
+		return
+	}
+	if st != nil {
+		st.LogEvent("status-fix", fmt.Sprintf("%q: Status %s → %s", r.Entry.Title, r.Entry.Status, newStatus))
+	}
+	r.Entry.Status = newStatus
 }
 
 func entryReadVolumes(e vault.Entry) *int {

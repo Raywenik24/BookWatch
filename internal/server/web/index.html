@@ -497,7 +497,7 @@ async function loadLogs(){
      <td>${x.updated}</td><td>${x.errors}</td><td><small>${esc(x.summary)}</small></td></tr>`).join('')
     : '<tr><td><span class="muted">no runs yet</span></td></tr>';
 }
-const EVENT_LABELS = { add:'Book added', untrack:'Book untracked', apply:'Updates applied', prune:'Auto-pruned', anomaly:'Scrape anomaly' };
+const EVENT_LABELS = { add:'Book added', untrack:'Book untracked', apply:'Updates applied', prune:'Auto-pruned', anomaly:'Scrape anomaly', 'status-fix':'Status corrected' };
 async function loadEvents(){
   const r = await getJSON('/api/events');
   $('eventsBody').innerHTML = (r&&r.length) ? r.map(x =>
