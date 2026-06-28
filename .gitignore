@@ -1,3 +1,7 @@
+# run scripts (contain secrets)
+run.sh
+run.ps1
+
 # binaries
 /bookwatch
 *.exe
