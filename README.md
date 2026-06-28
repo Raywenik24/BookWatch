@@ -174,4 +174,4 @@ go test ./...
 
 ## License
 
-Private project — all rights reserved (for now).
+Released under the [MIT License](LICENSE).
