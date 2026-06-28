@@ -3,6 +3,8 @@ package config
 import (
 	"os"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 )
 
@@ -25,7 +27,8 @@ type Config struct {
 
 // Default reads env vars, falling back to sane defaults.
 func Default() Config {
-	vault := env("BOOKWATCH_VAULT_DIR", `./vault`)
+	loadDotEnv()
+	vault := env("BOOKWATCH_VAULT_DIR", "./vault")
 	return Config{
 		UserAgent:      env("BOOKWATCH_USER_AGENT", "Mozilla/5.0 (page-watcher/1.0)"),
 		Timeout:        time.Duration(envInt("BOOKWATCH_TIMEOUT", 30)) * time.Second,
@@ -54,4 +57,34 @@ func envInt(key string, def int) int {
 		}
 	}
 	return def
+}
+
+var dotEnvOnce sync.Once
+
+// loadDotEnv reads KEY=VALUE pairs from a gitignored .env in the working dir,
+// so the real vault path and password live in one untracked file instead of
+// being re-typed each run. Real environment variables (e.g. set by run.ps1 or
+// launch.json) always win — .env only fills in what isn't already set.
+func loadDotEnv() {
+	dotEnvOnce.Do(func() {
+		data, err := os.ReadFile(".env")
+		if err != nil {
+			return // no .env is fine — fall back to env vars + defaults
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			key, val, ok := strings.Cut(line, "=")
+			if !ok {
+				continue
+			}
+			key = strings.TrimSpace(key)
+			val = strings.Trim(strings.TrimSpace(val), `"'`)
+			if key != "" && os.Getenv(key) == "" {
+				os.Setenv(key, val)
+			}
+		}
+	})
 }
