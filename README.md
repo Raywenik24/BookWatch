@@ -49,15 +49,21 @@ The server embeds a single-page UI with five tabs:
 
 ## Screenshots
 
-<!-- Drop the images in docs/screenshots/ with these names and they'll render here. -->
+**Updates** — pending new-volume bumps, applied to the vault on demand.
 
-| Updates | Books |
-|---------|-------|
-| ![Updates tab](docs/screenshots/updates.png) | ![Books tab](docs/screenshots/books.png) |
+<img src="docs/screenshots/updates.png" alt="Updates tab" width="820">
 
-| Sources & rules | Settings |
-|-----------------|----------|
-| ![Sources tab](docs/screenshots/sources.png) | ![Settings tab](docs/screenshots/settings.png) |
+**Books** — everything tracked, with search, status filters, and a cover grid.
+
+<img src="docs/screenshots/books.png" alt="Books tab" width="820">
+
+**Sources & rules** — per-domain scrape rules with a live Test button.
+
+<img src="docs/screenshots/sources.png" alt="Sources tab" width="820">
+
+**Settings** — vault paths and the device-local write password.
+
+<img src="docs/screenshots/settings.png" alt="Settings tab" width="820">
 
 ## How a note is recognised
 
