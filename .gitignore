@@ -5,6 +5,9 @@ run.ps1
 # local env (real vault path + password) — keep .env.example tracked
 .env
 
+# editor / local tooling config
+.claude/
+
 # binaries
 /bookwatch
 *.exe
