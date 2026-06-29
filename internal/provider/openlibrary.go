@@ -16,7 +16,7 @@ const (
 	defaultBaseURL   = "https://openlibrary.org"
 	defaultCoversURL = "https://covers.openlibrary.org"
 	searchLimit      = 20
-	worksLimit       = 50
+	worksLimit       = 500
 	editionsLimit    = 100
 )
 
@@ -162,48 +162,85 @@ type olAuthorSearchResp struct {
 	Docs []olAuthorDoc `json:"docs"`
 }
 
+// olWorksAuthorDoc is a work record used only to extract author identity from
+// the general search index, which has better recall for prolific authors than
+// the dedicated author-search index.
+type olWorksAuthorDoc struct {
+	AuthorName []string `json:"author_name"`
+	AuthorKey  []string `json:"author_key"`
+}
+
+type olWorksAuthorResp struct {
+	Docs []olWorksAuthorDoc `json:"docs"`
+}
+
 func (c *OLClient) AuthorSearch(q string) ([]Author, error) {
+	// Primary: dedicated author index (good for exact matches).
 	path := "/search/authors.json?q=" + url.QueryEscape(q) +
 		"&limit=" + strconv.Itoa(searchLimit)
 	var resp olAuthorSearchResp
 	if err := c.get(c.url(path), &resp); err != nil {
 		return nil, err
 	}
+
+	seen := make(map[string]bool, len(resp.Docs))
 	out := make([]Author, 0, len(resp.Docs))
 	for _, d := range resp.Docs {
-		out = append(out, Author{
-			Name:       d.Name,
-			OLAuthorID: d.Key,
-			WorkCount:  d.WorkCount,
-		})
+		seen[d.Key] = true
+		out = append(out, Author{Name: d.Name, OLAuthorID: d.Key, WorkCount: d.WorkCount})
+	}
+
+	// Supplemental: works-catalog search by author name — catches prolific
+	// authors the author index ranks below obscure exact-match records.
+	// Best-effort: a failure here just means fewer suggestions.
+	var wresp olWorksAuthorResp
+	_ = c.get(c.url("/search.json?author="+url.QueryEscape(q)+
+		"&fields=author_name,author_key&limit=50"), &wresp)
+
+	qLow := strings.ToLower(q)
+	for _, d := range wresp.Docs {
+		for i := range d.AuthorKey {
+			if i >= len(d.AuthorName) {
+				break
+			}
+			if !strings.Contains(strings.ToLower(d.AuthorName[i]), qLow) {
+				continue // skip co-authors whose name doesn't match the query
+			}
+			key := strings.TrimPrefix(d.AuthorKey[i], "/authors/")
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, Author{Name: d.AuthorName[i], OLAuthorID: key})
+		}
 	}
 	return out, nil
 }
 
 // --- AuthorWorks ---
 
-type olWorkEntry struct {
-	Key              string `json:"key"`
-	Title            string `json:"title"`
-	FirstPublishDate string `json:"first_publish_date"`
-}
-
-type olWorksResp struct {
-	Entries []olWorkEntry `json:"entries"`
-}
-
 func (c *OLClient) AuthorWorks(authorID string) ([]Work, error) {
-	path := "/authors/" + authorID + "/works.json?limit=" + strconv.Itoa(worksLimit)
-	var resp olWorksResp
+	// Solr q=author_key:OL\d+A is the correct way to filter by author in OL's
+	// search index — the index has cover_i and first_publish_year on most
+	// records, unlike /authors/{id}/works.json which omits both. Direct
+	// author_key= or /authors/ path forms are not accepted by the API.
+	path := "/search.json?q=" + url.QueryEscape("author_key:"+authorID) +
+		"&fields=key,title,first_publish_year,cover_i&limit=" + strconv.Itoa(worksLimit)
+	var resp olSearchResp
 	if err := c.get(c.url(path), &resp); err != nil {
 		return nil, err
 	}
-	out := make([]Work, 0, len(resp.Entries))
-	for _, e := range resp.Entries {
+	out := make([]Work, 0, len(resp.Docs))
+	for _, d := range resp.Docs {
+		cover := ""
+		if d.CoverI > 0 {
+			cover = fmt.Sprintf("%s/b/id/%d-M.jpg", c.coversURL, d.CoverI)
+		}
 		out = append(out, Work{
-			WorkID:       parseWorkID(e.Key),
-			Title:        e.Title,
-			FirstPubYear: parseYear(e.FirstPublishDate),
+			WorkID:       parseWorkID(d.Key),
+			Title:        d.Title,
+			FirstPubYear: d.FirstPublishYear,
+			CoverURL:     cover,
 		})
 	}
 	return out, nil

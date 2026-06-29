@@ -662,6 +662,14 @@ func (s *Store) UpsertTracker(kind, name, olKey, baselineWorkID, baselineDate, c
 	return id, err
 }
 
+// UpdateTrackerBaseline sets the baseline and language fields on an existing tracker.
+func (s *Store) UpdateTrackerBaseline(id int64, baselineWorkID, baselineDate, catalogLanguage string) error {
+	_, err := s.db.Exec(
+		`UPDATE trackers SET baseline_work_id=?, baseline_date=?, catalog_language=? WHERE id=?`,
+		baselineWorkID, baselineDate, catalogLanguage, id)
+	return err
+}
+
 // DeleteTracker removes a tracker and cascades to seen_works + releases.
 func (s *Store) DeleteTracker(id int64) error {
 	_, err := s.db.Exec(`DELETE FROM trackers WHERE id=?`, id)

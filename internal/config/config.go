@@ -20,9 +20,10 @@ type Config struct {
 	AttachmentsDir string // relative to vault — where covers go
 	ScanRoot       string // folder scanned for #LightNovel notes
 
-	Port     string // HTTP listen port
-	Password string // shared password for write endpoints
+	Port      string // HTTP listen port
+	Password  string // shared password for write endpoints
 	CheckCron string // cron expr for the scheduled check
+	GBKey     string // Google Books API key (optional; empty = anonymous)
 }
 
 // Default reads env vars, falling back to sane defaults.
@@ -37,9 +38,10 @@ func Default() Config {
 		NewNoteDir:     env("BOOKWATCH_NEW_NOTE_DIR", "LightNovel"),
 		AttachmentsDir: env("BOOKWATCH_ATTACHMENTS_DIR", "LightNovel/_attachments"),
 		ScanRoot:       env("BOOKWATCH_SCAN_ROOT", vault+"/LightNovel"),
-		Port:           env("BOOKWATCH_PORT", "8080"),
-		Password:       env("BOOKWATCH_PASSWORD", ""),
-		CheckCron:      env("BOOKWATCH_CHECK_CRON", "0 9 * * *"),
+		Port:      env("BOOKWATCH_PORT", "8080"),
+		Password:  env("BOOKWATCH_PASSWORD", ""),
+		CheckCron: env("BOOKWATCH_CHECK_CRON", "0 9 * * *"),
+		GBKey:     env("BOOKWATCH_GB_KEY", ""),
 	}
 }
 

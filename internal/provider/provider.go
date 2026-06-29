@@ -32,6 +32,7 @@ type Work struct {
 	WorkID       string
 	Title        string
 	FirstPubYear int
+	CoverURL     string
 	Editions     []Edition
 }
 

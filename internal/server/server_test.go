@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"bookwatch/internal/config"
+	"bookwatch/internal/provider"
 	"bookwatch/internal/scheduler"
 	"bookwatch/internal/scraper"
 	"bookwatch/internal/service"
@@ -34,7 +35,9 @@ func newTestServer(t *testing.T) (http.Handler, *store.Store, string) {
 	sched := scheduler.New(func(func(i, total int, title string)) (service.CheckSummary, error) {
 		return service.CheckSummary{}, nil
 	})
-	return New(cfg, st, sc, sched).Handler(), st, vaultDir
+	ol := provider.NewOpenLibrary("test", 5*time.Second)
+	gb := provider.NewGoogleBooks("", 5*time.Second)
+	return New(cfg, st, sc, sched, ol, gb).Handler(), st, vaultDir
 }
 
 func do(h http.Handler, method, path, token string, body string) *httptest.ResponseRecorder {

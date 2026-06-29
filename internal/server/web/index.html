@@ -190,16 +190,96 @@
 
     <!-- SOURCES -->
     <section id="sources">
-      <h2>Sources &amp; scrape rules</h2>
-      <p class="muted">Edit selectors, then <b>Test</b> against a real URL before saving. Description accepts an ordered fallback list separated by <code>||</code>.</p>
-      <div id="sourcesList"></div>
-      <div class="card">
-        <h2>Add source</h2>
-        <div class="row">
-          <input id="newSrcName" placeholder="name (e.g. jnovels)">
-          <input id="newSrcDomain" placeholder="domain (e.g. jnovels.com)">
-          <button class="btn" onclick="addSource()">Add source</button>
+      <div class="row" style="margin-bottom:.6rem">
+        <div class="viewtoggle">
+          <button id="srcTabRules" class="btn ghost active" onclick="setSrcTab('rules')">Scrape rules</button>
+          <button id="srcTabWatchlist" class="btn ghost" onclick="setSrcTab('watchlist')">Watchlist</button>
         </div>
+      </div>
+
+      <!-- Scrape rules panel -->
+      <div id="srcPanelRules">
+        <p class="muted">Edit selectors, then <b>Test</b> against a real URL before saving. Description accepts an ordered fallback list separated by <code>||</code>.</p>
+        <div id="sourcesList"></div>
+        <div class="card">
+          <h2>Add source</h2>
+          <div class="row">
+            <input id="newSrcName" placeholder="name (e.g. jnovels)">
+            <input id="newSrcDomain" placeholder="domain (e.g. jnovels.com)">
+            <button class="btn" onclick="addSource()">Add source</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Watchlist panel -->
+      <div id="srcPanelWatchlist" hidden>
+        <h2>Watch a new author…</h2>
+
+        <!-- Step 1: Author search + disambiguation -->
+        <div class="card">
+          <div class="row" id="wlAuthorRow">
+            <input id="wlAuthorQ" placeholder="Author name (e.g. Graham Masterton)" autocomplete="off" spellcheck="false" onkeydown="if(event.key==='Enter')searchAuthor()">
+            <button class="btn" onclick="searchAuthor()">Find</button>
+          </div>
+          <div id="wlAuthorResults" hidden style="margin-top:.5rem">
+            <small class="muted">Multiple records found — pick the right one:</small>
+            <div id="wlAuthorList" style="margin-top:.4rem"></div>
+          </div>
+          <div id="wlSelectedAuthorInfo" hidden style="margin-top:.4rem">
+            <span id="wlSelectedAuthorBadge" class="badge" style="font-size:.9rem"></span>
+            <button class="btn ghost" style="margin-left:.4rem" onclick="clearWlAuthor()">Change</button>
+          </div>
+        </div>
+
+        <!-- Step 2: Baseline picker (shown after author selected) -->
+        <div id="wlBaselineCard" hidden>
+          <div class="card">
+            <b style="font-size:.9rem; color:var(--subtext)">Baseline — watch for works published after:</b>
+            <div style="margin-top:.5rem">
+              <input id="wlBaselineQ" placeholder="Filter by title…" autocomplete="off" spellcheck="false" oninput="filterWlWorks()" style="width:100%">
+              <div style="margin-top:.5rem">
+                <small class="muted">Or set a year baseline (watch all works after a given year):</small>
+                <div class="row" style="margin-top:.3rem">
+                  <input id="wlBaselineYear" type="number" placeholder="e.g. 2021" style="max-width:120px" onkeydown="if(event.key==='Enter')setManualBaseline()">
+                  <button class="btn ghost" onclick="setManualBaseline()">Use year</button>
+                </div>
+              </div>
+            </div>
+            <div id="wlBaselineSelected" hidden style="margin-top:.6rem; padding-top:.6rem; border-top:1px solid var(--surface0)">
+              Baseline: <strong id="wlBaselineLabel"></strong>
+              <button class="btn ghost" style="margin-left:.4rem" onclick="clearWlBaseline()">Change</button>
+            </div>
+          </div>
+          <div id="wlWorksList" style="width:100vw; margin-left:calc(-50vw + 50%); padding:0 2.4rem; box-sizing:border-box; margin-top:.5rem"></div>
+        </div>
+
+        <!-- Step 3: Language + submit -->
+        <div class="card" id="wlLangCard" hidden>
+          <div class="row" style="align-items:center">
+            <label style="white-space:nowrap; color:var(--subtext)">Catalog language:</label>
+            <select id="wlLang">
+              <option value="eng">English</option>
+              <option value="fre">French</option>
+              <option value="ger">German</option>
+              <option value="spa">Spanish</option>
+              <option value="ita">Italian</option>
+              <option value="por">Portuguese</option>
+              <option value="jpn">Japanese</option>
+              <option value="zho">Chinese</option>
+              <option value="pol">Polish</option>
+              <option value="rus">Russian</option>
+              <option value="nld">Dutch</option>
+              <option value="swe">Swedish</option>
+              <option value="nor">Norwegian</option>
+              <option value="dan">Danish</option>
+            </select>
+            <button class="btn" onclick="saveTracker()">Watch this author</button>
+          </div>
+        </div>
+
+        <!-- Tracked authors list -->
+        <h2 style="margin-top:1.5rem">Watched authors</h2>
+        <div id="wlTrackersList"><p class="muted">Loading…</p></div>
       </div>
     </section>
 
@@ -689,12 +769,288 @@ async function saveSettings(){
   toast(r.ok?'Settings saved.':'Error: '+(r.data.error||r.status), r.ok?'success':'error');
 }
 
+/* ── Sources sub-tabs ────────────────────────────────────────── */
+let srcTab = lsGet('src_tab') || 'rules';
+function setSrcTab(t){
+  srcTab = t; lsSet('src_tab', t);
+  $('srcTabRules').classList.toggle('active', t==='rules');
+  $('srcTabWatchlist').classList.toggle('active', t==='watchlist');
+  $('srcPanelRules').hidden = t!=='rules';
+  $('srcPanelWatchlist').hidden = t!=='watchlist';
+  if(t==='watchlist') loadTrackers();
+}
+
+/* ── Watchlist ────────────────────────────────────────────────── */
+let _wlAuthor = null;
+let _wlBaseline = null;
+let _wlWorks = [];
+let _wlAuthorData = [];
+let _wlPage = 0;
+let _wlPageSize = 25;
+let wlTrackers = [];
+
+async function searchAuthor(){
+  const q = $('wlAuthorQ').value.trim(); if(!q) return;
+  const h = toast('Searching authors…','busy');
+  try {
+    const data = await getJSON('/api/ol/authors?q='+encodeURIComponent(q));
+    if(!data||!data.length){ h.update('No authors found.','error'); return; }
+    h.close();
+    _wlAuthorData = data;
+    if(data.length===1){ selectWlAuthor(data[0]); return; }
+    $('wlAuthorResults').hidden = false;
+    $('wlAuthorList').innerHTML = data.slice(0,10).map((a,i)=>
+      `<div style="margin:.25rem 0"><button class="btn ghost" style="text-align:left;width:100%;font-size:.9rem" onclick="selectWlAuthorIdx(${i})">${esc(a.Name)} <small class="muted">(${a.WorkCount} works)</small></button></div>`
+    ).join('');
+  } catch(e){ h.update('Error: '+e.message,'error'); }
+}
+function selectWlAuthorIdx(i){ selectWlAuthor(_wlAuthorData[i]); }
+function selectWlAuthor(a){
+  _wlAuthor = a;
+  $('wlAuthorResults').hidden = true;
+  $('wlAuthorQ').disabled = true;
+  $('wlSelectedAuthorInfo').hidden = false;
+  $('wlSelectedAuthorBadge').textContent = a.Name+' ('+a.WorkCount+' works)';
+  $('wlBaselineCard').hidden = false;
+  loadWlWorks(a.OLAuthorID);
+}
+function setWlAuthorBadge(name, count){
+  $('wlSelectedAuthorBadge').textContent = name+' ('+count+' works)';
+}
+function clearWlAuthor(){
+  _wlAuthor = null;
+  _wlWorks = [];
+  clearWlBaseline();
+  $('wlAuthorQ').disabled = false;
+  $('wlSelectedAuthorInfo').hidden = true;
+  $('wlBaselineCard').hidden = true;
+  $('wlLangCard').hidden = true;
+  if(_wlAuthorData.length > 1){
+    $('wlAuthorResults').hidden = false;
+  }
+}
+async function loadWlWorks(authorID){
+  $('wlWorksList').innerHTML = '<small class="muted">Loading works…</small>';
+  try {
+    const works = await getJSON('/api/ol/authors/'+encodeURIComponent(authorID)+'/works');
+    if(!works||!works.length){ $('wlWorksList').innerHTML = '<small class="muted">No works found.</small>'; return; }
+    _wlWorks = dedupeWorks(works);
+    if(_wlAuthor) setWlAuthorBadge(_wlAuthor.Name, _wlWorks.length);
+    renderWlWorks();
+  } catch(e){ $('wlWorksList').innerHTML = '<small class="muted">Failed to load works.</small>'; }
+}
+function dedupeWorks(works){
+  // Drop box-sets, bundles, omnibuses, collections, and special/collector
+  // editions — all noise in a baseline picker (you watch for the next *novel*).
+  const dropRe = /\b(limited|rare|lettered|signed|numbered|collector'?s?|deluxe|anniversary|illustrated|trade\s+paperback|box\s*set|boxset|bundle|anthology|omnibus|collection|\d[\s-]*book|books\s+\d|\d[\s-]*novel)\b/i;
+  // Normalize a title for dedup comparison: lowercase; strip a trailing
+  // " by <author>" credit; strip subtitle/series/edition suffix after a
+  // dash/en-dash/parenthesis; strip a leading article. Collapses English title
+  // variants like "The Warded Man", "The warded man", "The Warded Man (2009)",
+  // and "The Warded Man by Pete V. Brett" to one entry. It cannot merge
+  // cross-language translations or regional title changes (Painted Man vs
+  // Warded Man) — those are different strings with no shared OL identifier.
+  function norm(t){
+    return t.toLowerCase()
+      .replace(/\s+by\s+.*$/,'')
+      .replace(/\s*[-–(].*$/,'')
+      .replace(/^(the|a|an)\s+/,'')
+      .replace(/\s+/g,' ')
+      .trim();
+  }
+  // Sort ascending so we keep the earliest (most canonical) year on dedup.
+  const sorted = [...works].sort((a,b)=>(a.FirstPubYear||9999)-(b.FirstPubYear||9999));
+  const seen = new Map();
+  for(const w of sorted){
+    if(dropRe.test(w.Title)) continue;
+    const k = norm(w.Title);
+    if(!k) continue;
+    if(!seen.has(k)) seen.set(k, w);
+  }
+  // Return deduped list newest-first for display.
+  return [...seen.values()].sort((a,b)=>(b.FirstPubYear||0)-(a.FirstPubYear||0));
+}
+function renderWlWorks(filtered){
+  const isFiltered = filtered != null;
+  const src = isFiltered ? filtered : _wlWorks;
+  const totalPages = isFiltered ? 1 : Math.ceil(_wlWorks.length / _wlPageSize) || 1;
+  if(_wlPage >= totalPages) _wlPage = totalPages - 1;
+  const start = isFiltered ? 0 : _wlPage * _wlPageSize;
+  const vis = isFiltered ? src : src.slice(start, start + _wlPageSize);
+
+  function pagBar(top){
+    if(isFiltered || totalPages <= 1) return isFiltered ? `<small class="muted">${src.length} match${src.length===1?'':'es'}</small>` : '';
+    const prev = `<button class="btn ghost" style="padding:.3rem .6rem" onclick="wlPageNav(-1)"${_wlPage===0?' disabled':''}>←</button>`;
+    const next = `<button class="btn ghost" style="padding:.3rem .6rem" onclick="wlPageNav(1)"${_wlPage>=totalPages-1?' disabled':''}>→</button>`;
+    const info = `<span style="font-size:.85rem;white-space:nowrap">Page ${_wlPage+1} / ${totalPages}</span><small class="muted" style="white-space:nowrap">${_wlWorks.length} works</small>`;
+    const sizer = top ? `<select onchange="wlSetPageSize(+this.value)" style="margin-left:auto;font:inherit;padding:.3rem .5rem;border-radius:6px;border:1px solid var(--surface1);background:var(--mantle);color:var(--text)">${[25,50,100].map(n=>`<option value="${n}"${_wlPageSize===n?' selected':''}>${n} / page</option>`).join('')}</select>` : '';
+    return `<div class="row" style="flex-wrap:nowrap;align-items:center;gap:.3rem;padding:.4rem 0">${prev}${info}${next}${sizer}</div>`;
+  }
+
+  const tiles = vis.map(w=>{
+    const hasCover = !!w.CoverURL;
+    return `<div class="cover-card${hasCover?'':' nocover'}" onclick="selectWlWork('${esc(w.WorkID)}')" style="cursor:pointer" title="${esc(w.Title)}"${hasCover?'':` data-gb-title="${esc(w.Title)}"`}>
+      <div class="cover-link">${hasCover?`<img class="cover-img" src="${esc(w.CoverURL)}" loading="lazy" onerror="this.closest('.cover-card').classList.add('nocover');this.remove()">`:``}
+        <div class="cover-title">${esc(w.Title)}${w.FirstPubYear?'<br><small class="muted">'+w.FirstPubYear+'</small>':''}</div>
+      </div>
+    </div>`;
+  }).join('');
+
+  $('wlWorksList').innerHTML = pagBar(true) +
+    `<div class="cover-grid" style="grid-template-columns:repeat(auto-fill,minmax(160px,1fr));margin:0">${tiles}</div>` +
+    pagBar(false);
+  if(!isFiltered) startGBCovers();
+}
+function filterWlWorks(){
+  const q = $('wlBaselineQ').value.trim().toLowerCase();
+  if(!q){ _wlPage = 0; renderWlWorks(null); return; }
+  renderWlWorks(_wlWorks.filter(w=>w.Title.toLowerCase().includes(q)));
+}
+function wlPageNav(delta){
+  _wlPage += delta;
+  renderWlWorks();
+  $('wlBaselineCard').scrollIntoView({behavior:'smooth',block:'start'});
+}
+function wlSetPageSize(n){ _wlPageSize = n; _wlPage = 0; renderWlWorks(); }
+
+/* Google Books cover fallback — lazy, rate-limited, cancellable */
+let _gbAbort = null;
+function startGBCovers(){
+  if(_gbAbort) _gbAbort = false; // cancel any prior run
+  const token = {};
+  _gbAbort = token;
+  const author = _wlAuthor ? _wlAuthor.Name : '';
+  const tiles = [...document.querySelectorAll('#wlWorksList .cover-card[data-gb-title]')];
+  let i = 0;
+  async function next(){
+    if(_gbAbort !== token || i >= tiles.length) return;
+    const tile = tiles[i++];
+    const title = tile.dataset.gbTitle;
+    try {
+      const r = await getJSON('/api/gb/cover?title='+encodeURIComponent(title)+'&author='+encodeURIComponent(author));
+      if(r && r.cover && _gbAbort === token && tile.isConnected){
+        const img = document.createElement('img');
+        img.className = 'cover-img';
+        img.loading = 'lazy';
+        img.src = r.cover;
+        img.onerror = () => { tile.classList.add('nocover'); img.remove(); };
+        img.onload = () => tile.classList.remove('nocover');
+        tile.querySelector('.cover-link').prepend(img);
+        tile.removeAttribute('data-gb-title');
+      }
+    } catch(_){}
+    setTimeout(next, 150);
+  }
+  setTimeout(next, 200);
+}
+function selectWlWork(workID){
+  const w = _wlWorks.find(x=>x.WorkID===workID); if(!w) return;
+  _wlBaseline = {workID:w.WorkID, title:w.Title, year:w.FirstPubYear};
+  showWlBaselineSelected();
+}
+function showWlBaselineSelected(){
+  _gbAbort = null; // cancel in-flight cover queue
+  $('wlBaselineLabel').textContent = _wlBaseline.title+(_wlBaseline.year?' ('+_wlBaseline.year+')':'');
+  $('wlBaselineSelected').hidden = false;
+  $('wlWorksList').style.display = 'none';
+  $('wlLangCard').hidden = false;
+}
+function clearWlBaseline(){
+  _wlBaseline = null;
+  $('wlBaselineSelected').hidden = true;
+  $('wlWorksList').style.display = '';
+  $('wlBaselineQ').value = '';
+  $('wlLangCard').hidden = true;
+  _wlPage = 0;
+  if(_wlWorks.length) renderWlWorks();
+}
+function setManualBaseline(){
+  const y = parseInt($('wlBaselineYear').value, 10);
+  if(!y||y<1000||y>2200){ toast('Enter a valid year.','error'); return; }
+  _wlBaseline = {workID:'', title:'after '+y, year:y};
+  showWlBaselineSelected();
+}
+async function saveTracker(){
+  if(!_wlAuthor||!_wlBaseline){ toast('Select author + baseline first.','error'); return; }
+  const lang = $('wlLang').value;
+  const r = await send('POST','/api/trackers',{
+    name: _wlAuthor.Name,
+    ol_key: _wlAuthor.OLAuthorID,
+    baseline_work_id: _wlBaseline.workID,
+    baseline_date: String(_wlBaseline.year||''),
+    catalog_language: lang
+  });
+  if(need(r)) return;
+  if(!r.ok) return toast('Error: '+(r.data.error||r.status),'error');
+  toast('Watching '+_wlAuthor.Name+'.','success');
+  clearWlAuthor();
+  loadTrackers();
+}
+
+async function loadTrackers(){
+  const data = await getJSON('/api/trackers').catch(()=>null)||[];
+  wlTrackers = data;
+  renderTrackers();
+}
+function renderTrackers(){
+  if(!wlTrackers.length){ $('wlTrackersList').innerHTML='<p class="muted">No watched authors.</p>'; return; }
+  $('wlTrackersList').innerHTML = `<table><thead><tr><th>Author</th><th>OL key</th><th>Baseline</th><th>Language</th><th></th></tr></thead>
+    <tbody>${wlTrackers.map(t=>`
+      <tr id="wl-tracker-row-${t.id}">
+        <td>${esc(t.name)}</td>
+        <td><small class="muted">${esc(t.ol_key)}</small></td>
+        <td>${esc(t.baseline_date||'—')}</td>
+        <td><span class="badge">${esc(t.catalog_language)}</span></td>
+        <td class="nowrap">
+          <button class="btn ghost" onclick="editTrackerBaseline(${t.id})">Edit</button>
+          <button class="btn ghost" style="color:var(--red)" onclick="delTracker(${t.id})">Remove</button>
+        </td>
+      </tr>`).join('')}
+    </tbody></table>`;
+}
+function editTrackerBaseline(id){
+  const t = wlTrackers.find(x=>x.id===id); if(!t) return;
+  const existing = document.getElementById('wl-edit-row-'+id);
+  if(existing){ existing.remove(); return; }
+  const row = document.getElementById('wl-tracker-row-'+id);
+  const tr = document.createElement('tr');
+  tr.id = 'wl-edit-row-'+id;
+  tr.innerHTML = `<td colspan="5" style="padding:.5rem .5rem .5rem 1.2rem; background:var(--surface0)">
+    <div class="row">
+      <label style="white-space:nowrap; font-size:.85rem; color:var(--subtext)">Year:</label>
+      <input id="wlEditYear-${id}" type="number" value="${esc(t.baseline_date)}" placeholder="e.g. 2021" style="max-width:100px">
+      <label style="white-space:nowrap; font-size:.85rem; color:var(--subtext)">Language:</label>
+      <input id="wlEditLang-${id}" value="${esc(t.catalog_language)}" placeholder="eng" style="max-width:80px">
+      <button class="btn" onclick="saveTrackerBaseline(${id})">Save</button>
+      <button class="btn ghost" onclick="document.getElementById('wl-edit-row-${id}').remove()">Cancel</button>
+    </div>
+  </td>`;
+  row.insertAdjacentElement('afterend', tr);
+}
+async function saveTrackerBaseline(id){
+  const t = wlTrackers.find(x=>x.id===id); if(!t) return;
+  const r = await send('PUT',`/api/trackers/${id}/baseline`,{
+    baseline_work_id: t.baseline_work_id||'',
+    baseline_date: $('wlEditYear-'+id).value.trim(),
+    catalog_language: $('wlEditLang-'+id).value.trim()
+  });
+  if(need(r)) return;
+  toast(r.ok?'Baseline updated.':'Error: '+(r.data.error||r.status), r.ok?'success':'error');
+  if(r.ok) loadTrackers();
+}
+async function delTracker(id){
+  const r = await send('DELETE',`/api/trackers/${id}`); if(need(r)) return;
+  toast(r.ok?'Removed.':'Error', r.ok?'success':'error');
+  if(r.ok) loadTrackers();
+}
+
 /* init */
 applyTheme(lsGet('pw_theme') || 'mocha');
 $('token').value = token();
 $('sortBtn').textContent = bookSort === 'asc' ? '↑ A–Z' : '↓ Z–A';
 setBookView(bookView);
 setLogTab(logTab);
+setSrcTab(srcTab);
 loadUpdates(); loadBooks(); loadLogs(); loadEvents(); loadSources(); loadSettings(); refreshStatus();
 </script>
 </body>

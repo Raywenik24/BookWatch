@@ -39,16 +39,18 @@ const authorSearchFixture = `{
 }`
 
 const authorWorksFixture = `{
-  "entries": [
+  "docs": [
     {
       "key": "/works/OL4966121W",
       "title": "The Warded Man",
-      "first_publish_date": "2008"
+      "first_publish_year": 2008,
+      "cover_i": 7890277
     },
     {
       "key": "/works/OL5738618W",
       "title": "The Desert Spear",
-      "first_publish_date": "April 2010"
+      "first_publish_year": 2010,
+      "cover_i": 0
     }
   ]
 }`
@@ -83,11 +85,13 @@ func newTestServer(t *testing.T) (*OLClient, *httptest.Server) {
 		p := r.URL.Path
 		switch {
 		case p == "/search.json":
-			w.Write([]byte(searchFixture))
+			if strings.HasPrefix(r.URL.Query().Get("q"), "author_key:") {
+				w.Write([]byte(authorWorksFixture))
+			} else {
+				w.Write([]byte(searchFixture))
+			}
 		case p == "/search/authors.json":
 			w.Write([]byte(authorSearchFixture))
-		case strings.HasSuffix(p, "/works.json"):
-			w.Write([]byte(authorWorksFixture))
 		case strings.HasSuffix(p, "/editions.json"):
 			w.Write([]byte(editionsFixture))
 		case strings.HasSuffix(p, ".json"):
@@ -177,9 +181,14 @@ func TestAuthorWorks(t *testing.T) {
 	if got[0].FirstPubYear != 2008 {
 		t.Errorf("work[0] year %d", got[0].FirstPubYear)
 	}
-	// "April 2010" -> 2010
 	if got[1].FirstPubYear != 2010 {
-		t.Errorf("work[1] year %d (should parse 'April 2010')", got[1].FirstPubYear)
+		t.Errorf("work[1] year %d", got[1].FirstPubYear)
+	}
+	if got[0].CoverURL == "" {
+		t.Error("work[0] cover_i:7890277 should produce a cover URL")
+	}
+	if got[1].CoverURL != "" {
+		t.Error("work[1] cover_i:0 should produce empty CoverURL")
 	}
 }
 

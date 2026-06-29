@@ -20,6 +20,7 @@ import (
 
 	"bookwatch/internal/config"
 	"bookwatch/internal/notes"
+	"bookwatch/internal/provider"
 	"bookwatch/internal/scheduler"
 	"bookwatch/internal/scraper"
 	"bookwatch/internal/service"
@@ -41,6 +42,8 @@ type Server struct {
 	st    *store.Store
 	sc    *scraper.Client
 	sched *scheduler.Scheduler
+	ol    provider.Provider
+	gb    *provider.GBClient
 
 	coverMu  sync.Mutex
 	coverIdx map[string]string // basename → abs path, lazy vault-wide cover index
@@ -52,8 +55,8 @@ type Server struct {
 // tests can force a rebuild.
 var coverIdxTTL = 5 * time.Minute
 
-func New(cfg config.Config, st *store.Store, sc *scraper.Client, sched *scheduler.Scheduler) *Server {
-	return &Server{cfg: cfg, st: st, sc: sc, sched: sched}
+func New(cfg config.Config, st *store.Store, sc *scraper.Client, sched *scheduler.Scheduler, ol provider.Provider, gb *provider.GBClient) *Server {
+	return &Server{cfg: cfg, st: st, sc: sc, sched: sched, ol: ol, gb: gb}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -67,6 +70,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/sources", s.handleSources)
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	mux.HandleFunc("GET /api/cover/{id}", s.handleCover)
+	mux.HandleFunc("GET /api/gb/cover", s.handleGBCover)
+	mux.HandleFunc("GET /api/ol/authors", s.handleOLAuthors)
+	mux.HandleFunc("GET /api/ol/authors/{id}/works", s.handleOLAuthorWorks)
+	mux.HandleFunc("GET /api/ol/search", s.handleOLSearch)
+	mux.HandleFunc("GET /api/trackers", s.handleListTrackers)
 
 	mux.HandleFunc("POST /api/check", s.auth(s.handleCheck))
 	mux.HandleFunc("POST /api/apply", s.auth(s.handleApply))
@@ -77,6 +85,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/sources/{id}/rules", s.auth(s.handleSetRules))
 	mux.HandleFunc("POST /api/sources/test", s.auth(s.handleTest))
 	mux.HandleFunc("PUT /api/settings", s.auth(s.handleSetSettings))
+	mux.HandleFunc("POST /api/trackers", s.auth(s.handleUpsertTracker))
+	mux.HandleFunc("DELETE /api/trackers/{id}", s.auth(s.handleDeleteTracker))
+	mux.HandleFunc("PUT /api/trackers/{id}/baseline", s.auth(s.handleUpdateBaseline))
 	return secure(logging(mux))
 }
 
@@ -107,7 +118,13 @@ func (s *Server) auth(h http.HandlerFunc) http.HandlerFunc {
 // 'self' (covers come from /api/cover). External links are navigations, which
 // CSP doesn't restrict, so they keep working.
 func secure(next http.Handler) http.Handler {
-	const csp = "default-src 'self'; img-src 'self' data:; " +
+	// OpenLibrary covers 302-redirect to archive.org and then to a regional
+	// data node (iaNNN.us.archive.org), so all three hosts must be allowed or
+	// the browser blocks the redirected image. Google Books is the cover
+	// fallback for works OL has no cover for.
+	const csp = "default-src 'self'; img-src 'self' data: " +
+		"https://covers.openlibrary.org https://archive.org https://*.us.archive.org " +
+		"https://books.google.com https://lh3.googleusercontent.com; " +
 		"style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; " +
 		"base-uri 'none'; form-action 'self'"
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -388,6 +405,110 @@ func (s *Server) handleTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, nd)
+}
+
+// ── Google Books proxy (open — public API, key is optional) ───
+
+func (s *Server) handleGBCover(w http.ResponseWriter, r *http.Request) {
+	title := r.URL.Query().Get("title")
+	author := r.URL.Query().Get("author")
+	if title == "" {
+		writeJSON(w, http.StatusBadRequest, errBody("missing title"))
+		return
+	}
+	cover := s.gb.CoverURL(title, author)
+	writeJSON(w, http.StatusOK, map[string]string{"cover": cover})
+}
+
+// ── OpenLibrary proxy (open — OL is a public API) ─────────────
+
+func (s *Server) handleOLAuthors(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query().Get("q")
+	if q == "" {
+		writeJSON(w, http.StatusBadRequest, errBody("missing q"))
+		return
+	}
+	results, err := s.ol.AuthorSearch(q)
+	respond(w, results, err)
+}
+
+func (s *Server) handleOLAuthorWorks(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	works, err := s.ol.AuthorWorks(id)
+	respond(w, works, err)
+}
+
+func (s *Server) handleOLSearch(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query().Get("q")
+	if q == "" {
+		writeJSON(w, http.StatusBadRequest, errBody("missing q"))
+		return
+	}
+	results, err := s.ol.SearchByTitle(q)
+	respond(w, results, err)
+}
+
+// ── trackers ───────────────────────────────────────────────────
+
+func (s *Server) handleListTrackers(w http.ResponseWriter, r *http.Request) {
+	v, err := s.st.ListTrackers()
+	respond(w, v, err)
+}
+
+func (s *Server) handleUpsertTracker(w http.ResponseWriter, r *http.Request) {
+	var b struct {
+		Name            string `json:"name"`
+		OLKey           string `json:"ol_key"`
+		BaselineWorkID  string `json:"baseline_work_id"`
+		BaselineDate    string `json:"baseline_date"`
+		CatalogLanguage string `json:"catalog_language"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&b); err != nil || b.OLKey == "" {
+		writeJSON(w, http.StatusBadRequest, errBody("name + ol_key required"))
+		return
+	}
+	id, err := s.st.UpsertTracker("author", b.Name, b.OLKey, b.BaselineWorkID, b.BaselineDate, b.CatalogLanguage)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	s.st.LogEvent("tracker_add", fmt.Sprintf("Watching author %q (baseline %s)", b.Name, b.BaselineDate))
+	writeJSON(w, http.StatusCreated, map[string]any{"id": id})
+}
+
+func (s *Server) handleDeleteTracker(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errBody("bad id"))
+		return
+	}
+	if err := s.st.DeleteTracker(id); err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (s *Server) handleUpdateBaseline(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errBody("bad id"))
+		return
+	}
+	var b struct {
+		BaselineWorkID  string `json:"baseline_work_id"`
+		BaselineDate    string `json:"baseline_date"`
+		CatalogLanguage string `json:"catalog_language"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
+		writeJSON(w, http.StatusBadRequest, errBody("bad body"))
+		return
+	}
+	if err := s.st.UpdateTrackerBaseline(id, b.BaselineWorkID, b.BaselineDate, b.CatalogLanguage); err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
 }
 
 func (s *Server) handleSetSettings(w http.ResponseWriter, r *http.Request) {

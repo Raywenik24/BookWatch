@@ -18,6 +18,7 @@ import (
 
 	"bookwatch/internal/config"
 	"bookwatch/internal/notes"
+	"bookwatch/internal/provider"
 	"bookwatch/internal/scheduler"
 	"bookwatch/internal/scraper"
 	"bookwatch/internal/server"
@@ -57,6 +58,8 @@ func runServe(argv []string) {
 	defer st.Close()
 
 	sc := scraper.New(cfg.UserAgent, cfg.Timeout)
+	ol := provider.NewOpenLibrary(cfg.UserAgent, cfg.Timeout)
+	gb := provider.NewGoogleBooks(cfg.GBKey, cfg.Timeout)
 
 	sched := scheduler.New(func(progress func(i, total int, title string)) (service.CheckSummary, error) {
 		scanRoot := cfg.ScanRoot
@@ -72,7 +75,7 @@ func runServe(argv []string) {
 	}
 	defer sched.Stop()
 
-	srv := server.New(cfg, st, sc, sched)
+	srv := server.New(cfg, st, sc, sched, ol, gb)
 	addr := ":" + cfg.Port
 	httpSrv := &http.Server{Addr: addr, Handler: srv.Handler()}
 
