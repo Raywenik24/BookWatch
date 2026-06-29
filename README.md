@@ -6,8 +6,9 @@ has dropped, and — on your say-so — writes the bump back into the matching v
 note. A single Go binary serves the web UI, the HTTP API, and a built-in
 scheduler; everything is stored in a local SQLite file.
 
-> **Status:** v1.0.0 — light novels, working well in daily use. A larger 2.0 is
-> planned to generalise tracking beyond light novels to books in general.
+> **Status:** v1.0.0 — light novels, working well in daily use. v1.1.0 is
+> planned to generalise tracking beyond light novels to books in general
+> (author release tracking).
 
 ## Features
 
