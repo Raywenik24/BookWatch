@@ -144,6 +144,44 @@ func TestParseNovelHTML_editDescriptionFallback(t *testing.T) {
 	}
 }
 
+func TestBuildNote_hasAuthorField(t *testing.T) {
+	nd := scraper.NovelData{Title: "My Novel Epub", Volumes: 1}
+	out := BuildNote(nd, "https://jnovels.com/x", "c.jpg", "2026-06-29")
+	if !strings.Contains(out, "Author:") {
+		t.Errorf("BuildNote missing Author field:\n%s", out)
+	}
+}
+
+func TestBuildBookNote(t *testing.T) {
+	out := BuildBookNote("Rich Dad Poor Dad", "Robert T. Kiyosaki",
+		"https://openlibrary.org/works/OL20749838W", "OL20749838W",
+		"cover_RichDadPoorDad.jpg", "1997", "2026-06-29")
+
+	for _, must := range []string{
+		"Title: Rich Dad Poor Dad",
+		"Author: Robert T. Kiyosaki",
+		"Link: https://openlibrary.org/works/OL20749838W",
+		"Work ID: OL20749838W",
+		`Cover: "[[cover_RichDadPoorDad.jpg]]"`,
+		"Released EN: 1997",
+		`- "#Book"`,
+		"Template_used: BookTemplate",
+		"created: 2026-06-29",
+		"### Rich Dad Poor Dad",
+	} {
+		if !strings.Contains(out, must) {
+			t.Errorf("BuildBookNote missing %q:\n%s", must, out)
+		}
+	}
+}
+
+func TestBuildBookNote_emptyCover(t *testing.T) {
+	out := BuildBookNote("Some Book", "Author", "https://openlibrary.org/works/OLxW", "OLxW", "", "2020", "2026-06-29")
+	if strings.Contains(out, `"[["`) {
+		t.Errorf("empty cover should not produce [[...]] notation:\n%s", out)
+	}
+}
+
 func TestBuildNote(t *testing.T) {
 	nd := scraper.NovelData{
 		Title:       "Download Test Novel Light Novel Epub",

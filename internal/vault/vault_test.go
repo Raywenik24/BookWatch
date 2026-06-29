@@ -208,6 +208,81 @@ func TestUpdateStatus_preservesOtherFields(t *testing.T) {
 	}
 }
 
+const bookSample = `---
+Title: Rich Dad Poor Dad
+Author: Robert T. Kiyosaki
+Link: https://openlibrary.org/works/OL20749838W
+Work ID: OL20749838W
+Cover: "[[cover_RichDadPoorDad.jpg]]"
+Released EN: 1997
+Status:
+  - Queue
+tags:
+  - "#Book"
+Template_used: BookTemplate
+created: 2026-06-29
+modified: 2026-06-29
+---
+### Rich Dad Poor Dad
+`
+
+func TestScan_picksUpBookNote(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "Rich Dad Poor Dad.md"), []byte(bookSample), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Also add a regular LN note so we verify both come back.
+	if err := os.WriteFile(filepath.Join(dir, "good.md"), []byte(sample), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := Scan(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 entries (1 LN + 1 book), got %d: %+v", len(entries), entries)
+	}
+
+	var book, ln *Entry
+	for i := range entries {
+		switch entries[i].Kind {
+		case "book":
+			book = &entries[i]
+		case "ln":
+			ln = &entries[i]
+		}
+	}
+	if book == nil {
+		t.Fatal("no book entry returned")
+	}
+	if ln == nil {
+		t.Fatal("no ln entry returned")
+	}
+
+	if book.Title != "Rich Dad Poor Dad" {
+		t.Errorf("book title: %q", book.Title)
+	}
+	if book.Author != "Robert T. Kiyosaki" {
+		t.Errorf("book author: %q", book.Author)
+	}
+	if book.WorkID != "OL20749838W" {
+		t.Errorf("book work id: %q", book.WorkID)
+	}
+	if book.ReleasedEN != "1997" {
+		t.Errorf("book released en: %q", book.ReleasedEN)
+	}
+	if book.Status != "Queue" {
+		t.Errorf("book status: %q", book.Status)
+	}
+	if book.Cover != "cover_RichDadPoorDad.jpg" {
+		t.Errorf("book cover: %q", book.Cover)
+	}
+	if book.Volumes != 0 {
+		t.Errorf("book volumes should be zero: %d", book.Volumes)
+	}
+}
+
 func TestScan_tagAndLinkFilter(t *testing.T) {
 	dir := t.TempDir()
 	write := func(name, content string) {

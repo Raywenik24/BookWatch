@@ -183,7 +183,7 @@ func runAdd(argv []string) {
 		fmt.Fprintln(os.Stderr, "add error:", err)
 		os.Exit(1)
 	}
-	if _, err := st.UpsertBook(res.Title, url, res.Path, res.Volumes, res.Cover, "", nil); err != nil {
+	if _, err := st.UpsertBook(res.Title, url, res.Path, res.Volumes, res.Cover, "", nil, "ln", ""); err != nil {
 		fmt.Fprintln(os.Stderr, "upsert book error:", err)
 	}
 	fmt.Printf("Created: %s (%d volumes)\n  %s\n", res.Title, res.Volumes, res.Path)

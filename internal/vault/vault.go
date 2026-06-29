@@ -17,20 +17,25 @@ import (
 
 // Ported regexes from metadata_extractor.py.
 var (
-	linkRE            = regexp.MustCompile(`(?i)^Link:\s*(https?://\S+)`)
-	volumesRE         = regexp.MustCompile(`(?i)^Volumes:\s*(\d+)`)
-	coverRE           = regexp.MustCompile(`(?i)^Cover:\s*"?\[\[(.+?)\]\]"?`)
-	templateUsed      = regexp.MustCompile(`(?i)^Template_used:\s*LightNovelTemplate\s*$`)
-	statusRE          = regexp.MustCompile(`(?i)^Status:\s*(.*)$`)
-	statusListItemRE  = regexp.MustCompile(`^\s*-\s*(.+)$`)
-	readVolumesRE     = regexp.MustCompile(`(?i)^Read Volumes:\s*(\d+)`)
+	linkRE           = regexp.MustCompile(`(?i)^Link:\s*(https?://\S+)`)
+	volumesRE        = regexp.MustCompile(`(?i)^Volumes:\s*(\d+)`)
+	coverRE          = regexp.MustCompile(`(?i)^Cover:\s*"?\[\[(.+?)\]\]"?`)
+	lnTemplateRE     = regexp.MustCompile(`(?i)^Template_used:\s*LightNovelTemplate\s*$`)
+	bookTemplateRE   = regexp.MustCompile(`(?i)^Template_used:\s*BookTemplate\s*$`)
+	statusRE         = regexp.MustCompile(`(?i)^Status:\s*(.*)$`)
+	statusListItemRE = regexp.MustCompile(`^\s*-\s*(.+)$`)
+	readVolumesRE    = regexp.MustCompile(`(?i)^Read Volumes:\s*(\d+)`)
+	authorRE         = regexp.MustCompile(`(?i)^Author:\s*(.+)$`)
+	workIDRE         = regexp.MustCompile(`(?i)^Work ID:\s*(.+)$`)
+	releasedENRE     = regexp.MustCompile(`(?i)^Released EN:\s*(.+)$`)
 
 	// Prefix matchers for line-based rewriting.
 	volPrefixRE = regexp.MustCompile(`(?i)^Volumes:\s*`)
 	lastUpdRE   = regexp.MustCompile(`(?i)^Last Update:\s*`)
 )
 
-// Entry is one tracked novel.
+// Entry is one tracked note — either a light novel (Kind="ln") or a book
+// (Kind="book"). Fields irrelevant to a kind are left at their zero value.
 type Entry struct {
 	Title          string
 	Link           string
@@ -39,7 +44,11 @@ type Entry struct {
 	Cover          string // attachment filename from `Cover: "[[file]]"` (no path)
 	Status         string // e.g. "Queue", "Completed", "Dropped"
 	ReadVolumes    int
-	HasReadVolumes bool // false when the field is blank/absent
+	HasReadVolumes bool   // false when the field is blank/absent
+	Kind           string // "ln" | "book"
+	Author         string // book notes (and LN notes once the scraper adds it)
+	WorkID         string // book notes — OpenLibrary work ID e.g. OL20749838W
+	ReleasedEN     string // book notes — English release year/date
 }
 
 // Scan walks root for .md notes tagged #LightNovel that carry a Link,
@@ -76,8 +85,8 @@ func Scan(root string) ([]Entry, error) {
 	return entries, err
 }
 
-// parse reads the YAML frontmatter. ok=true only when the note is tagged
-// #LightNovel and has a Link.
+// parse reads the YAML frontmatter and returns the entry. ok=true only for
+// notes tagged #LightNovel+LightNovelTemplate or #Book+BookTemplate with a Link.
 func parse(path string) (Entry, bool, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -94,7 +103,12 @@ func parse(path string) (Entry, bool, error) {
 		hasReadVolumes bool
 		pendingStatus  bool
 		isLightNvl     bool
-		hasTemplate    bool
+		hasLNTemplate  bool
+		isBook         bool
+		hasBookTempl   bool
+		author         string
+		workID         string
+		releasedEN     string
 		frontmatter    bool
 		seenFence      bool
 	)
@@ -125,8 +139,14 @@ func parse(path string) (Entry, bool, error) {
 		if strings.Contains(line, "#LightNovel") {
 			isLightNvl = true
 		}
-		if templateUsed.MatchString(line) {
-			hasTemplate = true
+		if strings.Contains(line, "#Book") {
+			isBook = true
+		}
+		if lnTemplateRE.MatchString(line) {
+			hasLNTemplate = true
+		}
+		if bookTemplateRE.MatchString(line) {
+			hasBookTempl = true
 		}
 		if m := linkRE.FindStringSubmatch(line); m != nil {
 			link = m[1]
@@ -149,18 +169,39 @@ func parse(path string) (Entry, bool, error) {
 			readVolumes, _ = strconv.Atoi(m[1])
 			hasReadVolumes = true
 		}
+		if m := authorRE.FindStringSubmatch(line); m != nil {
+			author = strings.TrimSpace(m[1])
+		}
+		if m := workIDRE.FindStringSubmatch(line); m != nil {
+			workID = strings.TrimSpace(m[1])
+		}
+		if m := releasedENRE.FindStringSubmatch(line); m != nil {
+			releasedEN = strings.TrimSpace(m[1])
+		}
 	}
 	if err := sc.Err(); err != nil {
 		return Entry{}, false, err
 	}
 
-	if !isLightNvl || !hasTemplate || link == "" {
+	title := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+
+	switch {
+	case isLightNvl && hasLNTemplate && link != "":
+		return Entry{
+			Kind: "ln", Title: title, Link: link, Path: path,
+			Volumes: volumes, Cover: cover, Status: status,
+			ReadVolumes: readVolumes, HasReadVolumes: hasReadVolumes,
+			Author: author,
+		}, true, nil
+	case isBook && hasBookTempl && link != "":
+		return Entry{
+			Kind: "book", Title: title, Link: link, Path: path,
+			Cover: cover, Status: status,
+			Author: author, WorkID: workID, ReleasedEN: releasedEN,
+		}, true, nil
+	default:
 		return Entry{}, false, nil
 	}
-
-	title := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-	return Entry{Title: title, Link: link, Volumes: volumes, Path: path, Cover: cover,
-		Status: status, ReadVolumes: readVolumes, HasReadVolumes: hasReadVolumes}, true, nil
 }
 
 // Today returns the date stamp used for Last Update (YYYY-MM-DD).

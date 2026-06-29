@@ -110,6 +110,44 @@ var migrations = []string{
 	// and auto-correction (issue #5) both depend on these.
 	`ALTER TABLE books ADD COLUMN status TEXT NOT NULL DEFAULT '';
 	 ALTER TABLE books ADD COLUMN read_volumes INTEGER;`,
+	// v5: book-note data layer (issue #31). kind distinguishes light-novel notes
+	// (ln) from book notes (book). author surfaces across both kinds for the
+	// upcoming author filter (#37). Three new tables back the tracker model:
+	// trackers (author watchlist subscriptions), seen_works (acknowledged OL work
+	// IDs), releases (candidate new works surfaced by a tracker poll).
+	`ALTER TABLE books ADD COLUMN kind   TEXT NOT NULL DEFAULT 'ln';
+	 ALTER TABLE books ADD COLUMN author TEXT NOT NULL DEFAULT '';
+	 CREATE TABLE trackers (
+	 	id               INTEGER PRIMARY KEY,
+	 	kind             TEXT NOT NULL DEFAULT 'author',
+	 	name             TEXT NOT NULL,
+	 	ol_key           TEXT NOT NULL,
+	 	baseline_work_id TEXT NOT NULL DEFAULT '',
+	 	baseline_date    TEXT NOT NULL DEFAULT '',
+	 	catalog_language TEXT NOT NULL DEFAULT 'eng',
+	 	created_at       TEXT NOT NULL,
+	 	UNIQUE(kind, ol_key)
+	 );
+	 CREATE TABLE seen_works (
+	 	id         INTEGER PRIMARY KEY,
+	 	tracker_id INTEGER NOT NULL REFERENCES trackers(id) ON DELETE CASCADE,
+	 	work_id    TEXT NOT NULL,
+	 	created_at TEXT NOT NULL,
+	 	UNIQUE(tracker_id, work_id)
+	 );
+	 CREATE TABLE releases (
+	 	id             INTEGER PRIMARY KEY,
+	 	tracker_id     INTEGER NOT NULL REFERENCES trackers(id) ON DELETE CASCADE,
+	 	work_id        TEXT NOT NULL,
+	 	title          TEXT NOT NULL DEFAULT '',
+	 	author         TEXT NOT NULL DEFAULT '',
+	 	first_pub_date TEXT NOT NULL DEFAULT '',
+	 	cover_url      TEXT NOT NULL DEFAULT '',
+	 	detected_at    TEXT NOT NULL,
+	 	dismissed      INTEGER NOT NULL DEFAULT 0,
+	 	dismissed_at   TEXT,
+	 	UNIQUE(tracker_id, work_id)
+	 );`,
 }
 
 func (s *Store) migrate() error {
@@ -197,22 +235,24 @@ func (s *Store) FinishRun(id int64, checked, updated, errors int, summary string
 }
 
 // UpsertBook inserts or updates a book by link, returning its id. An empty
-// cover or status never clears an existing value. A nil readVolumes leaves
-// the existing read_volumes column untouched.
-func (s *Store) UpsertBook(title, link, path string, volumes int, cover, status string, readVolumes *int) (int64, error) {
+// cover, status, or author never clears an existing value. A nil readVolumes
+// leaves the existing read_volumes column untouched. kind is set on insert and
+// never updated (a note's kind can't change).
+func (s *Store) UpsertBook(title, link, path string, volumes int, cover, status string, readVolumes *int, kind, author string) (int64, error) {
 	ts := now()
 	_, err := s.db.Exec(`
-		INSERT INTO books(title, link, path, volumes, cover, status, read_volumes, created_at, updated_at, last_checked_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?)
+		INSERT INTO books(title, link, path, volumes, cover, status, read_volumes, kind, author, created_at, updated_at, last_checked_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(link) DO UPDATE SET
 			title=excluded.title, path=excluded.path,
 			volumes=excluded.volumes,
 			cover=CASE WHEN excluded.cover='' THEN books.cover ELSE excluded.cover END,
 			status=CASE WHEN excluded.status='' THEN books.status ELSE excluded.status END,
 			read_volumes=COALESCE(excluded.read_volumes, books.read_volumes),
+			author=CASE WHEN excluded.author='' THEN books.author ELSE excluded.author END,
 			updated_at=excluded.updated_at,
 			last_checked_at=excluded.last_checked_at`,
-		title, link, path, volumes, cover, status, readVolumes, ts, ts, ts)
+		title, link, path, volumes, cover, status, readVolumes, kind, author, ts, ts, ts)
 	if err != nil {
 		return 0, err
 	}
@@ -232,12 +272,14 @@ type Book struct {
 	Cover         string `json:"cover"`
 	Status        string `json:"status"`
 	ReadVolumes   *int   `json:"read_volumes"`
+	Kind          string `json:"kind"`
+	Author        string `json:"author"`
 	UpdatedAt     string `json:"updated_at"`
 	LastCheckedAt string `json:"last_checked_at"`
 }
 
 func (s *Store) ListBooks() ([]Book, error) {
-	rows, err := s.db.Query(`SELECT id, title, link, path, volumes, cover, status, read_volumes, updated_at,
+	rows, err := s.db.Query(`SELECT id, title, link, path, volumes, cover, status, read_volumes, kind, author, updated_at,
 		COALESCE(last_checked_at,'') FROM books ORDER BY title COLLATE NOCASE`)
 	if err != nil {
 		return nil, err
@@ -246,7 +288,7 @@ func (s *Store) ListBooks() ([]Book, error) {
 	var out []Book
 	for rows.Next() {
 		var b Book
-		if err := rows.Scan(&b.ID, &b.Title, &b.Link, &b.Path, &b.Volumes, &b.Cover, &b.Status, &b.ReadVolumes, &b.UpdatedAt, &b.LastCheckedAt); err != nil {
+		if err := rows.Scan(&b.ID, &b.Title, &b.Link, &b.Path, &b.Volumes, &b.Cover, &b.Status, &b.ReadVolumes, &b.Kind, &b.Author, &b.UpdatedAt, &b.LastCheckedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, b)
@@ -584,5 +626,166 @@ func (s *Store) MarkApplied(updateID, bookID int64, newVolumes int) error {
 	}
 	_, err := s.db.Exec(
 		`UPDATE books SET volumes=?, updated_at=? WHERE id=?`, newVolumes, ts, bookID)
+	return err
+}
+
+// ── trackers ──────────────────────────────────────────────────
+
+// Tracker is one author (or later series) watchlist subscription.
+type Tracker struct {
+	ID              int64  `json:"id"`
+	Kind            string `json:"kind"`
+	Name            string `json:"name"`
+	OLKey           string `json:"ol_key"`
+	BaselineWorkID  string `json:"baseline_work_id"`
+	BaselineDate    string `json:"baseline_date"`
+	CatalogLanguage string `json:"catalog_language"`
+	CreatedAt       string `json:"created_at"`
+}
+
+// UpsertTracker inserts or updates a tracker by (kind, ol_key), returning its id.
+func (s *Store) UpsertTracker(kind, name, olKey, baselineWorkID, baselineDate, catalogLanguage string) (int64, error) {
+	_, err := s.db.Exec(`
+		INSERT INTO trackers(kind, name, ol_key, baseline_work_id, baseline_date, catalog_language, created_at)
+		VALUES(?,?,?,?,?,?,?)
+		ON CONFLICT(kind, ol_key) DO UPDATE SET
+			name=excluded.name,
+			baseline_work_id=excluded.baseline_work_id,
+			baseline_date=excluded.baseline_date,
+			catalog_language=excluded.catalog_language`,
+		kind, name, olKey, baselineWorkID, baselineDate, catalogLanguage, now())
+	if err != nil {
+		return 0, err
+	}
+	var id int64
+	err = s.db.QueryRow(`SELECT id FROM trackers WHERE kind=? AND ol_key=?`, kind, olKey).Scan(&id)
+	return id, err
+}
+
+// DeleteTracker removes a tracker and cascades to seen_works + releases.
+func (s *Store) DeleteTracker(id int64) error {
+	_, err := s.db.Exec(`DELETE FROM trackers WHERE id=?`, id)
+	return err
+}
+
+// ListTrackers returns all trackers ordered by name.
+func (s *Store) ListTrackers() ([]Tracker, error) {
+	rows, err := s.db.Query(`SELECT id, kind, name, ol_key, baseline_work_id, baseline_date, catalog_language, created_at
+		FROM trackers ORDER BY name COLLATE NOCASE`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Tracker
+	for rows.Next() {
+		var t Tracker
+		if err := rows.Scan(&t.ID, &t.Kind, &t.Name, &t.OLKey, &t.BaselineWorkID, &t.BaselineDate, &t.CatalogLanguage, &t.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// ── seen_works ────────────────────────────────────────────────
+
+// AddSeenWork records a work ID as seen (acknowledged) for a tracker.
+// Duplicate inserts are silently ignored (UNIQUE constraint).
+func (s *Store) AddSeenWork(trackerID int64, workID string) error {
+	_, err := s.db.Exec(`
+		INSERT INTO seen_works(tracker_id, work_id, created_at) VALUES(?,?,?)
+		ON CONFLICT(tracker_id, work_id) DO NOTHING`,
+		trackerID, workID, now())
+	return err
+}
+
+// SeenWorkIDs returns all acknowledged work IDs for a tracker.
+func (s *Store) SeenWorkIDs(trackerID int64) ([]string, error) {
+	rows, err := s.db.Query(`SELECT work_id FROM seen_works WHERE tracker_id=? ORDER BY id`, trackerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// ── releases ─────────────────────────────────────────────────
+
+// Release is one candidate new work surfaced by a tracker poll.
+type Release struct {
+	ID           int64  `json:"id"`
+	TrackerID    int64  `json:"tracker_id"`
+	TrackerName  string `json:"tracker_name"`
+	WorkID       string `json:"work_id"`
+	Title        string `json:"title"`
+	Author       string `json:"author"`
+	FirstPubDate string `json:"first_pub_date"`
+	CoverURL     string `json:"cover_url"`
+	DetectedAt   string `json:"detected_at"`
+	Dismissed    bool   `json:"dismissed"`
+	DismissedAt  string `json:"dismissed_at"`
+}
+
+// UpsertRelease inserts or refreshes a candidate release by (tracker_id, work_id).
+// Re-detecting the same work updates its metadata but never un-dismisses it.
+func (s *Store) UpsertRelease(trackerID int64, workID, title, author, firstPubDate, coverURL string) (int64, error) {
+	_, err := s.db.Exec(`
+		INSERT INTO releases(tracker_id, work_id, title, author, first_pub_date, cover_url, detected_at)
+		VALUES(?,?,?,?,?,?,?)
+		ON CONFLICT(tracker_id, work_id) DO UPDATE SET
+			title=excluded.title, author=excluded.author,
+			first_pub_date=excluded.first_pub_date,
+			cover_url=excluded.cover_url,
+			detected_at=excluded.detected_at`,
+		trackerID, workID, title, author, firstPubDate, coverURL, now())
+	if err != nil {
+		return 0, err
+	}
+
+	// RETURNING is not supported on older SQLite; look up by (tracker_id, work_id).
+	var id int64
+	err = s.db.QueryRow(`SELECT id FROM releases WHERE tracker_id=? AND work_id=?`, trackerID, workID).Scan(&id)
+	return id, err
+}
+
+// ListReleases returns undismissed releases newest-first, joined to tracker name.
+func (s *Store) ListReleases(limit int) ([]Release, error) {
+	rows, err := s.db.Query(`
+		SELECT r.id, r.tracker_id, t.name, r.work_id, r.title, r.author,
+		       r.first_pub_date, r.cover_url, r.detected_at,
+		       r.dismissed, COALESCE(r.dismissed_at,'')
+		FROM releases r JOIN trackers t ON t.id = r.tracker_id
+		WHERE r.dismissed = 0
+		ORDER BY r.detected_at DESC, r.id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Release
+	for rows.Next() {
+		var rel Release
+		var dismissed int
+		if err := rows.Scan(&rel.ID, &rel.TrackerID, &rel.TrackerName, &rel.WorkID,
+			&rel.Title, &rel.Author, &rel.FirstPubDate, &rel.CoverURL,
+			&rel.DetectedAt, &dismissed, &rel.DismissedAt); err != nil {
+			return nil, err
+		}
+		rel.Dismissed = dismissed != 0
+		out = append(out, rel)
+	}
+	return out, rows.Err()
+}
+
+// DismissRelease marks a release dismissed so it no longer appears in the feed.
+func (s *Store) DismissRelease(id int64) error {
+	_, err := s.db.Exec(`UPDATE releases SET dismissed=1, dismissed_at=? WHERE id=?`, now(), id)
 	return err
 }

@@ -41,8 +41,18 @@ func RunCheck(sc *scraper.Client, st *store.Store, scanRoot string, write bool,
 		return CheckSummary{}, fmt.Errorf("scan: %w", err)
 	}
 
+	// Split by kind: only LN entries go through the volume checker.
+	var lnEntries, bookEntries []vault.Entry
+	for _, e := range entries {
+		if e.Kind == "book" {
+			bookEntries = append(bookEntries, e)
+		} else {
+			lnEntries = append(lnEntries, e)
+		}
+	}
+
 	resolver := sources.NewResolver(st)
-	results := checker.Check(entries, sc, resolver.For, progress)
+	results := checker.Check(lnEntries, sc, resolver.For, progress)
 
 	var runID int64
 	if st != nil {
@@ -52,7 +62,7 @@ func RunCheck(sc *scraper.Client, st *store.Store, scanRoot string, write bool,
 	}
 
 	today := vault.Today()
-	sum := CheckSummary{Checked: len(results)}
+	sum := CheckSummary{Checked: len(lnEntries)}
 
 	for _, r := range results {
 		if r.Err != nil {
@@ -75,7 +85,7 @@ func RunCheck(sc *scraper.Client, st *store.Store, scanRoot string, write bool,
 			applyStatusCorrection(&r, st)
 			if st != nil {
 				rv := entryReadVolumes(r.Entry)
-				if _, e := st.UpsertBook(r.Entry.Title, r.Entry.Link, r.Entry.Path, r.Entry.Volumes, r.Entry.Cover, r.Entry.Status, rv); e != nil {
+				if _, e := st.UpsertBook(r.Entry.Title, r.Entry.Link, r.Entry.Path, r.Entry.Volumes, r.Entry.Cover, r.Entry.Status, rv, "ln", r.Entry.Author); e != nil {
 					return sum, e
 				}
 			}
@@ -104,7 +114,7 @@ func RunCheck(sc *scraper.Client, st *store.Store, scanRoot string, write bool,
 				vol = r.Latest
 			}
 			rv := entryReadVolumes(r.Entry)
-			bookID, e := st.UpsertBook(r.Entry.Title, r.Entry.Link, r.Entry.Path, vol, r.Entry.Cover, r.Entry.Status, rv)
+			bookID, e := st.UpsertBook(r.Entry.Title, r.Entry.Link, r.Entry.Path, vol, r.Entry.Cover, r.Entry.Status, rv, "ln", r.Entry.Author)
 			if e != nil {
 				return sum, e
 			}
@@ -120,14 +130,26 @@ func RunCheck(sc *scraper.Client, st *store.Store, scanRoot string, write bool,
 		}
 	}
 
-	// Auto-prune: any tracked book absent from this scan is a stale row → drop
+	// Upsert book entries: no volume check, no status correction.
+	if st != nil {
+		for _, e := range bookEntries {
+			if _, err := st.UpsertBook(e.Title, e.Link, e.Path, 0, e.Cover, e.Status, nil, "book", e.Author); err != nil {
+				return sum, err
+			}
+		}
+	}
+
+	// Auto-prune: any tracked entry absent from this scan is a stale row → drop
 	// it. The scan is the source of truth: a note not returned by vault.Scan
 	// (missing, moved without the tag, or no longer matching the filter) should
 	// not remain in the DB.
 	if st != nil {
-		seen := make(map[string]bool, len(results))
+		seen := make(map[string]bool, len(results)+len(bookEntries))
 		for _, r := range results {
 			seen[r.Entry.Link] = true
+		}
+		for _, e := range bookEntries {
+			seen[e.Link] = true
 		}
 		tracked, e := st.ListBooks()
 		if e != nil {

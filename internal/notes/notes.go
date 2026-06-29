@@ -79,11 +79,12 @@ func Sanitize(title string, removeSpaces bool) string {
 	return title
 }
 
-// BuildNote renders the markdown for a new note (frontmatter + body).
+// BuildNote renders the markdown for a new LN note (frontmatter + body).
 func BuildNote(nd scraper.NovelData, sourceURL, coverName, today string) string {
 	title := Sanitize(nd.Title, false)
 	return fmt.Sprintf(`---
 Series: %s
+Author:
 Link: %s
 Volumes: %d
 Read Volumes:
@@ -105,6 +106,32 @@ modified: %s
 
 %s
 `, title, sourceURL, nd.Volumes, coverName, today, today, title, coverName, nd.Description)
+}
+
+// BuildBookNote renders the frontmatter for a new book note. The cosmetic body
+// (description, links) is left for the user to fill in.
+func BuildBookNote(title, author, link, workID, coverName, releasedEN, today string) string {
+	coverField := ""
+	if coverName != "" {
+		coverField = fmt.Sprintf(`"[[%s]]"`, coverName)
+	}
+	return fmt.Sprintf(`---
+Title: %s
+Author: %s
+Link: %s
+Work ID: %s
+Cover: %s
+Released EN: %s
+Status:
+  - Queue
+tags:
+  - "#Book"
+Template_used: BookTemplate
+created: %s
+modified: %s
+---
+### %s
+`, title, author, link, workID, coverField, releasedEN, today, today, title)
 }
 
 // Create scrapes the URL and writes a new note + cover into the vault.

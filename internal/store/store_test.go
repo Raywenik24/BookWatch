@@ -48,12 +48,12 @@ func TestOpen_migrateIdempotentAndSeedOnce(t *testing.T) {
 
 func TestUpsertBook_insertUpdateAndCoverPreserve(t *testing.T) {
 	st := openTemp(t)
-	id, err := st.UpsertBook("Title", "https://x/1", "/p/1.md", 2, "cover.jpg", "", nil)
+	id, err := st.UpsertBook("Title", "https://x/1", "/p/1.md", 2, "cover.jpg", "", nil, "ln", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Update with an empty cover must preserve the existing cover.
-	id2, err := st.UpsertBook("Title v2", "https://x/1", "/p/1.md", 3, "", "", nil)
+	id2, err := st.UpsertBook("Title v2", "https://x/1", "/p/1.md", 3, "", "", nil, "ln", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func TestUpsertBook_insertUpdateAndCoverPreserve(t *testing.T) {
 		t.Errorf("title not updated: %q", b.Title)
 	}
 	// A non-empty cover does update.
-	st.UpsertBook("Title v2", "https://x/1", "/p/1.md", 3, "new.png", "", nil)
+	st.UpsertBook("Title v2", "https://x/1", "/p/1.md", 3, "new.png", "", nil, "ln", "")
 	books, _ = st.ListBooks()
 	if books[0].Cover != "new.png" {
 		t.Errorf("cover not updated: %q", books[0].Cover)
@@ -87,7 +87,7 @@ func TestBookExists(t *testing.T) {
 	if ex, _ := st.BookExists("https://x/none"); ex {
 		t.Error("unexpected exists")
 	}
-	st.UpsertBook("T", "https://x/1", "", 1, "", "", nil)
+	st.UpsertBook("T", "https://x/1", "", 1, "", "", nil, "ln", "")
 	if ex, _ := st.BookExists("https://x/1"); !ex {
 		t.Error("expected exists")
 	}
@@ -95,7 +95,7 @@ func TestBookExists(t *testing.T) {
 
 func TestPendingUpdate_onePerBookAndApply(t *testing.T) {
 	st := openTemp(t)
-	bookID, _ := st.UpsertBook("T", "https://x/1", "/p.md", 2, "", "", nil)
+	bookID, _ := st.UpsertBook("T", "https://x/1", "/p.md", 2, "", "", nil, "ln", "")
 
 	// Detecting twice must not stack — one pending row, refreshed.
 	u1, err := st.UpsertPendingUpdate(bookID, 2, 3, "https://x/1")
@@ -186,7 +186,7 @@ func TestDeleteBook_cascadesOnFreshConnection(t *testing.T) {
 	}
 	defer pin.Close()
 
-	bookID, _ := st.UpsertBook("T", "https://x/casc", "/p.md", 2, "", "", nil)
+	bookID, _ := st.UpsertBook("T", "https://x/casc", "/p.md", 2, "", "", nil, "ln", "")
 	st.UpsertPendingUpdate(bookID, 2, 3, "https://x/casc")
 	if err := st.DeleteBook(bookID); err != nil {
 		t.Fatal(err)
@@ -198,7 +198,7 @@ func TestDeleteBook_cascadesOnFreshConnection(t *testing.T) {
 
 func TestDeleteBook_cascadesUpdates(t *testing.T) {
 	st := openTemp(t)
-	bookID, _ := st.UpsertBook("T", "https://x/1", "/p.md", 2, "", "", nil)
+	bookID, _ := st.UpsertBook("T", "https://x/1", "/p.md", 2, "", "", nil, "ln", "")
 	st.UpsertPendingUpdate(bookID, 2, 3, "https://x/1")
 	if err := st.DeleteBook(bookID); err != nil {
 		t.Fatal(err)
@@ -295,6 +295,170 @@ func TestEvents_newestFirst(t *testing.T) {
 	}
 }
 
+func TestUpsertBook_kindAndAuthor(t *testing.T) {
+	st := openTemp(t)
+
+	// LN book carries kind=ln.
+	lnID, err := st.UpsertBook("Mushoku Tensei", "https://jnovels.com/mt", "/mt.md", 25, "c.jpg", "Queue", nil, "ln", "Rifujin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Book note carries kind=book.
+	bookID, err := st.UpsertBook("Rich Dad Poor Dad", "https://openlibrary.org/works/OL20749838W", "/rdpd.md", 0, "", "Queue", nil, "book", "Robert T. Kiyosaki")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	books, _ := st.ListBooks()
+	byID := map[int64]Book{}
+	for _, b := range books {
+		byID[b.ID] = b
+	}
+
+	if byID[lnID].Kind != "ln" {
+		t.Errorf("ln kind: %q", byID[lnID].Kind)
+	}
+	if byID[lnID].Author != "Rifujin" {
+		t.Errorf("ln author: %q", byID[lnID].Author)
+	}
+	if byID[bookID].Kind != "book" {
+		t.Errorf("book kind: %q", byID[bookID].Kind)
+	}
+	if byID[bookID].Author != "Robert T. Kiyosaki" {
+		t.Errorf("book author: %q", byID[bookID].Author)
+	}
+
+	// kind must not be overwritten on upsert.
+	st.UpsertBook("Rich Dad Poor Dad", "https://openlibrary.org/works/OL20749838W", "/rdpd.md", 0, "", "", nil, "ln", "")
+	books, _ = st.ListBooks()
+	for _, b := range books {
+		if b.ID == bookID && b.Kind != "book" {
+			t.Errorf("kind overwritten on upsert: %q", b.Kind)
+		}
+	}
+}
+
+func TestTrackerCRUD(t *testing.T) {
+	st := openTemp(t)
+
+	id, err := st.UpsertTracker("author", "Graham Masterton", "/authors/OL123456A", "OL20W", "1975", "eng")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Upsert same ol_key updates fields, keeps id.
+	id2, err := st.UpsertTracker("author", "Graham Masterton", "/authors/OL123456A", "OL21W", "1976", "eng")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != id2 {
+		t.Errorf("upsert should keep same id: %d != %d", id, id2)
+	}
+
+	trackers, err := st.ListTrackers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(trackers) != 1 {
+		t.Fatalf("expected 1 tracker, got %d", len(trackers))
+	}
+	tr := trackers[0]
+	if tr.BaselineWorkID != "OL21W" {
+		t.Errorf("baseline_work_id not updated: %q", tr.BaselineWorkID)
+	}
+	if tr.Name != "Graham Masterton" {
+		t.Errorf("name: %q", tr.Name)
+	}
+
+	if err := st.DeleteTracker(id); err != nil {
+		t.Fatal(err)
+	}
+	if trs, _ := st.ListTrackers(); len(trs) != 0 {
+		t.Errorf("tracker not deleted")
+	}
+}
+
+func TestSeenWorks(t *testing.T) {
+	st := openTemp(t)
+	id, _ := st.UpsertTracker("author", "A", "/authors/OL1A", "", "", "eng")
+
+	if err := st.AddSeenWork(id, "OL100W"); err != nil {
+		t.Fatal(err)
+	}
+	// Duplicate must not error.
+	if err := st.AddSeenWork(id, "OL100W"); err != nil {
+		t.Fatal(err)
+	}
+	st.AddSeenWork(id, "OL200W")
+
+	ids, err := st.SeenWorkIDs(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 2 {
+		t.Errorf("expected 2 seen works, got %d: %v", len(ids), ids)
+	}
+
+	// Deleting tracker cascades to seen_works.
+	st.DeleteTracker(id)
+	ids, _ = st.SeenWorkIDs(id)
+	if len(ids) != 0 {
+		t.Errorf("cascade did not remove seen_works: %d remain", len(ids))
+	}
+}
+
+func TestReleases(t *testing.T) {
+	st := openTemp(t)
+	tid, _ := st.UpsertTracker("author", "A", "/authors/OL1A", "", "", "eng")
+
+	rid, err := st.UpsertRelease(tid, "OL300W", "The Book", "A. Author", "2024", "https://cdn/c.jpg")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Re-upsert updates metadata.
+	rid2, err := st.UpsertRelease(tid, "OL300W", "The Book (Updated)", "A. Author", "2024", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rid != rid2 {
+		t.Errorf("upsert should reuse row: %d != %d", rid, rid2)
+	}
+
+	rels, err := st.ListReleases(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rels) != 1 {
+		t.Fatalf("expected 1 release, got %d", len(rels))
+	}
+	if rels[0].Title != "The Book (Updated)" {
+		t.Errorf("title not updated: %q", rels[0].Title)
+	}
+
+	// Dismiss hides from ListReleases.
+	if err := st.DismissRelease(rid); err != nil {
+		t.Fatal(err)
+	}
+	rels, _ = st.ListReleases(10)
+	if len(rels) != 0 {
+		t.Errorf("dismissed release still returned: %d", len(rels))
+	}
+
+	// Cascade: deleting tracker removes releases.
+	st.UpsertRelease(tid, "OL301W", "Another", "A", "2025", "")
+	st.DeleteTracker(tid)
+	// Can't query directly since no API for all-releases, but open a new DB copy
+	// and verify via raw SQL.
+	var n int
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM releases`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("cascade did not remove releases: %d remain", n)
+	}
+}
+
 func TestBookCoverAndTitle(t *testing.T) {
 	st := openTemp(t)
 	if c, _ := st.BookCover(999); c != "" {
@@ -303,7 +467,7 @@ func TestBookCoverAndTitle(t *testing.T) {
 	if ti, _ := st.BookTitle(999); ti != "" {
 		t.Error("expected empty title for missing book")
 	}
-	id, _ := st.UpsertBook("My Book", "https://x/1", "", 1, "c.jpg", "", nil)
+	id, _ := st.UpsertBook("My Book", "https://x/1", "", 1, "c.jpg", "", nil, "ln", "")
 	if c, _ := st.BookCover(id); c != "c.jpg" {
 		t.Errorf("cover: %q", c)
 	}

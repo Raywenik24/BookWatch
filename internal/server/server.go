@@ -283,7 +283,7 @@ func (s *Server) handleAddBook(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, code, errBody(err.Error()))
 		return
 	}
-	if _, err := s.st.UpsertBook(res.Title, body.URL, res.Path, res.Volumes, res.Cover, "", nil); err != nil {
+	if _, err := s.st.UpsertBook(res.Title, body.URL, res.Path, res.Volumes, res.Cover, "", nil, "ln", ""); err != nil {
 		writeErr(w, err)
 		return
 	}
