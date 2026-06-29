@@ -23,7 +23,7 @@ type Config struct {
 	Port      string // HTTP listen port
 	Password  string // shared password for write endpoints
 	CheckCron string // cron expr for the scheduled check
-	GBKey     string // Google Books API key (optional; empty = anonymous)
+	GBKey     string // Google Books API key — needed for covers; keyless quota is now zero
 }
 
 // Default reads env vars, falling back to sane defaults.

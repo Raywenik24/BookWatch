@@ -11,6 +11,7 @@ run.ps1
 # binaries
 /bookwatch
 *.exe
+*.exe~
 
 # local SQLite db
 *.db
