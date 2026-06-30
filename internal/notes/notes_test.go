@@ -155,7 +155,7 @@ func TestBuildNote_hasAuthorField(t *testing.T) {
 func TestBuildBookNote(t *testing.T) {
 	out := BuildBookNote("Rich Dad Poor Dad", "Robert T. Kiyosaki",
 		"https://openlibrary.org/works/OL20749838W", "OL20749838W",
-		"cover_RichDadPoorDad.jpg", "1997", "2026-06-29")
+		"cover_RichDadPoorDad.jpg", "Completed", "1997", "A synopsis.", "2026-06-29")
 
 	for _, must := range []string{
 		"Title: Rich Dad Poor Dad",
@@ -164,10 +164,13 @@ func TestBuildBookNote(t *testing.T) {
 		"Work ID: OL20749838W",
 		`Cover: "[[cover_RichDadPoorDad.jpg]]"`,
 		"Released EN: 1997",
+		"  - Completed",
 		`- "#Book"`,
 		"Template_used: BookTemplate",
 		"created: 2026-06-29",
 		"### Rich Dad Poor Dad",
+		"![[cover_RichDadPoorDad.jpg]]",
+		"A synopsis.",
 	} {
 		if !strings.Contains(out, must) {
 			t.Errorf("BuildBookNote missing %q:\n%s", must, out)
@@ -176,9 +179,57 @@ func TestBuildBookNote(t *testing.T) {
 }
 
 func TestBuildBookNote_emptyCover(t *testing.T) {
-	out := BuildBookNote("Some Book", "Author", "https://openlibrary.org/works/OLxW", "OLxW", "", "2020", "2026-06-29")
+	out := BuildBookNote("Some Book", "Author", "https://openlibrary.org/works/OLxW", "OLxW", "", "Queue", "2020", "", "2026-06-29")
 	if strings.Contains(out, `"[["`) {
 		t.Errorf("empty cover should not produce [[...]] notation:\n%s", out)
+	}
+	if strings.Contains(out, "![[") {
+		t.Errorf("empty cover should not produce an embed:\n%s", out)
+	}
+}
+
+func TestBuildBookNote_defaultStatus(t *testing.T) {
+	out := BuildBookNote("Some Book", "Author", "https://openlibrary.org/works/OLxW", "OLxW", "", "", "2020", "", "2026-06-29")
+	if !strings.Contains(out, "  - Queue") {
+		t.Errorf("empty status should default to Queue:\n%s", out)
+	}
+}
+
+// CreateBook writes a #Book note from catalog data (no scraping) and refuses
+// a duplicate filename, mirroring Create's duplicate-filename guard.
+func TestCreateBook(t *testing.T) {
+	o := Options{VaultDir: t.TempDir(), NewNoteDir: "Books", AttachmentsDir: "Books/_att"}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/jpeg")
+		w.Write([]byte("fake-cover-bytes"))
+	}))
+	defer srv.Close()
+
+	res, err := CreateBook(o, nil, "Rich Dad Poor Dad", "Robert T. Kiyosaki",
+		"https://openlibrary.org/works/OL20749838W", "OL20749838W", srv.URL+"/cover.jpg", "Completed", "A synopsis.")
+	if err != nil {
+		t.Fatalf("CreateBook: %v", err)
+	}
+	if res.Cover == "" {
+		t.Error("expected a cover filename")
+	}
+	raw, err := os.ReadFile(res.Path)
+	if err != nil {
+		t.Fatalf("note not written: %v", err)
+	}
+	if !strings.Contains(string(raw), "  - Completed") {
+		t.Errorf("note should carry the chosen status:\n%s", raw)
+	}
+	if !strings.Contains(string(raw), "![[cover_RichDadPoorDad.jpg]]") {
+		t.Errorf("note should embed the cover:\n%s", raw)
+	}
+	if !strings.Contains(string(raw), "A synopsis.") {
+		t.Errorf("note should carry the description:\n%s", raw)
+	}
+
+	if _, err := CreateBook(o, nil, "Rich Dad Poor Dad", "Robert T. Kiyosaki",
+		"https://openlibrary.org/works/OLother", "OLother", "", "Queue", ""); !errors.Is(err, ErrNoteExists) {
+		t.Fatalf("expected ErrNoteExists for same-title note, got %v", err)
 	}
 }
 

@@ -5,13 +5,14 @@ package provider
 
 // Candidate is one title hit from a catalog search.
 type Candidate struct {
-	Title    string
-	Author   string
-	Year     int
-	Language string // e.g. "eng"
-	WorkID   string // e.g. "OL1234W"
-	CoverURL string
-	OLURL    string
+	Title     string
+	Author    string
+	AuthorKey string // e.g. "OL1234A" — empty when the source has no author_key
+	Year      int
+	Language  string // e.g. "eng"
+	WorkID    string // e.g. "OL1234W"
+	CoverURL  string
+	OLURL     string
 }
 
 // Author is one result from an author search.
@@ -33,6 +34,7 @@ type Work struct {
 	Title        string
 	FirstPubYear int
 	CoverURL     string
+	Description  string
 	Editions     []Edition
 }
 
@@ -42,6 +44,9 @@ type Provider interface {
 	AuthorSearch(q string) ([]Author, error)
 	AuthorWorks(authorID string) ([]Work, error)
 	WorkDetail(workID string) (Work, error)
+	// WorkByID resolves a single work (e.g. from a pasted openlibrary.org/works/
+	// URL) into a Candidate, without going through title search.
+	WorkByID(workID string) (Candidate, error)
 }
 
 // SelectCover returns the cover URL for the first edition matching lang.

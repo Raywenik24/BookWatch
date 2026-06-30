@@ -108,12 +108,17 @@ modified: %s
 `, title, sourceURL, nd.Volumes, coverName, today, today, title, coverName, nd.Description)
 }
 
-// BuildBookNote renders the frontmatter for a new book note. The cosmetic body
-// (description, links) is left for the user to fill in.
-func BuildBookNote(title, author, link, workID, coverName, releasedEN, today string) string {
+// BuildBookNote renders a new book note: frontmatter, the cover embed (when
+// there is one), and the OL description (when there is one).
+func BuildBookNote(title, author, link, workID, coverName, status, releasedEN, description, today string) string {
 	coverField := ""
+	coverEmbed := ""
 	if coverName != "" {
 		coverField = fmt.Sprintf(`"[[%s]]"`, coverName)
+		coverEmbed = fmt.Sprintf("![[%s]]\n\n", coverName)
+	}
+	if status == "" {
+		status = "Queue"
 	}
 	return fmt.Sprintf(`---
 Title: %s
@@ -123,7 +128,7 @@ Work ID: %s
 Cover: %s
 Released EN: %s
 Status:
-  - Queue
+  - %s
 tags:
   - "#Book"
 Template_used: BookTemplate
@@ -131,7 +136,57 @@ created: %s
 modified: %s
 ---
 ### %s
-`, title, author, link, workID, coverField, releasedEN, today, today, title)
+
+%s%s
+`, title, author, link, workID, coverField, releasedEN, status, today, today, title, coverEmbed, description)
+}
+
+// CreateBook writes a new #Book note from catalog data (OpenLibrary) — no
+// scraping involved, unlike Create. coverURL/description may be empty. dup
+// may be nil to skip the duplicate check.
+func CreateBook(o Options, dup DupChecker, title, author, link, workID, coverURL, status, description string) (Result, error) {
+	if dup != nil {
+		exists, err := dup.BookExists(link)
+		if err != nil {
+			return Result{}, err
+		}
+		if exists {
+			return Result{}, ErrDuplicate
+		}
+	}
+
+	sanTitle := Sanitize(title, false)
+	today := time.Now().Format("2006-01-02")
+
+	noteAbs := filepath.Join(o.VaultDir, filepath.FromSlash(o.NewNoteDir))
+	mdPath := filepath.Join(noteAbs, sanTitle+".md")
+	if _, err := os.Stat(mdPath); err == nil {
+		return Result{}, fmt.Errorf("%w: %s.md", ErrNoteExists, sanTitle)
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return Result{}, err
+	}
+
+	coverName := ""
+	if coverURL != "" {
+		coverName = "cover_" + Sanitize(title, true) + coverExt(coverURL)
+		attachAbs := filepath.Join(o.VaultDir, filepath.FromSlash(o.AttachmentsDir))
+		if err := os.MkdirAll(attachAbs, 0o755); err != nil {
+			return Result{}, err
+		}
+		if err := download(coverURL, filepath.Join(attachAbs, coverName)); err != nil {
+			return Result{}, fmt.Errorf("cover download: %w", err)
+		}
+	}
+
+	if err := os.MkdirAll(noteAbs, 0o755); err != nil {
+		return Result{}, err
+	}
+	content := BuildBookNote(sanTitle, author, link, workID, coverName, status, "", description, today)
+	if err := vault.AtomicWrite(mdPath, []byte(content), 0o644); err != nil {
+		return Result{}, err
+	}
+
+	return Result{Path: mdPath, Title: sanTitle, Cover: coverName}, nil
 }
 
 // Create scrapes the URL and writes a new note + cover into the vault.

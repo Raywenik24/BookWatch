@@ -109,6 +109,7 @@ type olSearchDoc struct {
 	Key              string   `json:"key"`
 	Title            string   `json:"title"`
 	AuthorName       []string `json:"author_name"`
+	AuthorKey        []string `json:"author_key"`
 	FirstPublishYear int      `json:"first_publish_year"`
 	Language         []string `json:"language"`
 	CoverI           int      `json:"cover_i"`
@@ -120,7 +121,7 @@ type olSearchResp struct {
 
 func (c *OLClient) SearchByTitle(q string) ([]Candidate, error) {
 	path := "/search.json?title=" + url.QueryEscape(q) +
-		"&fields=key,title,author_name,first_publish_year,language,cover_i&limit=" +
+		"&fields=key,title,author_name,author_key,first_publish_year,language,cover_i&limit=" +
 		strconv.Itoa(searchLimit)
 	var resp olSearchResp
 	if err := c.get(c.url(path), &resp); err != nil {
@@ -132,19 +133,24 @@ func (c *OLClient) SearchByTitle(q string) ([]Candidate, error) {
 		if len(d.AuthorName) > 0 {
 			author = d.AuthorName[0]
 		}
+		authorKey := ""
+		if len(d.AuthorKey) > 0 {
+			authorKey = strings.TrimPrefix(d.AuthorKey[0], "/authors/")
+		}
 		lang := ""
 		if len(d.Language) > 0 {
 			lang = d.Language[0]
 		}
 		id := parseWorkID(d.Key)
 		out = append(out, Candidate{
-			Title:    d.Title,
-			Author:   author,
-			Year:     d.FirstPublishYear,
-			Language: lang,
-			WorkID:   id,
-			CoverURL: coverURL(c.coversURL, d.CoverI),
-			OLURL:    c.baseURL + "/works/" + id,
+			Title:     d.Title,
+			Author:    author,
+			AuthorKey: authorKey,
+			Year:      d.FirstPublishYear,
+			Language:  lang,
+			WorkID:    id,
+			CoverURL:  coverURL(c.coversURL, d.CoverI),
+			OLURL:     c.baseURL + "/works/" + id,
 		})
 	}
 	return out, nil
@@ -248,9 +254,31 @@ func (c *OLClient) AuthorWorks(authorID string) ([]Work, error) {
 
 // --- WorkDetail ---
 
+// olDescription unmarshals OL's "description" field, which is either a bare
+// string or a {"type":"/type/text","value":"..."} object depending on the
+// record.
+type olDescription struct{ Value string }
+
+func (d *olDescription) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err == nil {
+		d.Value = s
+		return nil
+	}
+	var obj struct {
+		Value string `json:"value"`
+	}
+	if err := json.Unmarshal(b, &obj); err != nil {
+		return err
+	}
+	d.Value = obj.Value
+	return nil
+}
+
 type olWorkDetail struct {
-	Title            string `json:"title"`
-	FirstPublishDate string `json:"first_publish_date"`
+	Title            string        `json:"title"`
+	FirstPublishDate string        `json:"first_publish_date"`
+	Description      olDescription `json:"description"`
 }
 
 type olEditionEntry struct {
@@ -292,6 +320,56 @@ func (c *OLClient) WorkDetail(id string) (Work, error) {
 		WorkID:       id,
 		Title:        detail.Title,
 		FirstPubYear: parseYear(detail.FirstPublishDate),
+		Description:  detail.Description.Value,
 		Editions:     eds,
+	}, nil
+}
+
+// --- WorkByID ---
+
+type olWorkFull struct {
+	Title            string `json:"title"`
+	FirstPublishDate string `json:"first_publish_date"`
+	Covers           []int  `json:"covers"`
+	Authors          []struct {
+		Author struct {
+			Key string `json:"key"`
+		} `json:"author"`
+	} `json:"authors"`
+}
+
+type olAuthorDetail struct {
+	Name string `json:"name"`
+}
+
+// WorkByID resolves a single work straight from its ID — the path for a
+// pasted openlibrary.org/works/OL...W URL, where the user already picked the
+// exact work and a title search would be redundant. The author name needs a
+// second fetch since /works/{id}.json only carries the author's key.
+func (c *OLClient) WorkByID(id string) (Candidate, error) {
+	var w olWorkFull
+	if err := c.get(c.url("/works/"+id+".json"), &w); err != nil {
+		return Candidate{}, err
+	}
+	author, authorKey := "", ""
+	if len(w.Authors) > 0 && w.Authors[0].Author.Key != "" {
+		authorKey = strings.TrimPrefix(w.Authors[0].Author.Key, "/authors/")
+		var a olAuthorDetail
+		if err := c.get(c.url(w.Authors[0].Author.Key+".json"), &a); err == nil {
+			author = a.Name
+		}
+	}
+	cover := ""
+	if len(w.Covers) > 0 {
+		cover = coverURL(c.coversURL, w.Covers[0])
+	}
+	return Candidate{
+		Title:     w.Title,
+		Author:    author,
+		AuthorKey: authorKey,
+		Year:      parseYear(w.FirstPublishDate),
+		WorkID:    id,
+		CoverURL:  cover,
+		OLURL:     c.baseURL + "/works/" + id,
 	}, nil
 }

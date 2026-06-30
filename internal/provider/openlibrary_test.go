@@ -21,6 +21,7 @@ const searchFixture = `{
       "key": "/works/OL4966121W",
       "title": "The Warded Man",
       "author_name": ["Peter V. Brett"],
+      "author_key": ["OL7891610A"],
       "first_publish_year": 2008,
       "language": ["eng"],
       "cover_i": 7890277
@@ -123,6 +124,9 @@ func TestSearchByTitle(t *testing.T) {
 	}
 	if r.Author != "Peter V. Brett" {
 		t.Errorf("author %q", r.Author)
+	}
+	if r.AuthorKey != "OL7891610A" {
+		t.Errorf("author key %q", r.AuthorKey)
 	}
 	if r.Year != 2008 {
 		t.Errorf("year %d", r.Year)
@@ -261,6 +265,59 @@ func TestParseYear(t *testing.T) {
 		if got := parseYear(tc.in); got != tc.want {
 			t.Errorf("parseYear(%q) = %d, want %d", tc.in, got, tc.want)
 		}
+	}
+}
+
+const workFullFixture = `{
+  "title": "The Warded Man",
+  "first_publish_date": "2008",
+  "covers": [7890277],
+  "authors": [{"author": {"key": "/authors/OL7891610A"}}]
+}`
+
+const authorDetailFixture = `{"name": "Peter V. Brett"}`
+
+func TestWorkByID(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/works/OL4966121W.json":
+			w.Write([]byte(workFullFixture))
+		case r.URL.Path == "/authors/OL7891610A.json":
+			w.Write([]byte(authorDetailFixture))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	c := NewOpenLibrary("t", 5*time.Second)
+	c.baseURL = srv.URL
+	c.coversURL = srv.URL
+
+	got, err := c.WorkByID("OL4966121W")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Title != "The Warded Man" {
+		t.Errorf("title %q", got.Title)
+	}
+	if got.Author != "Peter V. Brett" {
+		t.Errorf("author %q", got.Author)
+	}
+	if got.AuthorKey != "OL7891610A" {
+		t.Errorf("author key %q", got.AuthorKey)
+	}
+	if got.Year != 2008 {
+		t.Errorf("year %d", got.Year)
+	}
+	if got.WorkID != "OL4966121W" {
+		t.Errorf("work id %q", got.WorkID)
+	}
+	if !strings.Contains(got.CoverURL, "7890277") {
+		t.Errorf("cover %q", got.CoverURL)
+	}
+	if !strings.Contains(got.OLURL, "OL4966121W") {
+		t.Errorf("ol url %q", got.OLURL)
 	}
 }
 

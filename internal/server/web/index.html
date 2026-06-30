@@ -126,6 +126,26 @@
   .fz-opt.active, .fz-opt:hover { background: var(--surface0); }
   .fz-opt mark { background: transparent; color: var(--mauve); font-weight: 600; }
   .fz-empty { padding: .35rem .5rem; color: var(--subtext); font-size: .9rem; }
+  /* add-a-book candidate disambiguation */
+  .cand-list { display: flex; flex-direction: column; gap: .5rem; }
+  .cand-row { display: flex; gap: .7rem; align-items: center; background: var(--mantle);
+        border: 1px solid var(--surface0); border-radius: 8px; padding: .5rem .7rem;
+        cursor: pointer; transition: border-color .15s; }
+  .cand-row:hover { border-color: var(--mauve); }
+  .cand-cover { width: 42px; height: 63px; object-fit: cover; border-radius: 4px; background: var(--surface0); flex: 0 0 auto; }
+  .cand-meta { flex: 1; min-width: 0; }
+  .cand-title { font-weight: 600; }
+  .cand-sub { font-size: .85rem; color: var(--subtext); }
+  .cand-link { font-size: .8rem; white-space: nowrap; }
+  input[type="checkbox"] { accent-color: var(--mauve); width: 1rem; height: 1rem; vertical-align: -.15em; margin-right: .3rem; }
+  .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 40;
+        display: flex; align-items: flex-start; justify-content: center; padding: 4rem 1rem; overflow-y: auto; }
+  .modal-backdrop[hidden] { display: none; }
+  .modal { position: relative; background: var(--base); border: 1px solid var(--surface0); border-radius: 10px;
+        padding: 1rem 1.2rem 1.2rem; max-width: 600px; width: 100%; box-shadow: 0 20px 60px rgba(0,0,0,.5); }
+  .modal-close { position: absolute; top: .4rem; right: .5rem; background: transparent; border: 0;
+        color: var(--subtext); font-size: 1.4rem; line-height: 1; padding: .25rem .45rem; cursor: pointer; border-radius: 6px; }
+  .modal-close:hover { color: var(--text); background: var(--surface0); }
 </style>
 </head>
 <body>
@@ -164,8 +184,15 @@
     <section id="books">
       <h2>Add a book</h2>
       <div class="row">
-        <input id="url" placeholder="https://jnovels.com/...-light-novel-epub/">
-        <button class="btn" id="addBtn" onclick="addBook()">Add</button>
+        <input id="addField" placeholder="Light-novel URL, a book title, or an openlibrary.org/works/... link" autocomplete="off" spellcheck="false" onkeydown="if(event.key==='Enter')startAdd()">
+        <button class="btn" id="addBtn" onclick="startAdd()">Add</button>
+      </div>
+      <div id="addModalBackdrop" class="modal-backdrop" hidden onclick="if(event.target===this)closeAddModal()">
+        <div class="modal">
+          <button class="modal-close" onclick="closeAddModal()" aria-label="Close">&times;</button>
+          <div id="addCandidates"></div>
+          <div id="addConfirm"></div>
+        </div>
       </div>
       <h2>Tracked books</h2>
       <div class="row">
@@ -635,8 +662,9 @@ async function loadSettings(){
   if(ov.timezone){ TZ = ov.timezone; tzPicker.setValue(TZ); loadUpdates(); loadBooks(); loadLogs(); loadEvents(); }
 }
 const FIELDS = ['title','cover','volume_list','volume_item','description'];
+let sourcesData = [];
 async function loadSources(){
-  const srcs = await getJSON('/api/sources') || [];
+  const srcs = sourcesData = await getJSON('/api/sources') || [];
   $('sourcesList').innerHTML = srcs.map(s => {
     const byField = {}; (s.rules||[]).forEach(r => byField[r.field]=r);
     const rows = FIELDS.map(f => {
@@ -720,19 +748,165 @@ async function applyUpdates(){
     btn.disabled = false;
   }
 }
-async function addBook(){
-  const url = $('url').value.trim(); if(!url) return toast('Enter a URL.','error');
+/* ── Add a book: one smart field ────────────────────────────────
+   1. Known LN source domain (matches a /api/sources domain) -> existing
+      scrape flow.
+   2. A pasted openlibrary.org/works/OL...W URL -> resolved directly, no
+      search, straight to the confirm step.
+   3. Anything else (free text) -> OpenLibrary title search, candidates
+      always shown for disambiguation (never silently auto-picked). */
+const CATALOG_LANGS = [['eng','English'],['fre','French'],['ger','German'],['spa','Spanish'],
+  ['ita','Italian'],['por','Portuguese'],['jpn','Japanese'],['zho','Chinese'],['pol','Polish'],
+  ['rus','Russian'],['nld','Dutch'],['swe','Swedish'],['nor','Norwegian'],['dan','Danish']];
+
+function isKnownLNDomain(host){
+  host = host.toLowerCase();
+  return sourcesData.some(s => s.enabled && s.domain && host.includes(s.domain.toLowerCase()));
+}
+function showAddModal(){ $('addModalBackdrop').hidden = false; }
+function closeAddModal(){ resetAddPanels(); }
+function resetAddPanels(){
+  $('addModalBackdrop').hidden = true;
+  $('addCandidates').hidden = true; $('addCandidates').innerHTML = '';
+  $('addConfirm').hidden = true; $('addConfirm').innerHTML = '';
+  _addCandidates = []; _addSelected = null;
+}
+document.addEventListener('keydown', e => {
+  if(e.key === 'Escape' && !$('addModalBackdrop').hidden) closeAddModal();
+});
+async function startAdd(){
+  const raw = $('addField').value.trim();
+  if(!raw) return toast('Enter a URL or a book title.','error');
+  resetAddPanels();
+
+  let parsed = null;
+  try { parsed = new URL(raw); } catch(e){}
+  if(parsed && (parsed.protocol === 'http:' || parsed.protocol === 'https:')){
+    if(isKnownLNDomain(parsed.hostname)) return addBookLN(raw);
+    const olHost = parsed.hostname.replace(/^www\./,'') === 'openlibrary.org';
+    const m = olHost && parsed.pathname.match(/\/works\/(OL\d+W)/i);
+    if(m) return resolveOLWork(m[1]);
+  }
+  return searchBooks(raw);
+}
+async function addBookLN(url){
   const btn = $('addBtn'); btn.disabled = true; const h = toast('Adding… (scraping the page)','busy');
   try {
     const r = await send('POST','/api/books',{url});
-    if(need(r, h)) return;                                  // need() morphs the busy toast into the auth reason
+    if(need(r, h)) return;
     if(r.status===409) return h.update('Already tracked — this book is in your list.','error');
     if(!r.ok) return h.update('Error: ' + (r.data.error||r.status),'error');
-    h.update(`Added: ${r.data.title} (${r.data.volumes} vol)`,'success'); $('url').value=''; loadBooks();
+    h.update(`Added: ${r.data.title} (${r.data.volumes} vol)`,'success'); $('addField').value=''; loadBooks(); loadEvents();
   } catch(e) {
     h.update('Error: ' + (e.message || 'request failed'),'error');
   } finally {
-    btn.disabled = false;                                   // always reach a terminal state
+    btn.disabled = false;
+  }
+}
+async function searchBooks(q){
+  const h = toast('Searching OpenLibrary…','busy');
+  try {
+    const data = await getJSON('/api/ol/search?q='+encodeURIComponent(q));
+    if(!data || !data.length){ h.update('No matches on OpenLibrary.','error'); return; }
+    h.close();
+    renderCandidates(data);
+  } catch(e){ h.update('Error: '+(e.message||'request failed'),'error'); }
+}
+async function resolveOLWork(workID){
+  const h = toast('Resolving work…','busy');
+  try {
+    const cand = await getJSON('/api/ol/work/'+encodeURIComponent(workID));
+    if(!cand || !cand.WorkID){ h.update('Could not resolve that work.','error'); return; }
+    h.close();
+    selectCandidate(cand);
+  } catch(e){ h.update('Error: '+(e.message||'request failed'),'error'); }
+}
+let _addCandidates = [];
+let _addSelected = null;
+function renderCandidates(list){
+  _addCandidates = list;
+  showAddModal();
+  const box = $('addCandidates'); box.hidden = false;
+  box.innerHTML = '<small class="muted">Multiple matches — pick the right one:</small>'
+    + '<div class="cand-list" style="margin-top:.4rem">' + list.map((c,i) => {
+        const sub = [c.Author, c.Year||'', c.Language||''].filter(Boolean).join(' · ');
+        const img = c.CoverURL
+          ? `<img class="cand-cover" src="${esc(c.CoverURL)}" loading="lazy" onerror="this.remove()">`
+          : '<div class="cand-cover"></div>';
+        return `<div class="cand-row" onclick="selectCandidateIdx(${i})">${img}
+          <div class="cand-meta"><div class="cand-title">${esc(c.Title)}</div><div class="cand-sub">${esc(sub)}</div></div>
+          <a class="cand-link" href="${esc(c.OLURL)}" target="_blank" onclick="event.stopPropagation()">OL ↗</a>
+        </div>`;
+      }).join('') + '</div>';
+}
+function selectCandidateIdx(i){ selectCandidate(_addCandidates[i]); }
+function selectCandidate(c){
+  _addSelected = c;
+  showAddModal();
+  $('addCandidates').hidden = true;
+  renderAddConfirm();
+}
+function cancelAddConfirm(){
+  _addSelected = null;
+  $('addConfirm').hidden = true; $('addConfirm').innerHTML = '';
+  if(_addCandidates.length){ $('addCandidates').hidden = false; }
+  else { closeAddModal(); }
+}
+function toggleAddWatchLang(){ $('addWatchLangRow').hidden = !$('addWatch').checked; }
+function renderAddConfirm(){
+  const c = _addSelected;
+  const box = $('addConfirm'); box.hidden = false;
+  const sub = [c.Author, c.Year||''].filter(Boolean).join(' · ');
+  const img = c.CoverURL ? `<img class="cand-cover" style="width:50px;height:75px" src="${esc(c.CoverURL)}">` : '';
+  const langOpts = CATALOG_LANGS.map(([v,l]) => `<option value="${v}"${v==='eng'?' selected':''}>${l}</option>`).join('');
+  box.innerHTML = `<div class="card">
+    <div class="row" style="align-items:center">
+      ${img}
+      <div style="flex:1">
+        <div class="cand-title">${esc(c.Title)}</div>
+        <div class="cand-sub">${esc(sub)}${sub?' — ':''}<a href="${esc(c.OLURL)}" target="_blank">verify on OL ↗</a></div>
+      </div>
+      <button class="btn ghost" onclick="cancelAddConfirm()">Change</button>
+    </div>
+    <div class="row" style="margin-top:.6rem; align-items:center">
+      <label style="color:var(--subtext); white-space:nowrap">Status</label>
+      <select id="addStatus" style="flex:0 0 auto">
+        <option value="Completed" selected>Completed</option>
+        <option value="Queue">Queue</option>
+        <option value="Dropped">Dropped</option>
+      </select>
+      <label style="white-space:nowrap"><input type="checkbox" id="addWatch" onchange="toggleAddWatchLang()"> Watch this author</label>
+    </div>
+    <div class="row" id="addWatchLangRow" hidden style="align-items:center">
+      <label style="color:var(--subtext); white-space:nowrap">Catalog language</label>
+      <select id="addWatchLang" style="flex:0 0 auto">${langOpts}</select>
+    </div>
+    <div class="row"><button class="btn" id="addSubmitBtn" onclick="submitAddBook()">Add book</button></div>
+  </div>`;
+}
+async function submitAddBook(){
+  const c = _addSelected; if(!c) return;
+  const watch = $('addWatch').checked;
+  if(watch && !c.AuthorKey){ toast('No OpenLibrary author id for this work — cannot watch.','error'); return; }
+  const btn = $('addSubmitBtn'); btn.disabled = true;
+  const h = toast('Adding…','busy');
+  try {
+    const r = await send('POST','/api/books',{
+      kind: 'book', title: c.Title, author: c.Author, author_ol_key: c.AuthorKey||'',
+      work_id: c.WorkID, ol_url: c.OLURL, year: c.Year||0,
+      status: $('addStatus').value, watch_author: watch,
+      catalog_language: watch ? $('addWatchLang').value : '',
+    });
+    if(need(r, h)) return;
+    if(r.status===409) return h.update('Already tracked — this book is in your list.','error');
+    if(!r.ok) return h.update('Error: '+(r.data.error||r.status),'error');
+    h.update(`Added: ${r.data.title}` + (r.data.watched ? ' — now watching the author.' : ''),'success');
+    $('addField').value = ''; resetAddPanels(); loadBooks(); loadEvents();
+    if(r.data.watched) loadTrackers();
+  } catch(e){
+    h.update('Error: '+(e.message||'request failed'),'error');
+  } finally {
+    btn.disabled = false;
   }
 }
 async function saveRules(id){

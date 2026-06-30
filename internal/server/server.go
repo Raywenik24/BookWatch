@@ -74,6 +74,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/ol/authors", s.handleOLAuthors)
 	mux.HandleFunc("GET /api/ol/authors/{id}/works", s.handleOLAuthorWorks)
 	mux.HandleFunc("GET /api/ol/search", s.handleOLSearch)
+	mux.HandleFunc("GET /api/ol/work/{id}", s.handleOLWork)
 	mux.HandleFunc("GET /api/trackers", s.handleListTrackers)
 
 	mux.HandleFunc("POST /api/check", s.auth(s.handleCheck))
@@ -277,11 +278,35 @@ func (s *Server) handleApply(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, res)
 }
 
+// addBookBody covers both add flows: the LN scrape flow (url only) and the
+// catalog flow (kind="book", everything else) for an OpenLibrary candidate
+// the user picked or resolved by URL.
+type addBookBody struct {
+	URL string `json:"url"`
+
+	Kind            string `json:"kind"` // "" (default: LN scrape) | "book"
+	Title           string `json:"title"`
+	Author          string `json:"author"`
+	AuthorOLKey     string `json:"author_ol_key"`
+	WorkID          string `json:"work_id"`
+	OLURL           string `json:"ol_url"`
+	Year            int    `json:"year"`
+	Status          string `json:"status"`
+	WatchAuthor     bool   `json:"watch_author"`
+	CatalogLanguage string `json:"catalog_language"`
+}
+
 func (s *Server) handleAddBook(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		URL string `json:"url"`
+	var body addBookBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, errBody("bad body"))
+		return
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.URL == "" {
+	if body.Kind == "book" {
+		s.addBookFromCatalog(w, body)
+		return
+	}
+	if body.URL == "" {
 		writeJSON(w, http.StatusBadRequest, errBody("missing url"))
 		return
 	}
@@ -307,6 +332,68 @@ func (s *Server) handleAddBook(w http.ResponseWriter, r *http.Request) {
 	s.st.LogEvent("add", fmt.Sprintf("Added %q (%s)", res.Title, body.URL))
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"title": res.Title, "volumes": res.Volumes, "path": res.Path,
+	})
+}
+
+// addBookFromCatalog creates a #Book note from an OpenLibrary candidate (no
+// scraping) — issue #34's add-a-book path. The cover is the catalog-language
+// edition (falls back to any edition with a cover); if watch_author is set,
+// a Watchlist tracker is created baselined on this book.
+func (s *Server) addBookFromCatalog(w http.ResponseWriter, body addBookBody) {
+	if body.Title == "" || body.WorkID == "" || body.OLURL == "" {
+		writeJSON(w, http.StatusBadRequest, errBody("title, work_id, ol_url required"))
+		return
+	}
+	lang := body.CatalogLanguage
+	if lang == "" {
+		lang = "eng"
+	}
+	status := body.Status
+	if status == "" {
+		status = "Completed"
+	}
+
+	coverURL, description := "", ""
+	if work, err := s.ol.WorkDetail(body.WorkID); err == nil {
+		coverURL = provider.SelectCover(work, lang)
+		description = work.Description
+	}
+
+	opts := notes.Options{
+		VaultDir:       s.effective("vault_dir", s.cfg.VaultDir),
+		NewNoteDir:     s.effective("new_note_dir", s.cfg.NewNoteDir),
+		AttachmentsDir: s.effective("attachments_dir", s.cfg.AttachmentsDir),
+	}
+	res, err := notes.CreateBook(opts, s.st, body.Title, body.Author, body.OLURL, body.WorkID, coverURL, status, description)
+	if err != nil {
+		code := http.StatusBadRequest
+		if errors.Is(err, notes.ErrDuplicate) || errors.Is(err, notes.ErrNoteExists) {
+			code = http.StatusConflict
+		}
+		writeJSON(w, code, errBody(err.Error()))
+		return
+	}
+	if _, err := s.st.UpsertBook(res.Title, body.OLURL, res.Path, 0, res.Cover, status, nil, "book", body.Author); err != nil {
+		writeErr(w, err)
+		return
+	}
+	s.st.LogEvent("add", fmt.Sprintf("Added %q (%s)", res.Title, body.OLURL))
+
+	watched := false
+	if body.WatchAuthor && body.AuthorOLKey != "" {
+		baselineDate := ""
+		if body.Year > 0 {
+			baselineDate = strconv.Itoa(body.Year)
+		}
+		if _, err := s.st.UpsertTracker("author", body.Author, body.AuthorOLKey, body.WorkID, baselineDate, lang); err != nil {
+			log.Printf("watch author after book add: %v", err)
+		} else {
+			watched = true
+			s.st.LogEvent("tracker_add", fmt.Sprintf("Watching author %q (baseline %s)", body.Author, res.Title))
+		}
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"title": res.Title, "path": res.Path, "watched": watched,
 	})
 }
 
@@ -446,6 +533,15 @@ func (s *Server) handleOLSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	results, err := s.ol.SearchByTitle(q)
 	respond(w, results, err)
+}
+
+// handleOLWork resolves a single work by ID — the pasted-URL path in the
+// add-a-book flow, where the user already picked the exact work and a title
+// search would be redundant.
+func (s *Server) handleOLWork(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	cand, err := s.ol.WorkByID(id)
+	respond(w, cand, err)
 }
 
 // ── trackers ───────────────────────────────────────────────────
