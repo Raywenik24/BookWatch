@@ -148,6 +148,12 @@ var migrations = []string{
 	 	dismissed_at   TEXT,
 	 	UNIQUE(tracker_id, work_id)
 	 );`,
+	// v6: releases gain a created flag (issue #36) — once a release is turned
+	// into a book note it leaves the actionable feed (like an applied LN bump)
+	// without being dismissed, so it stays out of the way but isn't eligible
+	// for un-dismiss.
+	`ALTER TABLE releases ADD COLUMN created    INTEGER NOT NULL DEFAULT 0;
+	 ALTER TABLE releases ADD COLUMN created_at TEXT;`,
 }
 
 func (s *Store) migrate() error {
@@ -610,10 +616,13 @@ func (s *Store) ListPending() ([]PendingUpdate, error) {
 	return out, rows.Err()
 }
 
-// CountPending returns how many updates are waiting to be applied.
+// CountPending returns how many updates and undismissed/uncreated releases
+// are waiting for action — drives the "Update Obsidian" button's visibility.
 func (s *Store) CountPending() (int, error) {
 	var n int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM updates WHERE applied=0`).Scan(&n)
+	err := s.db.QueryRow(`
+		SELECT (SELECT COUNT(*) FROM updates WHERE applied=0) +
+		       (SELECT COUNT(*) FROM releases WHERE dismissed=0 AND created=0)`).Scan(&n)
 	return n, err
 }
 
@@ -740,6 +749,8 @@ type Release struct {
 	DetectedAt   string `json:"detected_at"`
 	Dismissed    bool   `json:"dismissed"`
 	DismissedAt  string `json:"dismissed_at"`
+	Created      bool   `json:"created"`
+	CreatedAt    string `json:"created_at"`
 }
 
 // UpsertRelease inserts or refreshes a candidate release by (tracker_id, work_id).
@@ -783,14 +794,28 @@ func (s *Store) ReleaseWorkIDs(trackerID int64) ([]string, error) {
 	return out, rows.Err()
 }
 
-// ListReleases returns undismissed releases newest-first, joined to tracker name.
+// ListReleases returns undismissed releases newest-first (pending and already
+// created alike — a created release stays visible marked Created, the same
+// way an applied LN bump stays visible in the Updates feed), joined to
+// tracker name.
 func (s *Store) ListReleases(limit int) ([]Release, error) {
-	rows, err := s.db.Query(`
+	return queryReleases(s.db, `WHERE r.dismissed = 0`, limit)
+}
+
+// ListDismissedReleases returns dismissed releases newest-first, for the
+// Dismissed filter's reversible un-dismiss view.
+func (s *Store) ListDismissedReleases(limit int) ([]Release, error) {
+	return queryReleases(s.db, `WHERE r.dismissed = 1`, limit)
+}
+
+func queryReleases(db *sql.DB, where string, limit int) ([]Release, error) {
+	rows, err := db.Query(`
 		SELECT r.id, r.tracker_id, t.name, r.work_id, r.title, r.author,
 		       r.first_pub_date, r.cover_url, r.detected_at,
-		       r.dismissed, COALESCE(r.dismissed_at,'')
+		       r.dismissed, COALESCE(r.dismissed_at,''),
+		       r.created, COALESCE(r.created_at,'')
 		FROM releases r JOIN trackers t ON t.id = r.tracker_id
-		WHERE r.dismissed = 0
+		`+where+`
 		ORDER BY r.detected_at DESC, r.id DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
@@ -799,20 +824,58 @@ func (s *Store) ListReleases(limit int) ([]Release, error) {
 	var out []Release
 	for rows.Next() {
 		var rel Release
-		var dismissed int
+		var dismissed, created int
 		if err := rows.Scan(&rel.ID, &rel.TrackerID, &rel.TrackerName, &rel.WorkID,
 			&rel.Title, &rel.Author, &rel.FirstPubDate, &rel.CoverURL,
-			&rel.DetectedAt, &dismissed, &rel.DismissedAt); err != nil {
+			&rel.DetectedAt, &dismissed, &rel.DismissedAt,
+			&created, &rel.CreatedAt); err != nil {
 			return nil, err
 		}
 		rel.Dismissed = dismissed != 0
+		rel.Created = created != 0
 		out = append(out, rel)
 	}
 	return out, rows.Err()
 }
 
+// GetRelease fetches a single release by id, for turning it into a book note.
+func (s *Store) GetRelease(id int64) (Release, error) {
+	row := s.db.QueryRow(`
+		SELECT r.id, r.tracker_id, t.name, r.work_id, r.title, r.author,
+		       r.first_pub_date, r.cover_url, r.detected_at,
+		       r.dismissed, COALESCE(r.dismissed_at,''),
+		       r.created, COALESCE(r.created_at,'')
+		FROM releases r JOIN trackers t ON t.id = r.tracker_id
+		WHERE r.id = ?`, id)
+	var rel Release
+	var dismissed, created int
+	if err := row.Scan(&rel.ID, &rel.TrackerID, &rel.TrackerName, &rel.WorkID,
+		&rel.Title, &rel.Author, &rel.FirstPubDate, &rel.CoverURL,
+		&rel.DetectedAt, &dismissed, &rel.DismissedAt,
+		&created, &rel.CreatedAt); err != nil {
+		return Release{}, err
+	}
+	rel.Dismissed = dismissed != 0
+	rel.Created = created != 0
+	return rel, nil
+}
+
 // DismissRelease marks a release dismissed so it no longer appears in the feed.
 func (s *Store) DismissRelease(id int64) error {
 	_, err := s.db.Exec(`UPDATE releases SET dismissed=1, dismissed_at=? WHERE id=?`, now(), id)
+	return err
+}
+
+// UndismissRelease reverses DismissRelease, so the release reappears in the feed.
+func (s *Store) UndismissRelease(id int64) error {
+	_, err := s.db.Exec(`UPDATE releases SET dismissed=0, dismissed_at=NULL WHERE id=?`, id)
+	return err
+}
+
+// MarkReleaseCreated stamps a release as turned into a book note. Created
+// releases stay out of the actionable feed but, unlike dismissed ones, are
+// not offered for un-dismiss — the note already exists.
+func (s *Store) MarkReleaseCreated(id int64) error {
+	_, err := s.db.Exec(`UPDATE releases SET created=1, created_at=? WHERE id=?`, now(), id)
 	return err
 }

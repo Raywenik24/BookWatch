@@ -179,7 +179,7 @@ func RunCheck(sc *scraper.Client, st *store.Store, ol provider.Provider, scanRoo
 	}
 
 	if st != nil && ol != nil {
-		sum.TrackersChecked, sum.NewReleases, sum.TrackingErrors = pollTrackers(ol, st)
+		sum.TrackersChecked, sum.NewReleases, sum.TrackingErrors = pollTrackers(ol, st, progress)
 	}
 
 	if st != nil {
@@ -200,11 +200,20 @@ func RunCheck(sc *scraper.Client, st *store.Store, ol provider.Provider, scanRoo
 // to the catalog language, stripped of box-sets/bundles, and deduped against
 // every work already seen or surfaced. Same-year-as-baseline ties are kept —
 // a dismiss click beats a silent miss. OL failures count separately from scan
-// errors so one provider outage doesn't read as a broken LN check.
-func pollTrackers(ol provider.Provider, st *store.Store) (checked, newReleases, errs int) {
+// errors so one provider outage doesn't read as a broken LN check. progress
+// (when non-nil) reports a second phase — restarting from 0 — so a long
+// tracker poll doesn't leave the UI's progress bar stuck at the LN total.
+func pollTrackers(ol provider.Provider, st *store.Store, progress func(i, total int, title string)) (checked, newReleases, errs int) {
 	trackers, err := st.ListTrackers()
 	if err != nil {
 		return 0, 0, 1
+	}
+
+	authorTotal := 0
+	for _, t := range trackers {
+		if t.Kind == "author" {
+			authorTotal++
+		}
 	}
 
 	for _, t := range trackers {
@@ -212,6 +221,9 @@ func pollTrackers(ol provider.Provider, st *store.Store) (checked, newReleases, 
 			continue
 		}
 		checked++
+		if progress != nil {
+			progress(checked, authorTotal, t.Name)
+		}
 
 		works, err := ol.AuthorWorks(t.OLKey)
 		if err != nil {
@@ -337,16 +349,25 @@ type ApplyResult struct {
 	Updates []UpdateInfo `json:"updates"`
 }
 
-// ApplyPending writes every pending update's stored volume count to its vault
-// note (vault.UpdateVolumes), bumps the book, and stamps the update applied. It
-// applies the LAST check's numbers — it does not re-scrape.
-func ApplyPending(st *store.Store, today string) (ApplyResult, error) {
+// ApplyPending writes the selected pending updates' stored volume counts to
+// their vault notes (vault.UpdateVolumes), bumps each book, and stamps each
+// update applied. It applies the LAST check's numbers — it does not re-scrape.
+// Only updates whose ID is in ids are touched (writing to the vault is always
+// a deliberate, ticked choice — see issue #36).
+func ApplyPending(st *store.Store, today string, ids []int64) (ApplyResult, error) {
 	pending, err := st.ListPending()
 	if err != nil {
 		return ApplyResult{}, fmt.Errorf("list pending: %w", err)
 	}
+	selected := make(map[int64]bool, len(ids))
+	for _, id := range ids {
+		selected[id] = true
+	}
 	var res ApplyResult
 	for _, p := range pending {
+		if !selected[p.ID] {
+			continue
+		}
 		if e := vault.UpdateVolumes(p.Path, p.NewVolumes, today); e != nil {
 			res.Failed++
 			continue

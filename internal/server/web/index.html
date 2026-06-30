@@ -32,9 +32,9 @@
   section { display: none; } section.active { display: block; }
   h2 { font-size: 1.05rem; color: var(--mauve); margin-top: 0; }
   .row { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; margin: .6rem 0; }
-  input, select, button.btn { font: inherit; padding: .45rem .6rem; border-radius: 6px;
+  input:not([type="checkbox"]), select, button.btn { font: inherit; padding: .45rem .6rem; border-radius: 6px;
         border: 1px solid var(--surface1); background: var(--mantle); color: var(--text); }
-  input { flex: 1; min-width: 160px; }
+  input:not([type="checkbox"]) { flex: 1; min-width: 160px; }
   input:focus, select:focus { outline: none; border-color: var(--mauve); box-shadow: 0 0 0 3px color-mix(in srgb, var(--mauve) 30%, transparent); }
   .rule-grid input { min-width: 0; width: 100%; }
   button.btn { background: var(--peach); border: 0; color: var(--crust); font-weight: 600; cursor: pointer; }
@@ -43,6 +43,25 @@
   button.btn:disabled { opacity: .5; cursor: default; }
   table { width: 100%; border-collapse: collapse; }
   th, td { text-align: left; padding: .4rem .5rem; border-bottom: 1px solid var(--surface0); font-size: .9rem; vertical-align: top; }
+  /* Compact action button, vertically centered against the row regardless of
+     how many lines the title cell wraps to (percentage/flex heights on a
+     real <td> don't reliably stretch to the row across browsers). nowrap so
+     "Un-dismiss" can't break into two lines and balloon the row. */
+  td.actions { vertical-align: middle; white-space: nowrap; }
+  td.actions .btn { padding: .25rem .55rem; font-size: .8rem; font-weight: 500; white-space: nowrap; }
+  th.cb-col, td.cb-col { padding: .4rem 0 .4rem .5rem; box-sizing: border-box; }
+  /* table-layout:auto distributes 100%-width's leftover space across EVERY
+     column proportionally, even ones with a tiny explicit width — so the
+     checkbox column doesn't actually stay narrow unless the table is fixed
+     and every other column is pinned too, leaving Title (no width set) to
+     absorb whatever's left. */
+  #updatesTable { table-layout: fixed; }
+  #updatesTable th:nth-child(1), #updatesTable td:nth-child(1) { width: 1.8rem; }
+  #updatesTable th:nth-child(3), #updatesTable td:nth-child(3) { width: 5.5rem; }
+  #updatesTable th:nth-child(4), #updatesTable td:nth-child(4) { width: 6.5rem; }
+  #updatesTable th:nth-child(5), #updatesTable td:nth-child(5) { width: 3.2rem; }
+  #updatesTable th:nth-child(6), #updatesTable td:nth-child(6) { width: 8rem; }
+  #updatesTable th:nth-child(7), #updatesTable td:nth-child(7) { width: 6rem; }
   th { color: var(--subtext); font-weight: 600; }
   .new { color: var(--green); font-weight: 600; }
   a { color: var(--mauve); text-decoration: none; }
@@ -77,8 +96,12 @@
   .badge { font-size: .75rem; padding: .1rem .4rem; border-radius: 4px; background: var(--surface0); color: var(--subtext); }
   .badge.pending { background: color-mix(in srgb, var(--peach) 25%, var(--surface0)); color: var(--peach); }
   .badge.applied { background: color-mix(in srgb, var(--green) 22%, var(--surface0)); color: var(--green); }
+  .badge.dismissed { background: color-mix(in srgb, var(--red) 20%, var(--surface0)); color: var(--red); }
   /* tracked-books grid (cover gallery) */
   .viewtoggle { display: flex; gap: .25rem; flex: 0 0 auto; }
+  .viewtoggle[hidden] { display: none; }
+  .btn.view-btn { opacity: .55; border: 1px solid transparent; transition: opacity .15s, border-color .15s; }
+  .btn.view-btn.active { opacity: 1; border-color: var(--mauve); }
   .viewtoggle .btn { padding: .35rem .7rem; }
   .filter-bar { flex-wrap: nowrap; overflow-x: auto; gap: .3rem; }
   .filter-btn { opacity: .45; transition: opacity .15s; white-space: nowrap; }
@@ -159,7 +182,6 @@
       <button data-s="logs">Logs</button>
     </nav>
     <span class="spacer"></span>
-    <button class="btn ghost" id="applyBtn" onclick="applyUpdates()" hidden>Update Obsidian</button>
   </header>
 
   <div id="toasts"></div>
@@ -174,9 +196,26 @@
     <section id="updates" class="active">
       <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:.4rem">
         <h2 style="margin:0">Recent updates</h2>
-        <button class="btn" id="checkBtn" onclick="runCheck()">Run check</button>
+        <div class="row" style="margin:0">
+          <button class="btn" id="checkBtn" onclick="runCheck()">Run check</button>
+          <button class="btn ghost" id="applyBtn" onclick="applyUpdates()" hidden>Update Obsidian</button>
+        </div>
       </div>
-      <table><thead><tr><th>Title</th><th>Volumes</th><th>Status</th><th>Link</th><th>Detected</th></tr></thead>
+      <div class="row">
+        <div class="viewtoggle" id="updatesKindToggle">
+          <button class="btn ghost view-btn active" data-k="all" onclick="setUpdatesKind('all')">All</button>
+          <button class="btn ghost view-btn" data-k="book" onclick="setUpdatesKind('book')">Books</button>
+          <button class="btn ghost view-btn" data-k="ln" onclick="setUpdatesKind('ln')">Light Novels</button>
+        </div>
+        <div class="viewtoggle" id="updatesViewToggle">
+          <button class="btn ghost view-btn active" data-v="active" onclick="setUpdatesView('active')">Active</button>
+          <button class="btn ghost view-btn" data-v="dismissed" onclick="setUpdatesView('dismissed')">Dismissed</button>
+        </div>
+      </div>
+      <div class="row">
+        <input id="updatesFilter" placeholder="search title or author…" autocomplete="off" spellcheck="false" oninput="filterUpdates(this.value)">
+      </div>
+      <table id="updatesTable"><thead><tr><th class="cb-col"><input type="checkbox" id="selectAllCb" hidden onchange="toggleSelectAll(this.checked)"></th><th>Title</th><th>Volumes</th><th>Status</th><th>Link</th><th>Detected</th><th></th></tr></thead>
       <tbody id="updatesBody"><tr><td>loading…</td></tr></tbody></table>
     </section>
 
@@ -528,17 +567,115 @@ function populateTheme(){
 }
 
 /* loaders */
+// kind: which rows to show — 'all' (LN bumps + releases), 'book' (releases
+// only), 'ln' (LN bumps only — no dismiss concept, so the active/dismissed
+// toggle is hidden for it). view: active/dismissed, ignored for kind 'ln'.
+let updatesKind = lsGet('updates_kind') || 'all';
+let updatesView = lsGet('updates_view') || 'active';
+let updatesFilterText = '';
+let updatesSelected = new Set(); // "u:<id>" (LN bump) | "r:<id>" (release)
+let updatesRows = []; // last-fetched rows, pre text-filter
+
+function setUpdatesKind(k){
+  updatesKind = k; lsSet('updates_kind', k); updatesSelected.clear();
+  document.querySelectorAll('#updatesKindToggle button').forEach(b => b.classList.toggle('active', b.dataset.k===k));
+  $('updatesViewToggle').hidden = (k === 'ln');
+  // Switching tabs always lands on Active — a stale Dismissed filter
+  // carried over from another tab is more confusing than useful.
+  updatesView = 'active'; lsSet('updates_view', 'active');
+  document.querySelectorAll('#updatesViewToggle button').forEach(b => b.classList.toggle('active', b.dataset.v==='active'));
+  loadUpdates();
+}
+function setUpdatesView(v){
+  updatesView = v; lsSet('updates_view', v); updatesSelected.clear();
+  document.querySelectorAll('#updatesViewToggle button').forEach(b => b.classList.toggle('active', b.dataset.v===v));
+  loadUpdates();
+}
+function filterUpdates(q){
+  updatesFilterText = q.trim().toLowerCase();
+  renderUpdatesTable();
+}
+let updatesLoadSeq = 0;
 async function loadUpdates(){
-  const u = await getJSON('/api/updates');
-  $('updatesBody').innerHTML = (u&&u.length) ? u.map(x => {
-    const status = x.applied
-      ? `<span class="badge applied" title="Written to the vault${x.applied_at?' on '+esc(fmtTime(x.applied_at)):''}">Applied</span>`
+  // LN bumps have no dismissed state, so they only ever appear in the
+  // active view — never leak them into the Dismissed filter.
+  const view = updatesKind === 'ln' ? 'active' : updatesView;
+  const wantLN = updatesKind !== 'book' && view === 'active';
+  const wantReleases = updatesKind !== 'ln';
+  const seq = ++updatesLoadSeq;
+  const [u, releases] = await Promise.all([
+    wantLN ? getJSON('/api/updates') : Promise.resolve([]),
+    wantReleases ? getJSON(view === 'dismissed' ? '/api/releases/dismissed' : '/api/releases') : Promise.resolve([]),
+  ]);
+  // A faster, later call may have already resolved and rendered — a slow
+  // call landing after that would otherwise stomp it with stale rows
+  // (e.g. rapid tab switching, or the live poll during a check).
+  if(seq !== updatesLoadSeq) return;
+  updatesRows = [
+    ...(u||[]).map(x => ({ kind:'update', key:'u:'+x.id, at:x.detected_at, x })),
+    ...(releases||[]).map(x => ({ kind: view==='dismissed' ? 'release-dismissed' : 'release', key:'r:'+x.id, at:x.detected_at, x })),
+  ].sort((a,b) => (a.at < b.at) ? 1 : -1);
+  renderUpdatesTable();
+}
+function renderUpdatesTable(){
+  const q = updatesFilterText;
+  const rows = q ? updatesRows.filter(row => {
+    const t = (row.x.title||'').toLowerCase(), a = (row.x.author||'').toLowerCase();
+    return t.includes(q) || a.includes(q);
+  }) : updatesRows;
+
+  $('updatesBody').innerHTML = rows.length ? rows.map(row => {
+    if(row.kind === 'update'){
+      const x = row.x;
+      const status = x.applied
+        ? `<span class="badge applied" title="Written to the vault${x.applied_at?' on '+esc(fmtTime(x.applied_at)):''}">Applied</span>`
+        : `<span class="badge pending">Pending</span>`;
+      const cb = x.applied ? '' : `<input type="checkbox" data-key="${row.key}" ${updatesSelected.has(row.key)?'checked':''} onchange="toggleUpdateSelect('${row.key}',this.checked)">`;
+      return `<tr><td class="cb-col">${cb}</td><td class="new">${esc(x.title)}</td><td>${x.old_volumes} → ${x.new_volumes}</td>
+       <td>${status}</td>
+       <td><a href="${esc(x.link)}" target="_blank">link</a></td><td class="nowrap"><small>${esc(fmtTime(x.detected_at))}</small></td><td></td></tr>`;
+    }
+    const x = row.x;
+    const link = `https://openlibrary.org/works/${esc(x.work_id)}`;
+    if(row.kind === 'release-dismissed'){
+      return `<tr><td class="cb-col"></td><td class="new">${esc(x.title)}</td><td></td>
+       <td><span class="badge dismissed" title="${x.dismissed_at?esc(fmtTime(x.dismissed_at)):''}">Dismissed</span></td>
+       <td><a href="${link}" target="_blank">link</a></td><td class="nowrap"><small>${esc(fmtTime(x.detected_at))}</small></td>
+       <td class="actions"><button class="btn ghost" onclick="undismissRelease(${x.id})">Un-dismiss</button></td></tr>`;
+    }
+    const status = x.created
+      ? `<span class="badge applied" title="Created from this release${x.created_at?' on '+esc(fmtTime(x.created_at)):''}">Created</span>`
       : `<span class="badge pending">Pending</span>`;
-    return `<tr><td class="new">${esc(x.title)}</td><td>${x.old_volumes} → ${x.new_volumes}</td>
+    const cb = x.created ? '' : `<input type="checkbox" data-key="${row.key}" ${updatesSelected.has(row.key)?'checked':''} onchange="toggleUpdateSelect('${row.key}',this.checked)">`;
+    const dismissBtn = x.created ? '' : `<button class="btn ghost" onclick="dismissRelease(${x.id})">Dismiss</button>`;
+    return `<tr><td class="cb-col">${cb}</td><td class="new">${esc(x.title)}</td><td></td>
      <td>${status}</td>
-     <td><a href="${esc(x.link)}" target="_blank">link</a></td><td class="nowrap"><small>${esc(fmtTime(x.detected_at))}</small></td></tr>`;
-   }).join('')
-    : '<tr><td><span class="muted">no updates yet</span></td></tr>';
+     <td><a href="${link}" target="_blank">link</a></td><td class="nowrap"><small>${esc(fmtTime(x.detected_at))}</small></td>
+     <td class="actions">${dismissBtn}</td></tr>`;
+  }).join('')
+    : `<tr><td colspan="7"><span class="muted">${q ? 'no matches' : (updatesView==='dismissed'?'no dismissed releases':'no updates yet')}</span></td></tr>`;
+  renderApplyLabel();
+}
+function toggleUpdateSelect(key, checked){
+  if(checked) updatesSelected.add(key); else updatesSelected.delete(key);
+  renderApplyLabel();
+}
+function toggleSelectAll(checked){
+  document.querySelectorAll('#updatesBody input[type="checkbox"][data-key]').forEach(cb => {
+    cb.checked = checked;
+    if(checked) updatesSelected.add(cb.dataset.key); else updatesSelected.delete(cb.dataset.key);
+  });
+  renderApplyLabel();
+}
+async function dismissRelease(id){
+  const r = await send('POST','/api/releases/dismiss',{ids:[id]}); if(need(r)) return;
+  if(!r.ok) return toast('Error: ' + (r.data.error||r.status),'error');
+  loadUpdates(); refreshStatus();
+}
+async function undismissRelease(id){
+  const r = await send('POST','/api/releases/undismiss',{ids:[id]}); if(need(r)) return;
+  if(!r.ok) return toast('Error: ' + (r.data.error||r.status),'error');
+  loadUpdates(); refreshStatus();
 }
 let booksData = [];
 async function loadBooks(){
@@ -765,11 +902,30 @@ function collectRules(srcId){
   return Object.values(rules);
 }
 
-/* status: drives the pending "Update Obsidian" button + live progress bar */
+/* status: drives the pending "Update Obsidian" button + live progress bar.
+   Visibility follows the total pending count (so the button doesn't
+   disappear just because nothing's ticked yet); the label follows the
+   current selection, not the total — ticking 3 of 5 rows must read "(3)". */
+let updatesPendingTotal = 0;
 function renderPending(n){
+  updatesPendingTotal = n;
+  $('applyBtn').hidden = n <= 0;
+  renderApplyLabel();
+}
+function renderApplyLabel(){
+  const boxes = [...document.querySelectorAll('#updatesBody input[type="checkbox"][data-key]')];
+  const selectAll = $('selectAllCb');
+  if(selectAll){
+    selectAll.hidden = boxes.length === 0; // nothing to select (e.g. the Dismissed view)
+    const checkedCount = boxes.filter(cb => cb.checked).length;
+    selectAll.checked = boxes.length > 0 && checkedCount === boxes.length;
+    selectAll.indeterminate = checkedCount > 0 && checkedCount < boxes.length;
+  }
+
   const b = $('applyBtn');
-  if(n > 0){ b.hidden = false; b.disabled = false; b.textContent = `Update Obsidian (${n})`; }
-  else { b.hidden = true; }
+  if(b.hidden) return;
+  b.disabled = false;
+  b.textContent = updatesSelected.size > 0 ? `Update Obsidian (${updatesSelected.size})` : 'Update Obsidian';
 }
 function renderProgress(s){
   const p = $('progress');
@@ -795,19 +951,38 @@ async function runCheck(){
   const h = toast('Check running…','busy'); $('checkBtn').disabled = true;
   const poll = setInterval(async () => {
     const s = await refreshStatus();
+    loadUpdates(); // live — new bumps/releases land mid-check, not just at the end
     if(!s.busy){ clearInterval(poll); $('checkBtn').disabled=false; h.update('Check done.','success');
-      loadUpdates(); loadBooks(); loadLogs(); loadEvents(); }
+      loadBooks(); loadLogs(); loadEvents(); }
   }, 1500);
 }
 async function applyUpdates(){
+  const updateIDs = [...updatesSelected].filter(k => k.startsWith('u:')).map(k => +k.slice(2));
+  const releaseIDs = [...updatesSelected].filter(k => k.startsWith('r:')).map(k => +k.slice(2));
+  if(!updateIDs.length && !releaseIDs.length) return toast('Tick the rows you want to push to Obsidian first.','info');
+
   const btn = $('applyBtn'); btn.disabled = true; const h = toast('Updating Obsidian…','busy');
   try {
-    const r = await send('POST','/api/apply');
-    if(need(r, h)) return;
-    if(r.status===409) return h.update('A check is running — try again when it finishes.','error');
-    if(!r.ok) return h.update('Error: ' + (r.data.error||r.status),'error');
-    const d = r.data;
-    h.update(`Updated Obsidian — ${d.applied} applied` + (d.failed ? `, ${d.failed} failed` : '') + '.','success');
+    let applied = 0, failed = 0, created = 0;
+    if(updateIDs.length){
+      const r = await send('POST','/api/apply',{ids:updateIDs});
+      if(need(r, h)) return;
+      if(r.status===409) return h.update('A check is running — try again when it finishes.','error');
+      if(!r.ok) return h.update('Error: ' + (r.data.error||r.status),'error');
+      applied += r.data.applied||0; failed += r.data.failed||0;
+    }
+    if(releaseIDs.length){
+      const r = await send('POST','/api/releases/add',{ids:releaseIDs});
+      if(need(r, h)) return;
+      if(!r.ok) return h.update('Error: ' + (r.data.error||r.status),'error');
+      created += r.data.created||0; failed += r.data.failed||0;
+    }
+    updatesSelected.clear();
+    const parts = [];
+    if(applied) parts.push(`${applied} bumped`);
+    if(created) parts.push(`${created} created`);
+    if(failed) parts.push(`${failed} failed`);
+    h.update('Updated Obsidian — ' + (parts.join(', ') || 'nothing to do') + '.', failed ? 'error' : 'success');
     loadUpdates(); loadBooks(); refreshStatus();
   } catch(e) {
     h.update('Error: ' + (e.message || 'request failed'),'error');
@@ -1293,7 +1468,8 @@ setBookView(bookView);
 setKindView(kindView);
 setLogTab(logTab);
 setSrcTab(srcTab);
-loadUpdates(); loadBooks(); loadLogs(); loadEvents(); loadSources(); loadSettings(); refreshStatus();
+setUpdatesKind(updatesKind); // syncs the toggle buttons to the restored kind and loads
+loadBooks(); loadLogs(); loadEvents(); loadSources(); loadSettings(); refreshStatus();
 </script>
 </body>
 </html>

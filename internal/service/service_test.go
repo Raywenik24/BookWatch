@@ -80,7 +80,11 @@ func TestRunCheck_detectOnlyThenApply(t *testing.T) {
 	}
 
 	// Apply writes the stored number to the note and bumps the book.
-	res, err := ApplyPending(st, vault.Today())
+	pending, err := st.ListPending()
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("ListPending: %v %+v", err, pending)
+	}
+	res, err := ApplyPending(st, vault.Today(), []int64{pending[0].ID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +306,7 @@ func TestPollTrackers_normalizesReleases(t *testing.T) {
 		},
 	}
 
-	checked, newReleases, errs := pollTrackers(fp, st)
+	checked, newReleases, errs := pollTrackers(fp, st, nil)
 	if checked != 1 || errs != 0 {
 		t.Fatalf("checked=%d errs=%d, want 1/0", checked, errs)
 	}
@@ -327,7 +331,7 @@ func TestPollTrackers_normalizesReleases(t *testing.T) {
 
 	// Re-polling must not re-surface a dismissed release.
 	st.DismissRelease(releases[0].ID)
-	if _, _, errs := pollTrackers(fp, st); errs != 0 {
+	if _, _, errs := pollTrackers(fp, st, nil); errs != 0 {
 		t.Fatalf("re-poll errs=%d", errs)
 	}
 	live, _ := st.ListReleases(10)
@@ -337,7 +341,7 @@ func TestPollTrackers_normalizesReleases(t *testing.T) {
 
 	// Provider failure on one tracker counts as a tracking error, not a scan error.
 	fpErr := &fakeProvider{err: fmt.Errorf("openlibrary down")}
-	checked, _, errs = pollTrackers(fpErr, st)
+	checked, _, errs = pollTrackers(fpErr, st, nil)
 	if checked != 1 || errs != 1 {
 		t.Fatalf("checked=%d errs=%d, want 1/1 on provider failure", checked, errs)
 	}

@@ -76,9 +76,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/ol/search", s.handleOLSearch)
 	mux.HandleFunc("GET /api/ol/work/{id}", s.handleOLWork)
 	mux.HandleFunc("GET /api/trackers", s.handleListTrackers)
+	mux.HandleFunc("GET /api/releases", s.handleReleases)
+	mux.HandleFunc("GET /api/releases/dismissed", s.handleDismissedReleases)
 
 	mux.HandleFunc("POST /api/check", s.auth(s.handleCheck))
 	mux.HandleFunc("POST /api/apply", s.auth(s.handleApply))
+	mux.HandleFunc("POST /api/releases/add", s.auth(s.handleAddReleases))
+	mux.HandleFunc("POST /api/releases/dismiss", s.auth(s.handleDismissReleases))
+	mux.HandleFunc("POST /api/releases/undismiss", s.auth(s.handleUndismissReleases))
 	mux.HandleFunc("POST /api/books", s.auth(s.handleAddBook))
 	mux.HandleFunc("DELETE /api/books/{id}", s.auth(s.handleDeleteBook))
 	mux.HandleFunc("POST /api/sources", s.auth(s.handleUpsertSource))
@@ -164,6 +169,16 @@ func (s *Server) handleBooks(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleUpdates(w http.ResponseWriter, r *http.Request) {
 	v, err := s.st.ListUpdates(100)
+	respond(w, v, err)
+}
+
+func (s *Server) handleReleases(w http.ResponseWriter, r *http.Request) {
+	v, err := s.st.ListReleases(100)
+	respond(w, v, err)
+}
+
+func (s *Server) handleDismissedReleases(w http.ResponseWriter, r *http.Request) {
+	v, err := s.st.ListDismissedReleases(100)
 	respond(w, v, err)
 }
 
@@ -260,14 +275,25 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "started"})
 }
 
-// handleApply writes all pending bumps to the vault (last check's stored
-// numbers — no re-scrape), bumps each book, and stamps the updates applied.
+// handleApply writes the selected pending bumps to the vault (last check's
+// stored numbers — no re-scrape), bumps each book, and stamps the updates
+// applied. Only ticked rows are touched (issue #36) — an empty/missing ids
+// list applies nothing.
 func (s *Server) handleApply(w http.ResponseWriter, r *http.Request) {
 	if s.sched.Busy() {
 		writeJSON(w, http.StatusConflict, errBody("a check is running — try again when it finishes"))
 		return
 	}
-	res, err := service.ApplyPending(s.st, vault.Today())
+	var body struct {
+		IDs []int64 `json:"ids"`
+	}
+	if r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSON(w, http.StatusBadRequest, errBody("bad body"))
+			return
+		}
+	}
+	res, err := service.ApplyPending(s.st, vault.Today(), body.IDs)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -276,6 +302,110 @@ func (s *Server) handleApply(w http.ResponseWriter, r *http.Request) {
 		s.st.LogEvent("apply", fmt.Sprintf("Applied %d update(s) to Obsidian, %d failed", res.Applied, res.Failed))
 	}
 	writeJSON(w, http.StatusOK, res)
+}
+
+// releaseAddResult is one release's outcome from handleAddReleases.
+type releaseAddResult struct {
+	Title string `json:"title"`
+	Path  string `json:"path,omitempty"`
+	Error string `json:"error,omitempty"`
+}
+
+// handleAddReleases turns the selected surfaced releases into #Book notes
+// (status Queue), the same catalog flow as the add-a-book page, then marks
+// each created and seen so the tracker poll never re-surfaces it.
+func (s *Server) handleAddReleases(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		IDs []int64 `json:"ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, errBody("bad body"))
+		return
+	}
+	opts := notes.Options{
+		VaultDir:       s.effective("vault_dir", s.cfg.VaultDir),
+		NewNoteDir:     s.effective("new_note_dir", s.cfg.NewNoteDir),
+		AttachmentsDir: s.effective("attachments_dir", s.cfg.AttachmentsDir),
+	}
+	created, failed := 0, 0
+	var results []releaseAddResult
+	for _, id := range body.IDs {
+		rel, err := s.st.GetRelease(id)
+		if err != nil {
+			failed++
+			results = append(results, releaseAddResult{Error: err.Error()})
+			continue
+		}
+		olURL := "https://openlibrary.org/works/" + rel.WorkID
+		coverURL, description := rel.CoverURL, ""
+		if work, err := s.ol.WorkDetail(rel.WorkID); err == nil {
+			if coverURL == "" {
+				coverURL = provider.SelectCover(work, "eng")
+			}
+			description = work.Description
+		}
+		res, err := notes.CreateBook(opts, s.st, rel.Title, rel.Author, olURL, rel.WorkID, coverURL, "Queue", description)
+		if err != nil {
+			failed++
+			results = append(results, releaseAddResult{Title: rel.Title, Error: err.Error()})
+			continue
+		}
+		if _, err := s.st.UpsertBook(res.Title, olURL, res.Path, 0, res.Cover, "Queue", nil, "book", rel.Author); err != nil {
+			failed++
+			results = append(results, releaseAddResult{Title: rel.Title, Error: err.Error()})
+			continue
+		}
+		if err := s.st.MarkReleaseCreated(rel.ID); err != nil {
+			writeErr(w, err)
+			return
+		}
+		if err := s.st.AddSeenWork(rel.TrackerID, rel.WorkID); err != nil {
+			writeErr(w, err)
+			return
+		}
+		created++
+		results = append(results, releaseAddResult{Title: res.Title, Path: res.Path})
+	}
+	if created > 0 || failed > 0 {
+		s.st.LogEvent("apply", fmt.Sprintf("Created %d release note(s), %d failed", created, failed))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"created": created, "failed": failed, "results": results,
+	})
+}
+
+func (s *Server) handleDismissReleases(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		IDs []int64 `json:"ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, errBody("bad body"))
+		return
+	}
+	for _, id := range body.IDs {
+		if err := s.st.DismissRelease(id); err != nil {
+			writeErr(w, err)
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "dismissed"})
+}
+
+func (s *Server) handleUndismissReleases(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		IDs []int64 `json:"ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, errBody("bad body"))
+		return
+	}
+	for _, id := range body.IDs {
+		if err := s.st.UndismissRelease(id); err != nil {
+			writeErr(w, err)
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "undismissed"})
 }
 
 // addBookBody covers both add flows: the LN scrape flow (url only) and the
