@@ -180,6 +180,7 @@
       <button data-s="sources">Sources</button>
       <button data-s="settings">Settings</button>
       <button data-s="logs">Logs</button>
+      <button data-s="about">About</button>
     </nav>
     <span class="spacer"></span>
   </header>
@@ -399,6 +400,19 @@
       <tbody id="eventsBody"><tr><td>loading…</td></tr></tbody></table>
       <table id="logsRunsTable" hidden><thead><tr><th>#</th><th>Started</th><th>Checked</th><th>Updated</th><th>Errors</th><th>Summary</th></tr></thead>
       <tbody id="logsBody"><tr><td>loading…</td></tr></tbody></table>
+    </section>
+
+    <!-- ABOUT -->
+    <section id="about">
+      <h2>About BookWatch</h2>
+      <div class="card">
+        <div class="rule-grid" style="grid-template-columns:160px 1fr">
+          <label>Version</label><div id="aboutVersion">loading…</div>
+          <label>Repository</label><div><a href="https://github.com/Raywenik24/BookWatch" target="_blank" rel="noopener">github.com/Raywenik24/BookWatch</a></div>
+          <label>License</label><div>MIT</div>
+          <label>Issues &amp; ideas</label><div><a href="https://github.com/Raywenik24/BookWatch/issues" target="_blank" rel="noopener">Report an issue / suggest an idea</a></div>
+        </div>
+      </div>
     </section>
   </main>
 
@@ -1469,7 +1483,15 @@ setKindView(kindView);
 setLogTab(logTab);
 setSrcTab(srcTab);
 setUpdatesKind(updatesKind); // syncs the toggle buttons to the restored kind and loads
-loadBooks(); loadLogs(); loadEvents(); loadSources(); loadSettings(); refreshStatus();
+loadBooks(); loadLogs(); loadEvents(); loadSources(); loadSettings(); refreshStatus(); loadVersion();
+
+async function loadVersion(){
+  const v = await getJSON('/api/version');
+  let text = v.version || 'dev';
+  if(v.commit) text += ` (${v.commit.slice(0,7)})`;
+  if(v.date) text += ` — built ${v.date}`;
+  $('aboutVersion').textContent = text;
+}
 </script>
 </body>
 </html>

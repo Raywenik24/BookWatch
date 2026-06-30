@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"bookwatch/internal/buildinfo"
 	"bookwatch/internal/config"
 	"bookwatch/internal/notes"
 	"bookwatch/internal/provider"
@@ -67,6 +68,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/runs", s.handleRuns)
 	mux.HandleFunc("GET /api/events", s.handleEvents)
 	mux.HandleFunc("GET /api/status", s.handleStatus)
+	mux.HandleFunc("GET /api/version", s.handleVersion)
 	mux.HandleFunc("GET /api/sources", s.handleSources)
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	mux.HandleFunc("GET /api/cover/{id}", s.handleCover)
@@ -205,6 +207,14 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"total":         total,
 		"current_title": title,
 		"pending":       pending,
+	})
+}
+
+func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{
+		"version": buildinfo.Version,
+		"commit":  buildinfo.Commit,
+		"date":    buildinfo.Date,
 	})
 }
 

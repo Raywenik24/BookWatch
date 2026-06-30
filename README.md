@@ -126,6 +126,8 @@ auto-loads it at startup, and real environment variables always override it.
 go run ./cmd/bookwatch serve
 # or build a binary:
 go build -o bookwatch ./cmd/bookwatch && ./bookwatch serve
+# or a release build with the version stamped (shown in the About tab + /api/version):
+go build -ldflags "-X bookwatch/internal/buildinfo.Version=v1.1.0" -o bookwatch ./cmd/bookwatch
 ```
 
 Then open <http://localhost:8080>. Set the password in **Settings** (stored on
