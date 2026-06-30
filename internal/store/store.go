@@ -764,6 +764,25 @@ func (s *Store) UpsertRelease(trackerID int64, workID, title, author, firstPubDa
 	return id, err
 }
 
+// ReleaseWorkIDs returns every work ID ever surfaced for a tracker, dismissed
+// or not, so a poll never re-inserts a release the user already saw.
+func (s *Store) ReleaseWorkIDs(trackerID int64) ([]string, error) {
+	rows, err := s.db.Query(`SELECT work_id FROM releases WHERE tracker_id=?`, trackerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 // ListReleases returns undismissed releases newest-first, joined to tracker name.
 func (s *Store) ListReleases(limit int) ([]Release, error) {
 	rows, err := s.db.Query(`

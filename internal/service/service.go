@@ -4,14 +4,21 @@ package service
 
 import (
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"bookwatch/internal/checker"
+	"bookwatch/internal/provider"
 	"bookwatch/internal/scraper"
 	"bookwatch/internal/sources"
 	"bookwatch/internal/store"
 	"bookwatch/internal/vault"
 )
+
+// bundleRE matches box-sets, omnibuses, and special-edition reprints — noise
+// that survives the date floor because OL indexes the bundle as its own work.
+var bundleRE = regexp.MustCompile(`(?i)\b(bundle|box(ed)?\s*set|collection|omnibus|\d+[- ]book|(lettered|limited|rare)\s+edition)\b`)
 
 // UpdateInfo is one detected new volume.
 type UpdateInfo struct {
@@ -24,16 +31,21 @@ type UpdateInfo struct {
 
 // CheckSummary is the outcome of a run.
 type CheckSummary struct {
-	Checked    int          `json:"checked"`
-	Updated    int          `json:"updated"`
-	Errors     int          `json:"errors"`
-	Suspicious int          `json:"suspicious"` // scraped OK but looked wrong (broken rules?)
-	Updates    []UpdateInfo `json:"updates"`
+	Checked         int          `json:"checked"`
+	Updated         int          `json:"updated"`
+	Errors          int          `json:"errors"`
+	Suspicious      int          `json:"suspicious"` // scraped OK but looked wrong (broken rules?)
+	TrackersChecked int          `json:"trackers_checked"`
+	NewReleases     int          `json:"new_releases"`
+	TrackingErrors  int          `json:"tracking_errors"` // counted apart from Errors: OL failures, not scrape failures
+	Updates         []UpdateInfo `json:"updates"`
 }
 
 // RunCheck scans scanRoot, checks each book, optionally writes vault updates,
-// and (when st != nil) records the run + updates + books. progress may be nil.
-func RunCheck(sc *scraper.Client, st *store.Store, scanRoot string, write bool,
+// polls watched authors for new releases, and (when st != nil) records the
+// run + updates + books. ol may be nil to skip the author-tracker phase
+// (e.g. in tests that don't care about it). progress may be nil.
+func RunCheck(sc *scraper.Client, st *store.Store, ol provider.Provider, scanRoot string, write bool,
 	progress func(i, total int, title string)) (CheckSummary, error) {
 
 	entries, err := vault.Scan(scanRoot)
@@ -166,13 +178,112 @@ func RunCheck(sc *scraper.Client, st *store.Store, scanRoot string, write bool,
 		}
 	}
 
+	if st != nil && ol != nil {
+		sum.TrackersChecked, sum.NewReleases, sum.TrackingErrors = pollTrackers(ol, st)
+	}
+
 	if st != nil {
 		summary := fmt.Sprintf("%d notes, %d updates, %d errors, %d suspicious", sum.Checked, sum.Updated, sum.Errors, sum.Suspicious)
+		if sum.TrackersChecked > 0 || sum.TrackingErrors > 0 {
+			summary += fmt.Sprintf(" · %d authors polled, %d new releases, %d tracking errors",
+				sum.TrackersChecked, sum.NewReleases, sum.TrackingErrors)
+		}
 		if e := st.FinishRun(runID, sum.Checked, sum.Updated, sum.Errors, summary); e != nil {
 			return sum, e
 		}
 	}
 	return sum, nil
+}
+
+// pollTrackers polls AuthorWorks for every author tracker and normalizes the
+// results into `releases` rows: date-floored against the baseline, narrowed
+// to the catalog language, stripped of box-sets/bundles, and deduped against
+// every work already seen or surfaced. Same-year-as-baseline ties are kept —
+// a dismiss click beats a silent miss. OL failures count separately from scan
+// errors so one provider outage doesn't read as a broken LN check.
+func pollTrackers(ol provider.Provider, st *store.Store) (checked, newReleases, errs int) {
+	trackers, err := st.ListTrackers()
+	if err != nil {
+		return 0, 0, 1
+	}
+
+	for _, t := range trackers {
+		if t.Kind != "author" {
+			continue
+		}
+		checked++
+
+		works, err := ol.AuthorWorks(t.OLKey)
+		if err != nil {
+			errs++
+			continue
+		}
+
+		seenIDs, err := st.SeenWorkIDs(t.ID)
+		if err != nil {
+			errs++
+			continue
+		}
+		surfacedIDs, err := st.ReleaseWorkIDs(t.ID)
+		if err != nil {
+			errs++
+			continue
+		}
+		seen := make(map[string]bool, len(seenIDs)+len(surfacedIDs)+1)
+		for _, id := range seenIDs {
+			seen[id] = true
+		}
+		for _, id := range surfacedIDs {
+			seen[id] = true
+		}
+		seen[t.BaselineWorkID] = true
+
+		baselineYear, _ := strconv.Atoi(t.BaselineDate)
+
+		for _, w := range works {
+			if seen[w.WorkID] {
+				continue
+			}
+			if baselineYear > 0 && w.FirstPubYear > 0 && w.FirstPubYear < baselineYear {
+				continue // strictly before the baseline — backlist/old translations
+			}
+			if bundleRE.MatchString(w.Title) {
+				continue
+			}
+
+			detail, err := ol.WorkDetail(w.WorkID)
+			if err != nil {
+				continue // best-effort: a single bad work shouldn't fail the whole poll
+			}
+			if !hasCatalogEdition(detail, t.CatalogLanguage) {
+				continue // standalone foreign-translation work, no catalog-language edition
+			}
+
+			firstPub := ""
+			if w.FirstPubYear > 0 {
+				firstPub = strconv.Itoa(w.FirstPubYear)
+			}
+			cover := provider.SelectCover(detail, t.CatalogLanguage)
+			if _, err := st.UpsertRelease(t.ID, w.WorkID, w.Title, t.Name, firstPub, cover); err == nil {
+				newReleases++
+			}
+		}
+	}
+	return checked, newReleases, errs
+}
+
+// hasCatalogEdition reports whether w has an edition in lang. An unset lang
+// imposes no constraint.
+func hasCatalogEdition(w provider.Work, lang string) bool {
+	if lang == "" {
+		return true
+	}
+	for _, e := range w.Editions {
+		if e.Language == lang {
+			return true
+		}
+	}
+	return false
 }
 
 // determineStatusCorrection returns the corrected status for an entry given

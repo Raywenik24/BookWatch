@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"bookwatch/internal/provider"
 	"bookwatch/internal/scraper"
 	"bookwatch/internal/store"
 	"bookwatch/internal/vault"
@@ -61,7 +62,7 @@ func TestRunCheck_detectOnlyThenApply(t *testing.T) {
 	sc := scraper.New("t", 5*time.Second)
 
 	// Detect-only: finds the bump but writes nothing.
-	sum, err := RunCheck(sc, st, vaultDir, false, nil)
+	sum, err := RunCheck(sc, st, nil, vaultDir, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +110,7 @@ func TestRunCheck_logsScrapeAnomaly(t *testing.T) {
 	st := openStore(t)
 	sc := scraper.New("t", 5*time.Second)
 
-	sum, err := RunCheck(sc, st, vaultDir, false, nil)
+	sum, err := RunCheck(sc, st, nil, vaultDir, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +190,7 @@ func TestRunCheck_statusAutoCorrection(t *testing.T) {
 	// Dropped → never touched
 	pathDropped := writeNoteWithStatus(t, vaultDir, "Dropped", srv.URL+"/d", 2, 2, "Dropped")
 
-	if _, err := RunCheck(sc, st, vaultDir, false, nil); err != nil {
+	if _, err := RunCheck(sc, st, nil, vaultDir, false, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -237,7 +238,7 @@ func TestRunCheck_prunesOnlyMissingNotes(t *testing.T) {
 	os.WriteFile(existing, []byte("not a LN note"), 0o644)
 	st.UpsertBook("OnDisk", "https://nope/y", existing, 1, "", "", nil, "ln", "")
 
-	if _, err := RunCheck(sc, st, vaultDir, false, nil); err != nil {
+	if _, err := RunCheck(sc, st, nil, vaultDir, false, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -252,4 +253,94 @@ func TestRunCheck_prunesOnlyMissingNotes(t *testing.T) {
 	if links["https://nope/y"] {
 		t.Error("book whose note lacks Template_used should have been pruned")
 	}
+}
+
+// fakeProvider is a minimal provider.Provider stub for pollTrackers tests.
+type fakeProvider struct {
+	works   []provider.Work
+	details map[string]provider.Work
+	err     error
+}
+
+func (f *fakeProvider) SearchByTitle(string) ([]provider.Candidate, error) { return nil, nil }
+func (f *fakeProvider) AuthorSearch(string) ([]provider.Author, error)     { return nil, nil }
+func (f *fakeProvider) WorkByID(string) (provider.Candidate, error)       { return provider.Candidate{}, nil }
+
+func (f *fakeProvider) AuthorWorks(string) ([]provider.Work, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.works, nil
+}
+
+func (f *fakeProvider) WorkDetail(id string) (provider.Work, error) {
+	return f.details[id], nil
+}
+
+func TestPollTrackers_normalizesReleases(t *testing.T) {
+	st := openStore(t)
+
+	trackerID, err := st.UpsertTracker("author", "Graham Masterton", "OL123A", "W1", "2000", "eng")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fp := &fakeProvider{
+		works: []provider.Work{
+			{WorkID: "W1", Title: "Baseline Book", FirstPubYear: 2000},        // the baseline itself
+			{WorkID: "W2", Title: "Old Backlist", FirstPubYear: 1995},        // before baseline
+			{WorkID: "W3", Title: "New Book", FirstPubYear: 2005},            // should surface
+			{WorkID: "W4", Title: "New Book Box Set", FirstPubYear: 2006},    // bundle, filtered
+			{WorkID: "W5", Title: "Foreign Only", FirstPubYear: 2007},        // no eng edition
+			{WorkID: "W6", Title: "Tie Book", FirstPubYear: 2000},            // same year as baseline: kept
+		},
+		details: map[string]provider.Work{
+			"W3": {WorkID: "W3", Title: "New Book", Editions: []provider.Edition{{Language: "eng", CoverURL: "c3"}}},
+			"W4": {WorkID: "W4", Title: "New Book Box Set", Editions: []provider.Edition{{Language: "eng"}}},
+			"W5": {WorkID: "W5", Title: "Foreign Only", Editions: []provider.Edition{{Language: "fre"}}},
+			"W6": {WorkID: "W6", Title: "Tie Book", Editions: []provider.Edition{{Language: "eng", CoverURL: "c6"}}},
+		},
+	}
+
+	checked, newReleases, errs := pollTrackers(fp, st)
+	if checked != 1 || errs != 0 {
+		t.Fatalf("checked=%d errs=%d, want 1/0", checked, errs)
+	}
+	if newReleases != 2 {
+		t.Fatalf("newReleases=%d, want 2 (W3, W6)", newReleases)
+	}
+
+	releases, err := st.ListReleases(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, r := range releases {
+		got[r.WorkID] = true
+	}
+	if !got["W3"] || !got["W6"] {
+		t.Errorf("expected W3 and W6 surfaced, got %+v", releases)
+	}
+	if got["W1"] || got["W2"] || got["W4"] || got["W5"] {
+		t.Errorf("baseline/backlist/bundle/foreign-only works must not surface: %+v", releases)
+	}
+
+	// Re-polling must not re-surface a dismissed release.
+	st.DismissRelease(releases[0].ID)
+	if _, _, errs := pollTrackers(fp, st); errs != 0 {
+		t.Fatalf("re-poll errs=%d", errs)
+	}
+	live, _ := st.ListReleases(10)
+	if len(live) != 1 {
+		t.Errorf("dismissed release re-surfaced: %+v", live)
+	}
+
+	// Provider failure on one tracker counts as a tracking error, not a scan error.
+	fpErr := &fakeProvider{err: fmt.Errorf("openlibrary down")}
+	checked, _, errs = pollTrackers(fpErr, st)
+	if checked != 1 || errs != 1 {
+		t.Fatalf("checked=%d errs=%d, want 1/1 on provider failure", checked, errs)
+	}
+
+	_ = trackerID
 }

@@ -68,7 +68,7 @@ func runServe(argv []string) {
 		}
 		// Detect-only: a check never writes the vault. Writes happen on an
 		// explicit apply (POST /api/apply), never on a cron/manual check.
-		return service.RunCheck(sc, st, scanRoot, false, progress)
+		return service.RunCheck(sc, st, ol, scanRoot, false, progress)
 	})
 	if err := sched.Start(cfg.CheckCron); err != nil {
 		log.Fatal("scheduler: ", err)
@@ -112,6 +112,7 @@ func runCheck(argv []string) {
 	write := fs.Bool("write", false, "APPLY updates to the vault (bump Volumes + Last Update)")
 	fs.Parse(argv)
 	sc := scraper.New(cfg.UserAgent, cfg.Timeout)
+	ol := provider.NewOpenLibrary(cfg.UserAgent, cfg.Timeout)
 
 	var st *store.Store
 	if *record {
@@ -129,7 +130,7 @@ func runCheck(argv []string) {
 		}
 	}
 
-	sum, err := service.RunCheck(sc, st, *root, *write, progress)
+	sum, err := service.RunCheck(sc, st, ol, *root, *write, progress)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "check error:", err)
 		os.Exit(1)
@@ -151,6 +152,9 @@ func runCheck(argv []string) {
 		fmt.Printf("\nRecorded run to %s\n", cfg.DBPath)
 	}
 	fmt.Printf("\nDone. %d notes, %d with new volumes, %d errors.\n", sum.Checked, sum.Updated, sum.Errors)
+	if sum.TrackersChecked > 0 || sum.TrackingErrors > 0 {
+		fmt.Printf("%d authors polled, %d new releases, %d tracking errors.\n", sum.TrackersChecked, sum.NewReleases, sum.TrackingErrors)
+	}
 }
 
 // ── add ───────────────────────────────────────────────────────
