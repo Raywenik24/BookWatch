@@ -196,6 +196,13 @@
       </div>
       <h2>Tracked books</h2>
       <div class="row">
+        <div class="viewtoggle" id="kindToggle">
+          <button class="btn ghost active" data-k="" onclick="setKindView('')">All</button>
+          <button class="btn ghost" data-k="ln" onclick="setKindView('ln')">Light Novels</button>
+          <button class="btn ghost" data-k="book" onclick="setKindView('book')">Books</button>
+        </div>
+      </div>
+      <div class="row">
         <input id="bookFilter" placeholder="search title…" autocomplete="off" spellcheck="false" oninput="renderBooks(this.value)">
         <div class="viewtoggle">
           <button id="sortBtn" class="btn ghost" onclick="toggleSort()">↑ A–Z</button>
@@ -203,12 +210,17 @@
           <button id="viewGrid" class="btn ghost" onclick="setBookView('grid')">Grid</button>
         </div>
       </div>
+      <div class="row" id="authorFilterRow">
+        <div id="authorSelectMount" style="min-width:200px"></div>
+        <input id="authorQueryInput" placeholder="fuzzy search by author…" autocomplete="off" spellcheck="false" oninput="setAuthorQuery(this.value)">
+      </div>
       <div class="row filter-bar">
         <button class="btn ghost filter-btn active" data-f="" onclick="setStatusFilter('')">All</button>
         <button class="btn ghost filter-btn" data-f="queue" onclick="setStatusFilter('queue')">Queue</button>
         <button class="btn ghost filter-btn" data-f="completed" onclick="setStatusFilter('completed')">Completed</button>
         <button class="btn ghost filter-btn" data-f="dropped" onclick="setStatusFilter('dropped')">Dropped</button>
-        <button class="btn ghost filter-btn filter-validate" data-f="validate" onclick="setStatusFilter('validate')">Validate</button>
+        <button class="btn ghost filter-btn" id="filterNoPlanBtn" data-f="no plan to read" onclick="setStatusFilter('no plan to read')">No Plan to read</button>
+        <button class="btn ghost filter-btn filter-validate" id="filterValidateBtn" data-f="validate" onclick="setStatusFilter('validate')">Validate</button>
       </div>
       <table id="booksTable"><thead><tr><th>Title</th><th>Vol</th><th>Link</th><th>Last checked</th><th></th></tr></thead>
       <tbody id="booksBody"><tr><td>loading…</td></tr></tbody></table>
@@ -531,6 +543,7 @@ async function loadUpdates(){
 let booksData = [];
 async function loadBooks(){
   booksData = await getJSON('/api/books') || [];
+  updateAuthorOptions();
   renderBooks($('bookFilter') ? $('bookFilter').value : '');
 }
 let logTab = lsGet('log_tab') || 'activity';
@@ -545,6 +558,48 @@ function setLogTab(t){
 let bookView = lsGet('book_view') || 'grid';
 let statusFilter = '';
 let bookSort = lsGet('book_sort') || 'asc';
+let kindView = lsGet('book_kind_view') || '';
+let authorFilter = '';
+let authorQuery = '';
+function bookKind(x){ return x.kind === 'book' ? 'book' : 'ln'; }
+function setKindView(k){
+  kindView = (k === 'ln' || k === 'book') ? k : '';
+  lsSet('book_kind_view', kindView);
+  document.querySelectorAll('#kindToggle button').forEach(b => b.classList.toggle('active', b.dataset.k === kindView));
+  updateStatusFilterVisibility();
+  updateAuthorOptions();
+  renderBooks($('bookFilter') ? $('bookFilter').value : '');
+}
+function updateStatusFilterVisibility(){
+  $('filterValidateBtn').hidden = kindView === 'book';
+  $('filterNoPlanBtn').hidden = kindView === 'ln';
+  if((statusFilter === 'validate' && kindView === 'book') || (statusFilter === 'no plan to read' && kindView === 'ln')){
+    setStatusFilter('');
+  }
+}
+let authorPicker = null;
+function authorsInView(){
+  let list = booksData;
+  if(kindView) list = list.filter(x => bookKind(x) === kindView);
+  const names = [...new Set(list.map(x => x.author).filter(Boolean))].sort((a,b) => a.localeCompare(b));
+  return [{value:'', label:'All authors'}, ...names.map(n => ({value:n, label:n}))];
+}
+function updateAuthorOptions(){
+  const items = authorsInView();
+  if(!authorPicker){
+    authorPicker = fuzzySelect('authorSelectMount', {
+      items, value: authorFilter, placeholder: 'filter by author…',
+      onChange: v => { authorFilter = v; renderBooks($('bookFilter') ? $('bookFilter').value : ''); },
+    });
+  } else {
+    authorPicker.setItems(items);
+    if(!items.some(it => it.value === authorFilter)){ authorFilter = ''; authorPicker.setValue(''); }
+  }
+}
+function setAuthorQuery(v){
+  authorQuery = v.trim();
+  renderBooks($('bookFilter') ? $('bookFilter').value : '');
+}
 function setBookView(v){
   bookView = (v === 'grid') ? 'grid' : 'table';
   lsSet('book_view', bookView);
@@ -569,8 +624,12 @@ function toggleSort(){
 function renderBooks(q){
   q = (q || '').trim();
   let list = booksData;
+  if(kindView) list = list.filter(x => bookKind(x) === kindView);
   if(q) list = list.map(x => ({x, s: fzScore(q, x.title)})).filter(e => e.s >= 0)
                    .sort((a,b) => b.s - a.s).map(e => e.x);
+  if(authorFilter) list = list.filter(x => x.author === authorFilter);
+  if(authorQuery) list = list.map(x => ({x, s: fzScore(authorQuery, x.author||'')})).filter(e => e.s >= 0)
+                             .sort((a,b) => b.s - a.s).map(e => e.x);
   if(statusFilter === 'validate'){
     list = list.filter(x => x.read_volumes != null && x.read_volumes > x.volumes);
   } else if(statusFilter){
@@ -580,10 +639,14 @@ function renderBooks(q){
   if(bookView === 'grid') renderBooksGrid(list, q); else renderBooksTable(list, q);
 }
 function renderBooksTable(list, q){
-  $('booksBody').innerHTML = list.length ? list.map(x =>
-    `<tr><td>${fzHighlight(x.title, q)}</td><td>${x.volumes}</td><td><a href="${esc(x.link)}" target="_blank">link</a></td>
+  $('booksBody').innerHTML = list.length ? list.map(x => {
+    const volCell = bookKind(x) === 'book'
+      ? `<small class="muted">${esc([x.author, x.status].filter(Boolean).join(' · '))}</small>`
+      : x.volumes;
+    return `<tr><td>${fzHighlight(x.title, q)}</td><td>${volCell}</td><td><a href="${esc(x.link)}" target="_blank">link</a></td>
      <td class="nowrap"><small>${esc(fmtTime(x.last_checked_at))}</small></td>
-     <td><button class="btn ghost" title="${esc(UNTRACK_TIP)}" onclick="untrack(${x.id}, this)">Untrack</button></td></tr>`).join('')
+     <td><button class="btn ghost" title="${esc(UNTRACK_TIP)}" onclick="untrack(${x.id}, this)">Untrack</button></td></tr>`;
+  }).join('')
     : (q ? '<tr><td><span class="muted">no matches</span></td></tr>'
          : '<tr><td><span class="muted">none</span></td></tr>');
 }
@@ -592,10 +655,14 @@ function renderBooksGrid(list, q){
     const img = x.cover
       ? `<img class="cover-img" src="/api/cover/${x.id}" alt="" loading="lazy" onerror="this.closest('.cover-card').classList.add('nocover');this.remove();">`
       : '';
-    const vol = x.volumes ? `<span class="cover-vol" title="${x.volumes} volume${x.volumes===1?'':'s'}">${x.volumes}</span>` : '';
+    const isBook = bookKind(x) === 'book';
+    const vol = (!isBook && x.volumes) ? `<span class="cover-vol" title="${x.volumes} volume${x.volumes===1?'':'s'}">${x.volumes}</span>` : '';
+    const meta = isBook
+      ? `<div class="cover-title" style="padding-top:0"><small class="muted">${esc([x.author, x.status].filter(Boolean).join(' · '))}</small></div>`
+      : '';
     return `<div class="cover-card${x.cover ? '' : ' nocover'}">
       <a class="cover-link" href="${esc(x.link)}" target="_blank" title="${esc(x.title)}">
-        ${img}<span class="cover-title">${fzHighlight(x.title, q)}</span></a>
+        ${img}<span class="cover-title">${fzHighlight(x.title, q)}</span>${meta}</a>
       ${vol}
       <button class="cover-x" title="${esc(UNTRACK_TIP)}" aria-label="Untrack" onclick="untrack(${x.id}, this)">&times;</button>
     </div>`;
@@ -1223,6 +1290,7 @@ applyTheme(lsGet('pw_theme') || 'mocha');
 $('token').value = token();
 $('sortBtn').textContent = bookSort === 'asc' ? '↑ A–Z' : '↓ Z–A';
 setBookView(bookView);
+setKindView(kindView);
 setLogTab(logTab);
 setSrcTab(srcTab);
 loadUpdates(); loadBooks(); loadLogs(); loadEvents(); loadSources(); loadSettings(); refreshStatus();
