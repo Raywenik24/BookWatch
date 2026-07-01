@@ -36,6 +36,7 @@ type Work struct {
 	CoverURL     string
 	Description  string
 	Editions     []Edition
+	ISBNs        []string // a few edition ISBNs — the cross-source key for Goodreads clustering (#40)
 }
 
 // Provider is the catalog lookup interface.

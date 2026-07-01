@@ -37,7 +37,8 @@ func newTestServer(t *testing.T) (http.Handler, *store.Store, string) {
 	})
 	ol := provider.NewOpenLibrary("test", 5*time.Second)
 	gb := provider.NewGoogleBooks("", 5*time.Second)
-	return New(cfg, st, sc, sched, ol, gb).Handler(), st, vaultDir
+	gr := provider.NewGoodreads("test", 5*time.Second)
+	return New(cfg, st, sc, sched, ol, gb, gr).Handler(), st, vaultDir
 }
 
 func do(h http.Handler, method, path, token string, body string) *httptest.ResponseRecorder {

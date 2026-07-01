@@ -1,0 +1,164 @@
+package provider
+
+import (
+	"strings"
+	"testing"
+)
+
+// fakeMatcher resolves by ISBN (mirroring the real GRClient), standing in for
+// live Goodreads so ClusterWorks runs entirely offline.
+type fakeMatcher struct {
+	byISBN map[string]GRMatch
+	calls  int
+}
+
+func (f *fakeMatcher) MatchWork(_, author string, isbns []string) GRMatch {
+	f.calls++
+	for _, isbn := range isbns {
+		if m, ok := f.byISBN[isbn]; ok {
+			if author == "" || sameAuthor(author, m.Author) {
+				return m
+			}
+		}
+	}
+	return GRMatch{}
+}
+
+// The Brett cluster as live data actually behaves: English/French/Spanish share
+// Goodreads work 6589794; Polish is a separate Goodreads work; one OL work has a
+// dirty ISBN that resolves to a different author and must not merge.
+func brettWorks() []Work {
+	return []Work{
+		{WorkID: "OL1W", Title: "The Warded Man", FirstPubYear: 2008, CoverURL: "warded.jpg", ISBNs: []string{"EN1"}},
+		{WorkID: "OL2W", Title: "Le Cycle des démons", FirstPubYear: 2009, CoverURL: "", ISBNs: []string{"FR1"}},
+		{WorkID: "OL3W", Title: "El hombre marcado", FirstPubYear: 2009, CoverURL: "", ISBNs: []string{"ES1"}},
+		{WorkID: "OL4W", Title: "Malowany człowiek", FirstPubYear: 2010, CoverURL: "", ISBNs: []string{"PL1"}},
+		{WorkID: "OL5W", Title: "The Desert Spear", FirstPubYear: 2010, CoverURL: "spear.jpg", ISBNs: []string{"EN2"}},
+	}
+}
+
+func brettMatcher() *fakeMatcher {
+	demon := GRMatch{Found: true, WorkID: "6589794", CoverURL: "gr-warded.jpg", Author: "Peter V. Brett"}
+	return &fakeMatcher{byISBN: map[string]GRMatch{
+		"EN1": demon,
+		"FR1": demon,
+		"ES1": demon,
+		"PL1": {Found: true, WorkID: "21446513", CoverURL: "gr-polish.jpg", Author: "Peter V. Brett"}, // separate work
+		"EN2": {Found: true, WorkID: "5738618", CoverURL: "gr-spear.jpg", Author: "Peter V. Brett"},
+	}}
+}
+
+func TestClusterWorksCollapsesTranslations(t *testing.T) {
+	got := ClusterWorks(brettWorks(), "Peter V. Brett", brettMatcher(), 100)
+	// EN+FR+ES collapse to one; Polish stays separate (GR's own split); Desert
+	// Spear is its own book -> 3 clusters.
+	if len(got) != 3 {
+		t.Fatalf("want 3 clusters (Demon Cycle bk1, Polish bk1, Desert Spear), got %d: %+v", len(got), got)
+	}
+	var demon *Work
+	for i := range got {
+		if got[i].WorkID == "OL1W" {
+			demon = &got[i]
+		}
+	}
+	if demon == nil {
+		t.Fatalf("English canonical (OL1W) should represent the Demon Cycle bk1 cluster: %+v", got)
+	}
+	if demon.Title != "The Warded Man" || demon.FirstPubYear != 2008 {
+		t.Errorf("canonical should be English, earliest year: got %q %d", demon.Title, demon.FirstPubYear)
+	}
+	// Polish must still be present as its own tile.
+	var polish bool
+	for _, w := range got {
+		if strings.Contains(w.Title, "Malowany") {
+			polish = true
+		}
+	}
+	if !polish {
+		t.Error("Polish edition should remain a separate tile (Goodreads files it as a separate work)")
+	}
+}
+
+func TestClusterWorksBackfillsCover(t *testing.T) {
+	// Two coverless translations of book 1; they collapse and inherit the GR cover.
+	works := []Work{
+		{WorkID: "OL2W", Title: "Le Cycle des démons", FirstPubYear: 2009, CoverURL: "", ISBNs: []string{"FR1"}},
+		{WorkID: "OL3W", Title: "El hombre marcado", FirstPubYear: 2009, CoverURL: "", ISBNs: []string{"ES1"}},
+	}
+	got := ClusterWorks(works, "Peter V. Brett", brettMatcher(), 100)
+	if len(got) != 1 {
+		t.Fatalf("FR+ES share a work -> 1 cluster, got %d", len(got))
+	}
+	if got[0].CoverURL != "gr-warded.jpg" {
+		t.Errorf("coverless cluster should backfill the Goodreads cover, got %q", got[0].CoverURL)
+	}
+}
+
+func TestClusterWorksRejectsDirtyISBN(t *testing.T) {
+	// OL1W's ISBN resolves to a different author -> guard rejects -> it must NOT
+	// merge into the real cluster, and must stay on its title-norm key.
+	works := []Work{
+		{WorkID: "OL1W", Title: "The Warded Man", FirstPubYear: 2008, ISBNs: []string{"EN1"}},
+		{WorkID: "OLbad", Title: "The Painted Man", FirstPubYear: 2008, ISBNs: []string{"DIRTY"}},
+	}
+	m := &fakeMatcher{byISBN: map[string]GRMatch{
+		"EN1":   {Found: true, WorkID: "6589794", Author: "Peter V. Brett"},
+		"DIRTY": {Found: true, WorkID: "3360681", Author: "Jane Doe"},
+	}}
+	got := ClusterWorks(works, "Peter V. Brett", m, 100)
+	if len(got) != 2 {
+		t.Fatalf("dirty ISBN must not merge -> 2 entries, got %d: %+v", len(got), got)
+	}
+}
+
+func TestClusterWorksNoISBNSkipsLookup(t *testing.T) {
+	m := brettMatcher()
+	works := []Work{
+		{WorkID: "OLx", Title: "The Warded Man", FirstPubYear: 2008}, // no ISBNs
+	}
+	ClusterWorks(works, "Peter V. Brett", m, 100)
+	if m.calls != 0 {
+		t.Errorf("a work with no ISBN should trigger no Goodreads lookup, got %d", m.calls)
+	}
+}
+
+func TestClusterWorksTitleNormFallback(t *testing.T) {
+	// nil matcher -> pass-1 only: English case/box-set handling, no translation merge.
+	works := append(brettWorks(),
+		Work{WorkID: "OL6W", Title: "The Warded Man (Demon Cycle Box Set)", FirstPubYear: 2012},
+		Work{WorkID: "OL7W", Title: "the warded man", FirstPubYear: 2015},
+	)
+	got := ClusterWorks(works, "Peter V. Brett", nil, 0)
+	for _, w := range got {
+		if strings.Contains(strings.ToLower(w.Title), "box set") {
+			t.Errorf("box set should be dropped: %q", w.Title)
+		}
+	}
+	// Warded/Cycle/hombre/Malowany/Desert all separate (5); case variant merges
+	// into Warded Man -> still 5.
+	if len(got) != 5 {
+		t.Errorf("title-norm only should leave 5 entries, got %d", len(got))
+	}
+}
+
+func TestClusterWorksRespectsLookupBudget(t *testing.T) {
+	m := brettMatcher()
+	ClusterWorks(brettWorks(), "Peter V. Brett", m, 2)
+	if m.calls != 2 {
+		t.Errorf("matcher should be called exactly maxLookups=2 times, got %d", m.calls)
+	}
+}
+
+func TestNormTitle(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"The Warded Man", "warded man"},
+		{"The Warded Man (2009)", "warded man"},
+		{"The Warded Man by Peter V. Brett", "warded man"},
+		{"A Game of Thrones", "game of thrones"},
+		{"The Warded Man — Special Edition", "warded man"},
+	} {
+		if got := normTitle(tc.in); got != tc.want {
+			t.Errorf("normTitle(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}

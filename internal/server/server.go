@@ -45,6 +45,7 @@ type Server struct {
 	sched *scheduler.Scheduler
 	ol    provider.Provider
 	gb    *provider.GBClient
+	gr    *provider.GRClient
 
 	coverMu  sync.Mutex
 	coverIdx map[string]string // basename → abs path, lazy vault-wide cover index
@@ -56,8 +57,8 @@ type Server struct {
 // tests can force a rebuild.
 var coverIdxTTL = 5 * time.Minute
 
-func New(cfg config.Config, st *store.Store, sc *scraper.Client, sched *scheduler.Scheduler, ol provider.Provider, gb *provider.GBClient) *Server {
-	return &Server{cfg: cfg, st: st, sc: sc, sched: sched, ol: ol, gb: gb}
+func New(cfg config.Config, st *store.Store, sc *scraper.Client, sched *scheduler.Scheduler, ol provider.Provider, gb *provider.GBClient, gr *provider.GRClient) *Server {
+	return &Server{cfg: cfg, st: st, sc: sc, sched: sched, ol: ol, gb: gb, gr: gr}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -128,11 +129,13 @@ func (s *Server) auth(h http.HandlerFunc) http.HandlerFunc {
 func secure(next http.Handler) http.Handler {
 	// OpenLibrary covers 302-redirect to archive.org and then to a regional
 	// data node (iaNNN.us.archive.org), so all three hosts must be allowed or
-	// the browser blocks the redirected image. Google Books is the cover
-	// fallback for works OL has no cover for.
+	// the browser blocks the redirected image. Google Books is the first cover
+	// fallback; Goodreads supplies the clustered-cover backfill (#40), and serves
+	// its covers from the Amazon media CDN (m.media-amazon.com).
 	const csp = "default-src 'self'; img-src 'self' data: " +
 		"https://covers.openlibrary.org https://archive.org https://*.us.archive.org " +
-		"https://books.google.com https://lh3.googleusercontent.com; " +
+		"https://books.google.com https://lh3.googleusercontent.com " +
+		"https://*.media-amazon.com; " +
 		"style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; " +
 		"base-uri 'none'; form-action 'self'"
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -643,6 +646,10 @@ func (s *Server) handleGBCover(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errBody("missing title"))
 		return
 	}
+	// Google Books only here — this lazy per-tile path has just a title+author,
+	// and Goodreads can't be searched by title (its /search is WAF-blocked). The
+	// Goodreads cover backfill happens in the clustered works endpoint instead,
+	// where the OL work's ISBNs are available (#40).
 	cover := s.gb.CoverURL(title, author)
 	writeJSON(w, http.StatusOK, map[string]string{"cover": cover})
 }
@@ -659,10 +666,32 @@ func (s *Server) handleOLAuthors(w http.ResponseWriter, r *http.Request) {
 	respond(w, results, err)
 }
 
+// clusterBudget caps how many Goodreads ISBN lookups one author-works request may
+// trigger. Each is a polite ~0.7s-throttled fetch of an ~800 KB book page, so a
+// full refine on a prolific author runs on the order of a minute — acceptable
+// because the picker fires it in the background over the fast view and the
+// per-ISBN cache makes repeat visits free. Survivors past the budget keep their
+// title-normalization grouping.
+const clusterBudget = 60
+
 func (s *Server) handleOLAuthorWorks(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	works, err := s.ol.AuthorWorks(id)
-	respond(w, works, err)
+	if err != nil {
+		respond(w, works, err)
+		return
+	}
+	// ?cluster=1&author=<name>: collapse translation/edition dupes via Goodreads
+	// work-clustering and backfill missing covers (#40). The picker fires this as
+	// a background refine after the fast title-norm view, so a slow scrape never
+	// blocks the first render. Without it (or without a Goodreads client) the
+	// pure pass-1 title-normalization result is returned.
+	author := r.URL.Query().Get("author")
+	var m provider.Matcher
+	if r.URL.Query().Get("cluster") == "1" && s.gr != nil {
+		m = s.gr
+	}
+	respond(w, provider.ClusterWorks(works, author, m, clusterBudget), nil)
 }
 
 func (s *Server) handleOLSearch(w http.ResponseWriter, r *http.Request) {

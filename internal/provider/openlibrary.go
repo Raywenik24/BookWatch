@@ -113,6 +113,7 @@ type olSearchDoc struct {
 	FirstPublishYear int      `json:"first_publish_year"`
 	Language         []string `json:"language"`
 	CoverI           int      `json:"cover_i"`
+	ISBN             []string `json:"isbn"`
 }
 
 type olSearchResp struct {
@@ -230,8 +231,10 @@ func (c *OLClient) AuthorWorks(authorID string) ([]Work, error) {
 	// search index — the index has cover_i and first_publish_year on most
 	// records, unlike /authors/{id}/works.json which omits both. Direct
 	// author_key= or /authors/ path forms are not accepted by the API.
+	// isbn comes back as the union of every edition's ISBNs; we keep a handful as
+	// the cross-source key for Goodreads work-clustering (#40).
 	path := "/search.json?q=" + url.QueryEscape("author_key:"+authorID) +
-		"&fields=key,title,first_publish_year,cover_i&limit=" + strconv.Itoa(worksLimit)
+		"&fields=key,title,first_publish_year,cover_i,isbn&limit=" + strconv.Itoa(worksLimit)
 	var resp olSearchResp
 	if err := c.get(c.url(path), &resp); err != nil {
 		return nil, err
@@ -247,9 +250,21 @@ func (c *OLClient) AuthorWorks(authorID string) ([]Work, error) {
 			Title:        d.Title,
 			FirstPubYear: d.FirstPublishYear,
 			CoverURL:     cover,
+			ISBNs:        capISBNs(d.ISBN),
 		})
 	}
 	return out, nil
+}
+
+// maxISBNsPerWork caps how many of a work's edition ISBNs we keep — the Goodreads
+// match stops at the first that resolves, so a long list only adds dead lookups.
+const maxISBNsPerWork = 5
+
+func capISBNs(isbns []string) []string {
+	if len(isbns) <= maxISBNsPerWork {
+		return isbns
+	}
+	return isbns[:maxISBNsPerWork]
 }
 
 // --- WorkDetail ---
