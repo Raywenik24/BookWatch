@@ -145,6 +145,9 @@ func mergeWork(a, b Work) Work {
 	if canon.FirstPubYear == 0 {
 		canon.FirstPubYear = other.FirstPubYear
 	}
+	if canon.Language == "" && other.Language != "" {
+		canon.Language = other.Language
+	}
 	return canon
 }
 

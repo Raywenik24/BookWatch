@@ -33,6 +33,7 @@ type Work struct {
 	WorkID       string
 	Title        string
 	FirstPubYear int
+	Language     string // OL language code, e.g. "eng"; empty if unknown
 	CoverURL     string
 	Description  string
 	Editions     []Edition

@@ -45,12 +45,14 @@ const authorWorksFixture = `{
       "key": "/works/OL4966121W",
       "title": "The Warded Man",
       "first_publish_year": 2008,
+      "language": ["eng"],
       "cover_i": 7890277
     },
     {
       "key": "/works/OL5738618W",
       "title": "The Desert Spear",
       "first_publish_year": 2010,
+      "language": [],
       "cover_i": 0
     }
   ]
@@ -193,6 +195,12 @@ func TestAuthorWorks(t *testing.T) {
 	}
 	if got[1].CoverURL != "" {
 		t.Error("work[1] cover_i:0 should produce empty CoverURL")
+	}
+	if got[0].Language != "eng" {
+		t.Errorf("work[0] language %q", got[0].Language)
+	}
+	if got[1].Language != "" {
+		t.Errorf("work[1] language should be empty, got %q", got[1].Language)
 	}
 }
 

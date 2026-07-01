@@ -234,7 +234,7 @@ func (c *OLClient) AuthorWorks(authorID string) ([]Work, error) {
 	// isbn comes back as the union of every edition's ISBNs; we keep a handful as
 	// the cross-source key for Goodreads work-clustering (#40).
 	path := "/search.json?q=" + url.QueryEscape("author_key:"+authorID) +
-		"&fields=key,title,first_publish_year,cover_i,isbn&limit=" + strconv.Itoa(worksLimit)
+		"&fields=key,title,first_publish_year,language,cover_i,isbn&limit=" + strconv.Itoa(worksLimit)
 	var resp olSearchResp
 	if err := c.get(c.url(path), &resp); err != nil {
 		return nil, err
@@ -245,10 +245,15 @@ func (c *OLClient) AuthorWorks(authorID string) ([]Work, error) {
 		if d.CoverI > 0 {
 			cover = fmt.Sprintf("%s/b/id/%d-M.jpg", c.coversURL, d.CoverI)
 		}
+		lang := ""
+		if len(d.Language) > 0 {
+			lang = d.Language[0]
+		}
 		out = append(out, Work{
 			WorkID:       parseWorkID(d.Key),
 			Title:        d.Title,
 			FirstPubYear: d.FirstPublishYear,
+			Language:     lang,
 			CoverURL:     cover,
 			ISBNs:        capISBNs(d.ISBN),
 		})

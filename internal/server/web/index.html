@@ -1335,9 +1335,11 @@ function dedupeWorks(works){
 // or text query changes.
 let _wlView = [];
 
-function isEnglishTitle(t){
-  for(let i=0;i<t.length;i++){ if(t.charCodeAt(i)>127) return false; }
-  return true;
+function isEnglishWork(w){
+  // OL reliably tags English works as "eng" but often omits language on
+  // foreign translations — hiding unknowns catches those without losing
+  // real English books.
+  return w.Language === 'eng';
 }
 
 // filterWlWorks re-derives _wlView from _wlWorks + the English-only checkbox,
@@ -1345,7 +1347,7 @@ function isEnglishTitle(t){
 // nav, clear) call this so the filter is always consistent.
 function filterWlWorks(){
   const engOnly = $('wlEnglishOnly') && $('wlEnglishOnly').checked;
-  _wlView = engOnly ? _wlWorks.filter(w=>isEnglishTitle(w.Title)) : _wlWorks.slice();
+  _wlView = engOnly ? _wlWorks.filter(w=>isEnglishWork(w)) : _wlWorks.slice();
   _wlPage = 0;
   if(_wlAuthor) setWlAuthorBadge(_wlAuthor.Name, _wlView.length);
   renderWlWorks();
