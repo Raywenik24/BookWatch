@@ -429,16 +429,17 @@ func (s *Server) handleUndismissReleases(w http.ResponseWriter, r *http.Request)
 type addBookBody struct {
 	URL string `json:"url"`
 
-	Kind            string `json:"kind"` // "" (default: LN scrape) | "book"
-	Title           string `json:"title"`
-	Author          string `json:"author"`
-	AuthorOLKey     string `json:"author_ol_key"`
-	WorkID          string `json:"work_id"`
-	OLURL           string `json:"ol_url"`
-	Year            int    `json:"year"`
-	Status          string `json:"status"`
-	WatchAuthor     bool   `json:"watch_author"`
-	CatalogLanguage string `json:"catalog_language"`
+	Kind                   string `json:"kind"` // "" (default: LN scrape) | "book"
+	Title                  string `json:"title"`
+	Author                 string `json:"author"`
+	AuthorOLKey            string `json:"author_ol_key"`
+	WorkID                 string `json:"work_id"`
+	OLURL                  string `json:"ol_url"`
+	Year                   int    `json:"year"`
+	Status                 string `json:"status"`
+	WatchAuthor            bool   `json:"watch_author"`
+	CatalogLanguage        string `json:"catalog_language"`
+	WatchPolishTranslation bool   `json:"watch_pl_translation"`
 }
 
 func (s *Server) handleAddBook(w http.ResponseWriter, r *http.Request) {
@@ -570,7 +571,8 @@ func (s *Server) addBookFromCatalog(w http.ResponseWriter, body addBookBody) {
 		if body.Year > 0 {
 			baselineDate = strconv.Itoa(body.Year)
 		}
-		if _, err := s.st.UpsertTracker("author", body.Author, body.AuthorOLKey, body.WorkID, baselineDate, lang); err != nil {
+		watchPL := body.WatchPolishTranslation && lang != "pol"
+		if _, err := s.st.UpsertTracker("author", body.Author, body.AuthorOLKey, body.WorkID, baselineDate, lang, watchPL); err != nil {
 			log.Printf("watch author after book add: %v", err)
 		} else {
 			watched = true
@@ -833,17 +835,19 @@ func (s *Server) handleListTrackers(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleUpsertTracker(w http.ResponseWriter, r *http.Request) {
 	var b struct {
-		Name            string `json:"name"`
-		OLKey           string `json:"ol_key"`
-		BaselineWorkID  string `json:"baseline_work_id"`
-		BaselineDate    string `json:"baseline_date"`
-		CatalogLanguage string `json:"catalog_language"`
+		Name                   string `json:"name"`
+		OLKey                  string `json:"ol_key"`
+		BaselineWorkID         string `json:"baseline_work_id"`
+		BaselineDate           string `json:"baseline_date"`
+		CatalogLanguage        string `json:"catalog_language"`
+		WatchPolishTranslation bool   `json:"watch_pl_translation"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&b); err != nil || b.OLKey == "" {
 		writeJSON(w, http.StatusBadRequest, errBody("name + ol_key required"))
 		return
 	}
-	id, err := s.st.UpsertTracker("author", b.Name, b.OLKey, b.BaselineWorkID, b.BaselineDate, b.CatalogLanguage)
+	watchPL := b.WatchPolishTranslation && b.CatalogLanguage != "pol"
+	id, err := s.st.UpsertTracker("author", b.Name, b.OLKey, b.BaselineWorkID, b.BaselineDate, b.CatalogLanguage, watchPL)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -872,15 +876,17 @@ func (s *Server) handleUpdateBaseline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var b struct {
-		BaselineWorkID  string `json:"baseline_work_id"`
-		BaselineDate    string `json:"baseline_date"`
-		CatalogLanguage string `json:"catalog_language"`
+		BaselineWorkID         string `json:"baseline_work_id"`
+		BaselineDate           string `json:"baseline_date"`
+		CatalogLanguage        string `json:"catalog_language"`
+		WatchPolishTranslation bool   `json:"watch_pl_translation"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
 		writeJSON(w, http.StatusBadRequest, errBody("bad body"))
 		return
 	}
-	if err := s.st.UpdateTrackerBaseline(id, b.BaselineWorkID, b.BaselineDate, b.CatalogLanguage); err != nil {
+	watchPL := b.WatchPolishTranslation && b.CatalogLanguage != "pol"
+	if err := s.st.UpdateTrackerBaseline(id, b.BaselineWorkID, b.BaselineDate, b.CatalogLanguage, watchPL); err != nil {
 		writeErr(w, err)
 		return
 	}

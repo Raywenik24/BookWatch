@@ -288,7 +288,7 @@ func (f *fakeProvider) WorkEditions(id string) ([]provider.Edition, error) {
 func TestPollTrackers_normalizesReleases(t *testing.T) {
 	st := openStore(t)
 
-	trackerID, err := st.UpsertTracker("author", "Graham Masterton", "OL123A", "W1", "2000", "eng")
+	trackerID, err := st.UpsertTracker("author", "Graham Masterton", "OL123A", "W1", "2000", "eng", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,21 +354,25 @@ func TestPollTrackers_normalizesReleases(t *testing.T) {
 }
 
 // fakePolishSource stubs provider.PolishSource (Lubimyczytać) for the poll's
-// Polish pass.
+// Polish passes. matches keys off title, for the translation-watch pass (#46).
 type fakePolishSource struct {
-	path  string
-	works []provider.Work
-	err   error
+	path    string
+	works   []provider.Work
+	err     error
+	matches map[string]provider.Match
 }
 
 func (f *fakePolishSource) AuthorSearch(string) string { return f.path }
 func (f *fakePolishSource) AuthorWorks(string) ([]provider.Work, error) {
 	return f.works, f.err
 }
+func (f *fakePolishSource) MatchWork(title, _ string, _ []string) provider.Match {
+	return f.matches[title]
+}
 
 func TestPollTrackers_polishReleasesFromLubimyczytac(t *testing.T) {
 	st := openStore(t)
-	if _, err := st.UpsertTracker("author", "Peter V. Brett", "OL18930A", "W1", "2010", "pol"); err != nil {
+	if _, err := st.UpsertTracker("author", "Peter V. Brett", "OL18930A", "W1", "2010", "pol", false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -417,5 +421,94 @@ func TestPollTrackers_polishReleasesFromLubimyczytac(t *testing.T) {
 	lcAbsent := &fakePolishSource{path: ""}
 	if _, _, errs := pollTrackers(ol, lcAbsent, st, nil); errs != 0 {
 		t.Errorf("an author absent from Lubimyczytać is not an error, got %d", errs)
+	}
+}
+
+// TestPollTrackers_polishTranslationWatch covers #46: an opt-in flag on an
+// English-catalog tracker that, once a book surfaces in English, separately
+// checks Lubimyczytać for a Polish edition of that specific book — by title,
+// not a bibliography scan — and surfaces a hit as its own "translation-of"
+// release.
+func TestPollTrackers_polishTranslationWatch(t *testing.T) {
+	st := openStore(t)
+	trackerID, err := st.UpsertTracker("author", "Lee Child", "OL1A", "W1", "2010", "eng", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ol := &fakeProvider{
+		works:   []provider.Work{{WorkID: "OLnew", Title: "The Sentinel", FirstPubYear: 2020}},
+		details: map[string]provider.Work{"OLnew": {WorkID: "OLnew", Editions: []provider.Edition{{Language: "eng"}}}},
+	}
+	lc := &fakePolishSource{
+		matches: map[string]provider.Match{
+			"The Sentinel": {WorkID: "lc:555", Title: "Wartownik", CoverURL: "pl.jpg", Author: "Lee Child", Found: true},
+		},
+	}
+
+	checked, newReleases, errs := pollTrackers(ol, lc, st, nil)
+	if checked != 1 || errs != 0 {
+		t.Fatalf("checked=%d errs=%d, want 1/0", checked, errs)
+	}
+	if newReleases != 2 {
+		t.Fatalf("newReleases=%d, want 2 (English release + Polish translation)", newReleases)
+	}
+	rel, _ := st.ListReleases(10)
+	var primary, translation *store.Release
+	for i := range rel {
+		switch rel[i].Kind {
+		case "":
+			primary = &rel[i]
+		case "translation-of":
+			translation = &rel[i]
+		}
+	}
+	if primary == nil || primary.WorkID != "OLnew" {
+		t.Fatalf("expected primary English release for OLnew, got %+v", rel)
+	}
+	if translation == nil || translation.WorkID != "pl-tr:OLnew" || translation.Title != "Wartownik" {
+		t.Fatalf("expected translation-of release keyed off the primary work, got %+v", rel)
+	}
+
+	// Re-polling must not insert the translation again (it's already been
+	// found — the point of `seen` picking it back up via ReleaseWorkIDs).
+	if _, newReleases, _ := pollTrackers(ol, lc, st, nil); newReleases != 0 {
+		t.Errorf("a re-poll after the translation is already found should surface nothing new, got %d", newReleases)
+	}
+
+	_ = trackerID
+}
+
+// TestPollTrackers_polishTranslationWatch_gated confirms the pass only runs
+// when both the flag is set AND the tracker isn't already Polish-catalog —
+// the reverse direction is explicitly out of scope for #46.
+func TestPollTrackers_polishTranslationWatch_gated(t *testing.T) {
+	st := openStore(t)
+	ol := &fakeProvider{
+		works:   []provider.Work{{WorkID: "OLnew", Title: "The Sentinel", FirstPubYear: 2020}},
+		details: map[string]provider.Work{"OLnew": {WorkID: "OLnew", Editions: []provider.Edition{{Language: "eng"}}}},
+	}
+	lc := &fakePolishSource{
+		matches: map[string]provider.Match{
+			"The Sentinel": {WorkID: "lc:555", Title: "Wartownik", Found: true},
+		},
+	}
+
+	// Flag off: English release only.
+	if _, err := st.UpsertTracker("author", "A", "OL1A", "W1", "2010", "eng", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, newReleases, _ := pollTrackers(ol, lc, st, nil); newReleases != 1 {
+		t.Errorf("flag off should surface only the English release, got %d new", newReleases)
+	}
+
+	// Flag on but catalog is already Polish: the LC bibliography pass owns
+	// this tracker instead, and it returns nothing here (no path/works set).
+	st2 := openStore(t)
+	if _, err := st2.UpsertTracker("author", "B", "OL2A", "W2", "2010", "pol", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, newReleases, _ := pollTrackers(ol, lc, st2, nil); newReleases != 0 {
+		t.Errorf("pol-catalog tracker should not run the translation-watch pass, got %d new", newReleases)
 	}
 }

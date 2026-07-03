@@ -189,6 +189,7 @@
   .switch input:checked + .switch-track::before { transform: translateX(1rem); background: var(--crust); }
   .switch input:focus-visible + .switch-track { outline: 2px solid var(--mauve); outline-offset: 2px; }
   .switch-row { display: flex; align-items: flex-start; gap: .6rem; cursor: pointer; }
+  .switch-row[hidden] { display: none; } /* the unconditional display:flex above otherwise beats the hidden attribute */
   .switch-row .switch { margin-top: .1rem; }
   .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 40;
         display: flex; align-items: flex-start; justify-content: center; padding: 4rem 1rem; overflow-y: auto; }
@@ -344,7 +345,7 @@
         <div class="card" id="wlLangCard" hidden>
           <div class="row" style="align-items:center">
             <label style="white-space:nowrap; color:var(--subtext)">Catalog language:</label>
-            <select id="wlLang" onchange="filterWlWorks()">
+            <select id="wlLang" onchange="filterWlWorks(); onWlLangChange(this.value)">
               <option value="">All languages (browse only — pick a language to save)</option>
               <option value="eng">English</option>
               <option value="fre">French</option>
@@ -394,6 +395,12 @@
 
         <!-- Step 4: Submit -->
         <div class="card" id="wlSubmitCard" hidden>
+          <label class="switch-row" id="wlWatchPlRow" hidden>
+            <span class="switch"><input id="wlWatchPl" type="checkbox"><span class="switch-track"></span></span>
+            <span>Also watch for a Polish translation
+              <br><small class="muted">When this book (or a later one by this author) turns up in the primary language, separately check Lubimyczytać for a Polish edition and ping again when one appears — translations often lag a year or more (#46).</small>
+            </span>
+          </label>
           <button class="btn" onclick="saveTracker()">Watch this author</button>
         </div>
 
@@ -726,8 +733,9 @@ function renderUpdatesTable(){
     }
     const x = row.x;
     const link = `https://openlibrary.org/works/${esc(x.work_id)}`;
+    const plBadge = x.kind === 'translation-of' ? ' <span class="badge" title="A Polish edition of an already-surfaced release (#46)">PL translation</span>' : '';
     if(row.kind === 'release-dismissed'){
-      return `<tr><td class="cb-col"></td><td class="new">${esc(x.title)}</td><td></td>
+      return `<tr><td class="cb-col"></td><td class="new">${esc(x.title)}${plBadge}</td><td></td>
        <td><span class="badge dismissed" title="${x.dismissed_at?esc(fmtTime(x.dismissed_at)):''}">Dismissed</span></td>
        <td><a href="${link}" target="_blank">link</a></td><td class="nowrap"><small>${esc(fmtTime(x.detected_at))}</small></td>
        <td class="actions"><button class="btn ghost" onclick="undismissRelease(${x.id})">Un-dismiss</button></td></tr>`;
@@ -737,7 +745,7 @@ function renderUpdatesTable(){
       : `<span class="badge pending">Pending</span>`;
     const cb = x.created ? '' : `<input type="checkbox" data-key="${row.key}" ${updatesSelected.has(row.key)?'checked':''} onchange="toggleUpdateSelect('${row.key}',this.checked)">`;
     const dismissBtn = x.created ? '' : `<button class="btn ghost" onclick="dismissRelease(${x.id})">Dismiss</button>`;
-    return `<tr><td class="cb-col">${cb}</td><td class="new">${esc(x.title)}</td><td></td>
+    return `<tr><td class="cb-col">${cb}</td><td class="new">${esc(x.title)}${plBadge}</td><td></td>
      <td>${status}</td>
      <td><a href="${link}" target="_blank">link</a></td><td class="nowrap"><small>${esc(fmtTime(x.detected_at))}</small></td>
      <td class="actions">${dismissBtn}</td></tr>`;
@@ -1184,7 +1192,12 @@ function cancelAddConfirm(){
   if(_addCandidates.length){ $('addCandidates').hidden = false; }
   else { closeAddModal(); }
 }
-function toggleAddWatchLang(){ $('addWatchLangRow').hidden = !$('addWatch').checked; }
+function toggleAddWatchLang(){
+  const watch = $('addWatch').checked;
+  $('addWatchLangRow').hidden = !watch;
+  $('addWatchPlRow').hidden = !watch || $('addWatchLang').value === 'pol';
+  if(!watch) $('addWatchPl').checked = false;
+}
 function renderAddConfirm(){
   const c = _addSelected;
   const box = $('addConfirm'); box.hidden = false;
@@ -1211,8 +1224,12 @@ function renderAddConfirm(){
     </div>
     <div class="row" id="addWatchLangRow" hidden style="align-items:center">
       <label style="color:var(--subtext); white-space:nowrap">Catalog language</label>
-      <select id="addWatchLang" style="flex:0 0 auto">${langOpts}</select>
+      <select id="addWatchLang" style="flex:0 0 auto" onchange="$('addWatchPlRow').hidden = this.value==='pol'">${langOpts}</select>
     </div>
+    <label class="switch-row" id="addWatchPlRow" hidden style="margin-top:.4rem">
+      <span class="switch"><input id="addWatchPl" type="checkbox"><span class="switch-track"></span></span>
+      <span style="font-size:.9rem">Also watch for a Polish translation</span>
+    </label>
     <div class="row"><button class="btn" id="addSubmitBtn" onclick="submitAddBook()">Add book</button></div>
   </div>`;
 }
@@ -1228,6 +1245,7 @@ async function submitAddBook(){
       work_id: c.WorkID, ol_url: c.OLURL, year: c.Year||0,
       status: $('addStatus').value, watch_author: watch,
       catalog_language: watch ? $('addWatchLang').value : '',
+      watch_pl_translation: watch && $('addWatchLang').value !== 'pol' && $('addWatchPl').checked,
     });
     if(need(r, h)) return;
     if(r.status===409) return h.update('Already tracked — this book is in your list.','error');
@@ -1586,6 +1604,14 @@ function selectWlWork(workID){
   _wlBaseline = {workID:w.WorkID, title:w.Title, year:w.FirstPubYear};
   showWlBaselineSelected();
 }
+// onWlLangChange keeps the "watch Polish translation" toggle in sync with the
+// catalog-language pick, whether it fires from the language select itself or
+// from showWlBaselineSelected() the first time the submit step appears — a
+// language switch after the toggle was already shown must hide it again too.
+function onWlLangChange(lang){
+  $('wlWatchPlRow').hidden = lang === 'pol';
+  if(lang === 'pol') $('wlWatchPl').checked = false;
+}
 function showWlBaselineSelected(){
   _wlEnrichAbort = null; // cancel in-flight enrichment queue
   $('wlEnrichProgress').hidden = true;
@@ -1593,6 +1619,7 @@ function showWlBaselineSelected(){
   $('wlBaselineSelected').hidden = false;
   $('wlWorksList').style.display = 'none';
   $('wlSubmitCard').hidden = false;
+  onWlLangChange($('wlLang').value);
 }
 function clearWlBaseline(){
   _wlBaseline = null;
@@ -1600,6 +1627,7 @@ function clearWlBaseline(){
   $('wlWorksList').style.display = '';
   $('wlBaselineQ').value = '';
   $('wlSubmitCard').hidden = true;
+  $('wlWatchPl').checked = false;
   _wlPage = 0;
   if(_wlWorks.length) filterWlWorks();
 }
@@ -1618,7 +1646,8 @@ async function saveTracker(){
     ol_key: _wlAuthor.OLAuthorID,
     baseline_work_id: _wlBaseline.workID,
     baseline_date: String(_wlBaseline.year||''),
-    catalog_language: lang
+    catalog_language: lang,
+    watch_pl_translation: lang !== 'pol' && $('wlWatchPl').checked
   });
   if(need(r)) return;
   if(!r.ok) return toast('Error: '+(r.data.error||r.status),'error');
@@ -1640,7 +1669,7 @@ function renderTrackers(){
         <td>${esc(t.name)}</td>
         <td><small class="muted">${esc(t.ol_key)}</small></td>
         <td>${esc(t.baseline_date||'—')}</td>
-        <td><span class="badge">${esc(t.catalog_language)}</span></td>
+        <td><span class="badge">${esc(t.catalog_language)}</span>${t.watch_pl_translation?' <span class="badge" title="Also watched for a Polish translation">+PL</span>':''}</td>
         <td class="nowrap">
           <button class="btn ghost" onclick="editTrackerBaseline(${t.id})">Edit</button>
           <button class="btn ghost" style="color:var(--red)" onclick="delTracker(${t.id})">Remove</button>
@@ -1656,11 +1685,15 @@ function editTrackerBaseline(id){
   const tr = document.createElement('tr');
   tr.id = 'wl-edit-row-'+id;
   tr.innerHTML = `<td colspan="5" style="padding:.5rem .5rem .5rem 1.2rem; background:var(--surface0)">
-    <div class="row">
+    <div class="row" style="align-items:center">
       <label style="white-space:nowrap; font-size:.85rem; color:var(--subtext)">Year:</label>
       <input id="wlEditYear-${id}" type="number" value="${esc(t.baseline_date)}" placeholder="e.g. 2021" style="max-width:100px">
       <label style="white-space:nowrap; font-size:.85rem; color:var(--subtext)">Language:</label>
-      <input id="wlEditLang-${id}" value="${esc(t.catalog_language)}" placeholder="eng" style="max-width:80px">
+      <input id="wlEditLang-${id}" value="${esc(t.catalog_language)}" placeholder="eng" style="max-width:80px" onchange="$('wlEditPlRow-${id}').hidden = this.value.trim()==='pol'">
+      <label class="switch-row" id="wlEditPlRow-${id}" ${t.catalog_language==='pol'?'hidden':''} style="margin:0">
+        <span class="switch"><input id="wlEditPl-${id}" type="checkbox" ${t.watch_pl_translation?'checked':''}><span class="switch-track"></span></span>
+        <span style="font-size:.85rem; color:var(--subtext); white-space:nowrap">Watch Polish translation</span>
+      </label>
       <button class="btn" onclick="saveTrackerBaseline(${id})">Save</button>
       <button class="btn ghost" onclick="document.getElementById('wl-edit-row-${id}').remove()">Cancel</button>
     </div>
@@ -1669,10 +1702,12 @@ function editTrackerBaseline(id){
 }
 async function saveTrackerBaseline(id){
   const t = wlTrackers.find(x=>x.id===id); if(!t) return;
+  const lang = $('wlEditLang-'+id).value.trim();
   const r = await send('PUT',`/api/trackers/${id}/baseline`,{
     baseline_work_id: t.baseline_work_id||'',
     baseline_date: $('wlEditYear-'+id).value.trim(),
-    catalog_language: $('wlEditLang-'+id).value.trim()
+    catalog_language: lang,
+    watch_pl_translation: lang !== 'pol' && $('wlEditPl-'+id).checked
   });
   if(need(r)) return;
   toast(r.ok?'Baseline updated.':'Error: '+(r.data.error||r.status), r.ok?'success':'error');

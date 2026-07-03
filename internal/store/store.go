@@ -154,6 +154,14 @@ var migrations = []string{
 	// for un-dismiss.
 	`ALTER TABLE releases ADD COLUMN created    INTEGER NOT NULL DEFAULT 0;
 	 ALTER TABLE releases ADD COLUMN created_at TEXT;`,
+	// v7: opt-in Polish-translation watch for English-catalog trackers (#46).
+	// watch_pl_translation only means anything when catalog_language != 'pol';
+	// when set, pollTrackers re-checks Lubimyczytać per already-surfaced
+	// release for a Polish edition of that specific book. kind distinguishes
+	// that second, independently-timed release ("translation-of") from a
+	// normal one so the UI can label it.
+	`ALTER TABLE trackers ADD COLUMN watch_pl_translation INTEGER NOT NULL DEFAULT 0;
+	 ALTER TABLE releases ADD COLUMN kind TEXT NOT NULL DEFAULT '';`,
 }
 
 func (s *Store) migrate() error {
@@ -642,27 +650,33 @@ func (s *Store) MarkApplied(updateID, bookID int64, newVolumes int) error {
 
 // Tracker is one author (or later series) watchlist subscription.
 type Tracker struct {
-	ID              int64  `json:"id"`
-	Kind            string `json:"kind"`
-	Name            string `json:"name"`
-	OLKey           string `json:"ol_key"`
-	BaselineWorkID  string `json:"baseline_work_id"`
-	BaselineDate    string `json:"baseline_date"`
-	CatalogLanguage string `json:"catalog_language"`
-	CreatedAt       string `json:"created_at"`
+	ID                     int64  `json:"id"`
+	Kind                   string `json:"kind"`
+	Name                   string `json:"name"`
+	OLKey                  string `json:"ol_key"`
+	BaselineWorkID         string `json:"baseline_work_id"`
+	BaselineDate           string `json:"baseline_date"`
+	CatalogLanguage        string `json:"catalog_language"`
+	WatchPolishTranslation bool   `json:"watch_pl_translation"`
+	CreatedAt              string `json:"created_at"`
 }
 
 // UpsertTracker inserts or updates a tracker by (kind, ol_key), returning its id.
-func (s *Store) UpsertTracker(kind, name, olKey, baselineWorkID, baselineDate, catalogLanguage string) (int64, error) {
+func (s *Store) UpsertTracker(kind, name, olKey, baselineWorkID, baselineDate, catalogLanguage string, watchPolishTranslation bool) (int64, error) {
+	watchPL := 0
+	if watchPolishTranslation {
+		watchPL = 1
+	}
 	_, err := s.db.Exec(`
-		INSERT INTO trackers(kind, name, ol_key, baseline_work_id, baseline_date, catalog_language, created_at)
-		VALUES(?,?,?,?,?,?,?)
+		INSERT INTO trackers(kind, name, ol_key, baseline_work_id, baseline_date, catalog_language, watch_pl_translation, created_at)
+		VALUES(?,?,?,?,?,?,?,?)
 		ON CONFLICT(kind, ol_key) DO UPDATE SET
 			name=excluded.name,
 			baseline_work_id=excluded.baseline_work_id,
 			baseline_date=excluded.baseline_date,
-			catalog_language=excluded.catalog_language`,
-		kind, name, olKey, baselineWorkID, baselineDate, catalogLanguage, now())
+			catalog_language=excluded.catalog_language,
+			watch_pl_translation=excluded.watch_pl_translation`,
+		kind, name, olKey, baselineWorkID, baselineDate, catalogLanguage, watchPL, now())
 	if err != nil {
 		return 0, err
 	}
@@ -671,11 +685,16 @@ func (s *Store) UpsertTracker(kind, name, olKey, baselineWorkID, baselineDate, c
 	return id, err
 }
 
-// UpdateTrackerBaseline sets the baseline and language fields on an existing tracker.
-func (s *Store) UpdateTrackerBaseline(id int64, baselineWorkID, baselineDate, catalogLanguage string) error {
+// UpdateTrackerBaseline sets the baseline, language, and Polish-translation-watch
+// fields on an existing tracker.
+func (s *Store) UpdateTrackerBaseline(id int64, baselineWorkID, baselineDate, catalogLanguage string, watchPolishTranslation bool) error {
+	watchPL := 0
+	if watchPolishTranslation {
+		watchPL = 1
+	}
 	_, err := s.db.Exec(
-		`UPDATE trackers SET baseline_work_id=?, baseline_date=?, catalog_language=? WHERE id=?`,
-		baselineWorkID, baselineDate, catalogLanguage, id)
+		`UPDATE trackers SET baseline_work_id=?, baseline_date=?, catalog_language=?, watch_pl_translation=? WHERE id=?`,
+		baselineWorkID, baselineDate, catalogLanguage, watchPL, id)
 	return err
 }
 
@@ -687,7 +706,7 @@ func (s *Store) DeleteTracker(id int64) error {
 
 // ListTrackers returns all trackers ordered by name.
 func (s *Store) ListTrackers() ([]Tracker, error) {
-	rows, err := s.db.Query(`SELECT id, kind, name, ol_key, baseline_work_id, baseline_date, catalog_language, created_at
+	rows, err := s.db.Query(`SELECT id, kind, name, ol_key, baseline_work_id, baseline_date, catalog_language, watch_pl_translation, created_at
 		FROM trackers ORDER BY name COLLATE NOCASE`)
 	if err != nil {
 		return nil, err
@@ -696,9 +715,11 @@ func (s *Store) ListTrackers() ([]Tracker, error) {
 	var out []Tracker
 	for rows.Next() {
 		var t Tracker
-		if err := rows.Scan(&t.ID, &t.Kind, &t.Name, &t.OLKey, &t.BaselineWorkID, &t.BaselineDate, &t.CatalogLanguage, &t.CreatedAt); err != nil {
+		var watchPL int
+		if err := rows.Scan(&t.ID, &t.Kind, &t.Name, &t.OLKey, &t.BaselineWorkID, &t.BaselineDate, &t.CatalogLanguage, &watchPL, &t.CreatedAt); err != nil {
 			return nil, err
 		}
+		t.WatchPolishTranslation = watchPL != 0
 		out = append(out, t)
 	}
 	return out, rows.Err()
@@ -751,20 +772,22 @@ type Release struct {
 	DismissedAt  string `json:"dismissed_at"`
 	Created      bool   `json:"created"`
 	CreatedAt    string `json:"created_at"`
+	Kind         string `json:"kind"` // "" (normal) | "translation-of" (#46)
 }
 
 // UpsertRelease inserts or refreshes a candidate release by (tracker_id, work_id).
 // Re-detecting the same work updates its metadata but never un-dismisses it.
-func (s *Store) UpsertRelease(trackerID int64, workID, title, author, firstPubDate, coverURL string) (int64, error) {
+func (s *Store) UpsertRelease(trackerID int64, workID, title, author, firstPubDate, coverURL, kind string) (int64, error) {
 	_, err := s.db.Exec(`
-		INSERT INTO releases(tracker_id, work_id, title, author, first_pub_date, cover_url, detected_at)
-		VALUES(?,?,?,?,?,?,?)
+		INSERT INTO releases(tracker_id, work_id, title, author, first_pub_date, cover_url, detected_at, kind)
+		VALUES(?,?,?,?,?,?,?,?)
 		ON CONFLICT(tracker_id, work_id) DO UPDATE SET
 			title=excluded.title, author=excluded.author,
 			first_pub_date=excluded.first_pub_date,
 			cover_url=excluded.cover_url,
-			detected_at=excluded.detected_at`,
-		trackerID, workID, title, author, firstPubDate, coverURL, now())
+			detected_at=excluded.detected_at,
+			kind=excluded.kind`,
+		trackerID, workID, title, author, firstPubDate, coverURL, now(), kind)
 	if err != nil {
 		return 0, err
 	}
@@ -808,15 +831,26 @@ func (s *Store) ListDismissedReleases(limit int) ([]Release, error) {
 	return queryReleases(s.db, `WHERE r.dismissed = 1`, limit)
 }
 
-func queryReleases(db *sql.DB, where string, limit int) ([]Release, error) {
+// primaryReleasesLimit bounds PrimaryReleases — an author's own bibliography
+// under one tracker never approaches this, it just avoids an unbounded query.
+const primaryReleasesLimit = 10000
+
+// PrimaryReleases returns every non-translation release ever surfaced for a
+// tracker (dismissed or not, created or not), for the Polish-translation pass
+// (#46) to re-check each poll until a translation is found.
+func (s *Store) PrimaryReleases(trackerID int64) ([]Release, error) {
+	return queryReleases(s.db, `WHERE r.tracker_id = ? AND r.kind = ''`, primaryReleasesLimit, trackerID)
+}
+
+func queryReleases(db *sql.DB, where string, limit int, args ...any) ([]Release, error) {
 	rows, err := db.Query(`
 		SELECT r.id, r.tracker_id, t.name, r.work_id, r.title, r.author,
 		       r.first_pub_date, r.cover_url, r.detected_at,
 		       r.dismissed, COALESCE(r.dismissed_at,''),
-		       r.created, COALESCE(r.created_at,'')
+		       r.created, COALESCE(r.created_at,''), r.kind
 		FROM releases r JOIN trackers t ON t.id = r.tracker_id
 		`+where+`
-		ORDER BY r.detected_at DESC, r.id DESC LIMIT ?`, limit)
+		ORDER BY r.detected_at DESC, r.id DESC LIMIT ?`, append(args, limit)...)
 	if err != nil {
 		return nil, err
 	}
@@ -828,7 +862,7 @@ func queryReleases(db *sql.DB, where string, limit int) ([]Release, error) {
 		if err := rows.Scan(&rel.ID, &rel.TrackerID, &rel.TrackerName, &rel.WorkID,
 			&rel.Title, &rel.Author, &rel.FirstPubDate, &rel.CoverURL,
 			&rel.DetectedAt, &dismissed, &rel.DismissedAt,
-			&created, &rel.CreatedAt); err != nil {
+			&created, &rel.CreatedAt, &rel.Kind); err != nil {
 			return nil, err
 		}
 		rel.Dismissed = dismissed != 0
@@ -844,7 +878,7 @@ func (s *Store) GetRelease(id int64) (Release, error) {
 		SELECT r.id, r.tracker_id, t.name, r.work_id, r.title, r.author,
 		       r.first_pub_date, r.cover_url, r.detected_at,
 		       r.dismissed, COALESCE(r.dismissed_at,''),
-		       r.created, COALESCE(r.created_at,'')
+		       r.created, COALESCE(r.created_at,''), r.kind
 		FROM releases r JOIN trackers t ON t.id = r.tracker_id
 		WHERE r.id = ?`, id)
 	var rel Release
@@ -852,7 +886,7 @@ func (s *Store) GetRelease(id int64) (Release, error) {
 	if err := row.Scan(&rel.ID, &rel.TrackerID, &rel.TrackerName, &rel.WorkID,
 		&rel.Title, &rel.Author, &rel.FirstPubDate, &rel.CoverURL,
 		&rel.DetectedAt, &dismissed, &rel.DismissedAt,
-		&created, &rel.CreatedAt); err != nil {
+		&created, &rel.CreatedAt, &rel.Kind); err != nil {
 		return Release{}, err
 	}
 	rel.Dismissed = dismissed != 0

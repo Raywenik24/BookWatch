@@ -72,13 +72,17 @@ type LCClient struct {
 }
 
 // PolishSource surfaces an author's Polish bibliography from Lubimyczytać, for
-// the tracker poll's Polish-release pass (#43). *LCClient implements it; the
-// poll accepts a nil source (Polish pass disabled) and injects a fake in tests.
+// the tracker poll's Polish-release pass (#43), and resolves a single title to
+// its Polish edition for the opt-in translation-watch pass (#46). *LCClient
+// implements it; the poll accepts a nil source (Polish passes disabled) and
+// injects a fake in tests.
 type PolishSource interface {
 	// AuthorSearch resolves an author name to their Lubimyczytać author path, or "".
 	AuthorSearch(name string) string
 	// AuthorWorks returns the author's bibliography as catalog Works.
 	AuthorWorks(authorPath string) ([]Work, error)
+	// MatchWork resolves one title+author to its Lubimyczytać edition, if any.
+	MatchWork(title, author string, isbns []string) Match
 }
 
 // NewLubimyczytac creates a Lubimyczytać title-resolution client. A blank

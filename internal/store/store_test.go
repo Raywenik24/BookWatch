@@ -341,13 +341,13 @@ func TestUpsertBook_kindAndAuthor(t *testing.T) {
 func TestTrackerCRUD(t *testing.T) {
 	st := openTemp(t)
 
-	id, err := st.UpsertTracker("author", "Graham Masterton", "/authors/OL123456A", "OL20W", "1975", "eng")
+	id, err := st.UpsertTracker("author", "Graham Masterton", "/authors/OL123456A", "OL20W", "1975", "eng", false)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Upsert same ol_key updates fields, keeps id.
-	id2, err := st.UpsertTracker("author", "Graham Masterton", "/authors/OL123456A", "OL21W", "1976", "eng")
+	id2, err := st.UpsertTracker("author", "Graham Masterton", "/authors/OL123456A", "OL21W", "1976", "eng", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -378,9 +378,32 @@ func TestTrackerCRUD(t *testing.T) {
 	}
 }
 
+// TestTrackerWatchPolishTranslation covers #46's opt-in flag: set on create,
+// toggled via UpdateTrackerBaseline, round-trips through ListTrackers.
+func TestTrackerWatchPolishTranslation(t *testing.T) {
+	st := openTemp(t)
+
+	id, err := st.UpsertTracker("author", "Lee Child", "/authors/OL1A", "W1", "2010", "eng", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trackers, _ := st.ListTrackers()
+	if !trackers[0].WatchPolishTranslation {
+		t.Fatal("watch_pl_translation not set on create")
+	}
+
+	if err := st.UpdateTrackerBaseline(id, "W1", "2010", "eng", false); err != nil {
+		t.Fatal(err)
+	}
+	trackers, _ = st.ListTrackers()
+	if trackers[0].WatchPolishTranslation {
+		t.Fatal("watch_pl_translation not cleared by UpdateTrackerBaseline")
+	}
+}
+
 func TestSeenWorks(t *testing.T) {
 	st := openTemp(t)
-	id, _ := st.UpsertTracker("author", "A", "/authors/OL1A", "", "", "eng")
+	id, _ := st.UpsertTracker("author", "A", "/authors/OL1A", "", "", "eng", false)
 
 	if err := st.AddSeenWork(id, "OL100W"); err != nil {
 		t.Fatal(err)
@@ -409,15 +432,15 @@ func TestSeenWorks(t *testing.T) {
 
 func TestReleases(t *testing.T) {
 	st := openTemp(t)
-	tid, _ := st.UpsertTracker("author", "A", "/authors/OL1A", "", "", "eng")
+	tid, _ := st.UpsertTracker("author", "A", "/authors/OL1A", "", "", "eng", false)
 
-	rid, err := st.UpsertRelease(tid, "OL300W", "The Book", "A. Author", "2024", "https://cdn/c.jpg")
+	rid, err := st.UpsertRelease(tid, "OL300W", "The Book", "A. Author", "2024", "https://cdn/c.jpg", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Re-upsert updates metadata.
-	rid2, err := st.UpsertRelease(tid, "OL300W", "The Book (Updated)", "A. Author", "2024", "")
+	rid2, err := st.UpsertRelease(tid, "OL300W", "The Book (Updated)", "A. Author", "2024", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -446,7 +469,7 @@ func TestReleases(t *testing.T) {
 	}
 
 	// Cascade: deleting tracker removes releases.
-	st.UpsertRelease(tid, "OL301W", "Another", "A", "2025", "")
+	st.UpsertRelease(tid, "OL301W", "Another", "A", "2025", "", "")
 	st.DeleteTracker(tid)
 	// Can't query directly since no API for all-releases, but open a new DB copy
 	// and verify via raw SQL.
@@ -456,6 +479,39 @@ func TestReleases(t *testing.T) {
 	}
 	if n != 0 {
 		t.Errorf("cascade did not remove releases: %d remain", n)
+	}
+}
+
+// TestPrimaryReleases covers #46's kind split: PrimaryReleases returns only
+// kind="" rows, and a "translation-of" release round-trips its Kind field.
+func TestPrimaryReleases(t *testing.T) {
+	st := openTemp(t)
+	tid, _ := st.UpsertTracker("author", "A", "/authors/OL1A", "", "", "eng", true)
+
+	if _, err := st.UpsertRelease(tid, "OL400W", "The Book", "A", "2024", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.UpsertRelease(tid, "pl-tr:OL400W", "Ksiazka", "A", "2024", "", "translation-of"); err != nil {
+		t.Fatal(err)
+	}
+
+	primaries, err := st.PrimaryReleases(tid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(primaries) != 1 || primaries[0].WorkID != "OL400W" {
+		t.Fatalf("expected only the primary release, got %+v", primaries)
+	}
+
+	rels, _ := st.ListReleases(10)
+	var translation *Release
+	for i := range rels {
+		if rels[i].Kind == "translation-of" {
+			translation = &rels[i]
+		}
+	}
+	if translation == nil || translation.WorkID != "pl-tr:OL400W" {
+		t.Fatalf("expected translation-of release to round-trip its kind, got %+v", rels)
 	}
 }
 

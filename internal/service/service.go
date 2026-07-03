@@ -277,7 +277,7 @@ func pollTrackers(ol provider.Provider, lc provider.PolishSource, st *store.Stor
 				firstPub = strconv.Itoa(w.FirstPubYear)
 			}
 			cover := provider.SelectCover(detail, t.CatalogLanguage)
-			if _, err := st.UpsertRelease(t.ID, w.WorkID, w.Title, t.Name, firstPub, cover); err == nil {
+			if _, err := st.UpsertRelease(t.ID, w.WorkID, w.Title, t.Name, firstPub, cover, ""); err == nil {
 				newReleases++
 			}
 		}
@@ -287,6 +287,18 @@ func pollTrackers(ol provider.Provider, lc provider.PolishSource, st *store.Stor
 		// them cleanly (#43). Only for pol-catalog trackers, and best-effort.
 		if lc != nil && t.CatalogLanguage == "pol" {
 			nr, failed := pollLCReleases(lc, st, t, seen, baselineYear)
+			newReleases += nr
+			if failed {
+				errs++
+			}
+		}
+
+		// Polish-translation pass (#46): opt-in, only for a non-Polish-catalog
+		// tracker. Re-checks every primary-language release ever surfaced (not
+		// just this run's) for a Polish edition, since a translation can lag the
+		// original by a year or more.
+		if lc != nil && t.CatalogLanguage != "pol" && t.WatchPolishTranslation {
+			nr, failed := pollPolishTranslations(lc, st, t, seen)
 			newReleases += nr
 			if failed {
 				errs++
@@ -327,7 +339,45 @@ func pollLCReleases(lc provider.PolishSource, st *store.Store, t store.Tracker, 
 		if w.FirstPubYear > 0 {
 			firstPub = strconv.Itoa(w.FirstPubYear)
 		}
-		if _, err := st.UpsertRelease(t.ID, w.WorkID, w.Title, t.Name, firstPub, w.CoverURL); err == nil {
+		if _, err := st.UpsertRelease(t.ID, w.WorkID, w.Title, t.Name, firstPub, w.CoverURL, ""); err == nil {
+			newReleases++
+		}
+	}
+	return newReleases, false
+}
+
+// plTranslationPrefix namespaces a translation-of release's work id off its
+// primary release's OL work id (rather than the raw Lubimyczytać hit id), so
+// (a) it can never collide with a real OL or "cykl:"/"lc:" id and (b) its
+// presence in `seen` (via ReleaseWorkIDs, loaded once per tracker at the top
+// of pollTrackers) tells the next poll a translation was already found —
+// without a second network round-trip.
+const plTranslationPrefix = "pl-tr:"
+
+// pollPolishTranslations is the opt-in translation-watch pass (#46): for every
+// primary-language release this tracker has ever surfaced, ask Lubimyczytać
+// (by the release's own title+author — not a full bibliography scan) whether a
+// Polish edition now exists. A release that already has one (per `seen`) is
+// skipped. A hit is surfaced as its own release, kind="translation-of", so the
+// UI can tell it apart. Best-effort like the other Polish passes: a lookup
+// failure never aborts the tracker, and there is no "failed" signal here since
+// MatchWork never errors (a miss is just !Found).
+func pollPolishTranslations(lc provider.PolishSource, st *store.Store, t store.Tracker, seen map[string]bool) (newReleases int, failed bool) {
+	primaries, err := st.PrimaryReleases(t.ID)
+	if err != nil {
+		return 0, true
+	}
+	for _, r := range primaries {
+		key := plTranslationPrefix + r.WorkID
+		if seen[key] {
+			continue
+		}
+		m := lc.MatchWork(r.Title, r.Author, nil)
+		if !m.Found {
+			continue
+		}
+		seen[key] = true
+		if _, err := st.UpsertRelease(t.ID, key, m.Title, t.Name, r.FirstPubDate, m.CoverURL, "translation-of"); err == nil {
 			newReleases++
 		}
 	}
