@@ -41,9 +41,14 @@ type Work struct {
 	Language     string   // OL language code, e.g. "eng"; empty if unknown
 	Languages    []string // every language OL has an edition of this work in (#45) — Language is just Languages[0], or "" if empty
 	CoverURL     string
-	Description  string
-	Editions     []Edition
-	ISBNs        []string // a few edition ISBNs — the cross-source key for Goodreads clustering (#40)
+	// CoverUnverified marks a cover borrowed via the opt-in unsafe ISBN match —
+	// the Goodreads book resolved by ISBN but its author didn't match, so the
+	// safe passes' author guard would normally reject it. The picker flags such
+	// a tile so the user knows the cover is a best-guess, not verified (#41).
+	CoverUnverified bool
+	Description     string
+	Editions        []Edition
+	ISBNs           []string // a few edition ISBNs — the cross-source key for Goodreads clustering (#40)
 }
 
 // Provider is the catalog lookup interface.

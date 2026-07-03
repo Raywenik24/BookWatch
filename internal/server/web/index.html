@@ -127,6 +127,21 @@
   .cover-vol { position: absolute; top: .4rem; left: .4rem; font-size: .72rem; font-weight: 600; padding: .1rem .4rem;
         border-radius: 4px; border: 1px solid var(--mauve); color: var(--mauve);
         background: color-mix(in srgb, var(--crust) 90%, transparent); }
+  /* unverified-cover marker (#41): a cover borrowed by ISBN alone, author unmatched */
+  .unsafe-mark { position: absolute; top: .4rem; left: .4rem; z-index: 2; width: 1.4rem; height: 1.4rem;
+        display: inline-flex; align-items: center; justify-content: center; font-size: .82rem; font-weight: 700;
+        border-radius: 50%; background: var(--yellow); color: var(--crust); box-shadow: 0 1px 4px rgba(0,0,0,.4); cursor: help; }
+  .unsafe-mark-inline { position: static; width: 1.05rem; height: 1.05rem; font-size: .72rem; vertical-align: middle; box-shadow: none; }
+  /* themed tooltip (replaces the native browser title=""): put text in data-tip
+     on any .tip element; a single shared #themeTip div (JS below, positioned
+     fixed) is shown on hover/focus instead of the browser's unstyled black box.
+     Rendered outside the DOM tree of the trigger element on purpose — an ::after
+     approach can't escape an ancestor's overflow:hidden (e.g. .cover-card, which
+     needs it to crop the cover image to its rounded corners). */
+  #themeTip { position: fixed; max-width: 240px; padding: .45rem .6rem; background: var(--mantle); color: var(--text);
+        border: 1px solid var(--surface1); border-radius: 6px; font-size: .78rem; font-weight: 400; line-height: 1.35;
+        box-shadow: 0 4px 16px rgba(0,0,0,.5); z-index: 1000; pointer-events: none; opacity: 0; transition: opacity .12s; }
+  #themeTip.show { opacity: 1; }
   .cover-x { position: absolute; top: .3rem; right: .3rem; width: 1.5rem; height: 1.5rem; padding: 0;
         border: 0; border-radius: 50%; cursor: pointer; font-size: 1.05rem; line-height: 1; opacity: 0;
         background: color-mix(in srgb, var(--crust) 78%, transparent); color: var(--text); transition: opacity .15s; }
@@ -164,6 +179,17 @@
   .cand-sub { font-size: .85rem; color: var(--subtext); }
   .cand-link { font-size: .8rem; white-space: nowrap; }
   input[type="checkbox"] { accent-color: var(--mauve); width: 1rem; height: 1rem; vertical-align: -.15em; margin-right: .3rem; }
+  /* reusable toggle switch (settings-style on/off) — checkbox visually hidden, .switch-track is the pill/knob */
+  .switch { position: relative; display: inline-block; width: 2.4rem; height: 1.4rem; flex: 0 0 auto; }
+  .switch input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
+  .switch-track { position: absolute; inset: 0; background: var(--surface1); border-radius: 999px; transition: background .15s; }
+  .switch-track::before { content: ""; position: absolute; top: .15rem; left: .15rem; width: 1.1rem; height: 1.1rem;
+        background: var(--text); border-radius: 50%; transition: transform .15s; }
+  .switch input:checked + .switch-track { background: var(--mauve); }
+  .switch input:checked + .switch-track::before { transform: translateX(1rem); background: var(--crust); }
+  .switch input:focus-visible + .switch-track { outline: 2px solid var(--mauve); outline-offset: 2px; }
+  .switch-row { display: flex; align-items: flex-start; gap: .6rem; cursor: pointer; }
+  .switch-row .switch { margin-top: .1rem; }
   .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 40;
         display: flex; align-items: flex-start; justify-content: center; padding: 4rem 1rem; overflow-y: auto; }
   .modal-backdrop[hidden] { display: none; }
@@ -398,6 +424,12 @@
           <label>New-note folder</label><input id="setNewNoteDir" placeholder="relative to vault">
           <label>Attachments folder</label><input id="setAttachDir" placeholder="relative to vault">
         </div>
+        <label class="switch-row" style="margin:.6rem 0 0">
+          <span class="switch"><input id="setUnsafeCover" type="checkbox"><span class="switch-track"></span></span>
+          <span>Use unsafe cover matching
+            <br><small class="muted">When a book has no OpenLibrary cover and no author-verified Goodreads match, borrow a Goodreads cover found by ISBN alone — even if the author doesn't match. Fills otherwise-blank Watchlist tiles (e.g. anthologies where your author is an uncredited contributor), but the cover is a best guess and may be wrong; such tiles are marked <span class="unsafe-mark unsafe-mark-inline">?</span>.</small>
+          </span>
+        </label>
         <div class="row"><button class="btn" onclick="saveSettings()">Save settings</button></div>
         <p class="muted"><small>Folders/scan-root override the server's env defaults. Theme and timezone are shared across devices.</small></p>
       </div>
@@ -438,6 +470,34 @@ const lsGet = k => { try { return localStorage.getItem(k); } catch(e){ return nu
 const lsSet = (k,v) => { try { localStorage.setItem(k,v); } catch(e){} };
 const token = () => lsGet('pw_token') || '';
 function esc(s){ return String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+/* ── themed tooltip: shared #themeTip div, positioned per-trigger on hover/focus
+   of any element carrying data-tip. Delegated on document so it works for
+   dynamically-rendered content (picker tiles, table rows) with no per-element
+   listener wiring. Appended to <body> so it's never clipped by a trigger's
+   overflow:hidden ancestor (e.g. the cover-card grid). ── */
+const themeTip = document.createElement('div');
+themeTip.id = 'themeTip';
+document.body.appendChild(themeTip);
+function showThemeTip(el){
+  const text = el.dataset.tip;
+  if(!text) return;
+  themeTip.textContent = text;
+  themeTip.classList.add('show');
+  const r = el.getBoundingClientRect();
+  const tw = themeTip.offsetWidth, th = themeTip.offsetHeight;
+  let left = r.left + r.width/2 - tw/2;
+  left = Math.max(4, Math.min(left, window.innerWidth - tw - 4));
+  let top = r.top - th - 8;
+  if(top < 4) top = r.bottom + 8; // not enough room above -> flip below
+  themeTip.style.left = left + 'px';
+  themeTip.style.top = top + 'px';
+}
+function hideThemeTip(){ themeTip.classList.remove('show'); }
+document.addEventListener('mouseover', e => { const t = e.target.closest('.tip'); if(t) showThemeTip(t); });
+document.addEventListener('mouseout', e => { if(e.target.closest('.tip')) hideThemeTip(); });
+document.addEventListener('focusin', e => { const t = e.target.closest('.tip'); if(t) showThemeTip(t); });
+document.addEventListener('focusout', e => { if(e.target.closest('.tip')) hideThemeTip(); });
 
 /* ── toasts: stacked top-right notifications ───────────────────────
    toast(text, type)   type = success | error | info | busy
@@ -890,6 +950,7 @@ async function loadSettings(){
   $('setScanRoot').value = eff.scan_root || '';
   $('setNewNoteDir').value = eff.new_note_dir || '';
   $('setAttachDir').value = eff.attachments_dir || '';
+  $('setUnsafeCover').checked = ov.unsafe_cover_match === '1';
   const theme = ov.theme || lsGet('pw_theme') || 'mocha';
   themePicker.setValue(theme); applyTheme(theme);
   if(ov.timezone){ TZ = ov.timezone; tzPicker.setValue(TZ); loadUpdates(); loadBooks(); loadLogs(); loadEvents(); }
@@ -1208,7 +1269,7 @@ async function delSource(id){
 async function saveSettings(){
   const body = { scan_root:$('setScanRoot').value.trim(), new_note_dir:$('setNewNoteDir').value.trim(),
                  attachments_dir:$('setAttachDir').value.trim(), theme:themePicker.getValue(),
-                 timezone:tzPicker.getValue() };
+                 timezone:tzPicker.getValue(), unsafe_cover_match:$('setUnsafeCover').checked ? '1' : '' };
   const r = await send('PUT','/api/settings',body); if(need(r)) return;
   if(r.ok){ TZ = tzPicker.getValue(); loadUpdates(); loadBooks(); loadLogs(); loadEvents(); }
   toast(r.ok?'Settings saved.':'Error: '+(r.data.error||r.status), r.ok?'success':'error');
@@ -1390,7 +1451,13 @@ function renderWlWorks(){
     // enrichment pass (startWlEnrichment) swaps in the accurate per-edition
     // value once resolved (#45).
     const badgeHidden = w.Language ? '' : ' hidden';
+    // Unsafe-match marker (#41): this cover was borrowed by ISBN alone, its
+    // author unverified, so it may be wrong — flag it so the choice is informed.
+    const unsafeMark = w.CoverUnverified
+      ? `<span class="unsafe-mark tip" tabindex="0" data-tip="Cover matched by ISBN only — the author didn't verify, so this cover may be the wrong book.">?</span>`
+      : '';
     return `<div class="cover-card${hasCover?'':' nocover'}" data-work-id="${esc(w.WorkID)}" onclick="selectWlWork('${esc(w.WorkID)}')" style="cursor:pointer;position:relative" title="${esc(w.Title)}"${hasCover?'':` data-gb-title="${esc(w.Title)}"`}>
+      ${unsafeMark}
       <span class="badge wl-lang-badge" style="position:absolute;top:.3rem;right:.3rem;font-size:.7rem"${badgeHidden}>${esc(w.Language||'')}</span>
       <div class="cover-link">${hasCover?`<img class="cover-img" src="${esc(w.CoverURL)}" loading="lazy" onerror="this.closest('.cover-card').classList.add('nocover');this.remove()">`:``}
         <div class="cover-title"><span class="wl-title-text">${esc(w.Title)}</span>${w.FirstPubYear?'<br><small class="muted">'+w.FirstPubYear+'</small>':''}</div>

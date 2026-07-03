@@ -70,17 +70,72 @@ func normTitle(t string) string {
 // current grouping. The two budgets are separate because the passes cost very
 // differently: Goodreads is one fetch per ISBN, Lubimyczytać is a title search
 // plus a book-page fetch, and a Polish author routes almost every survivor to
-// it — so lcBudget is kept small to bound picker latency. The LC pass also
-// spends its budget coverless-works-first, so the limited lookups go where they
-// show (backfilling a missing cover) rather than on works already covered.
+// it — so lcBudget is kept small to bound picker latency. Both passes spend
+// their budget coverless-works-first, so the limited lookups go where they
+// show (backfilling a missing cover) rather than on works already covered —
+// without it a prolific author (Masterton: 224 works) can exhaust the budget
+// on earlier-ordered already-covered works before reaching a coverless one.
 // Within a cluster the canonical entry is the earliest-year work, carrying the
 // best available cover. A nil matcher (source disabled or unavailable) simply
 // skips its pass, so the picker degrades gracefully rather than failing.
-func ClusterWorks(works []Work, author string, gr, lc Matcher, grBudget, lcBudget int) []Work {
+//
+// unsafeCovers opts into a final best-guess pass: for survivors *still* missing
+// a cover after the guarded passes, borrow a Goodreads cover matched by ISBN
+// alone — bypassing the author guard the safe passes enforce. It only ever
+// fills a cover (never a cluster id), and flags each borrowed cover
+// CoverUnverified so the picker can mark the tile, because without the guard the
+// ISBN could have resolved to a different book (an anthology Goodreads credits
+// to another author, a dirty OL ISBN). Off by default; the safeguard stays the
+// norm and this only touches tiles that would otherwise be blank.
+func ClusterWorks(works []Work, author string, gr, lc Matcher, grBudget, lcBudget int, unsafeCovers bool) []Work {
 	survivors := normMerge(works)
-	survivors = matcherPass(survivors, author, gr, grBudget, hasISBN, nil)
+	survivors = matcherPass(survivors, author, gr, grBudget, hasISBN, coverlessFirst)
 	survivors = matcherPass(survivors, author, lc, lcBudget, looksPolish, coverlessFirst)
+	if unsafeCovers {
+		survivors = unsafeCoverPass(survivors, gr, grBudget)
+	}
 	return sortNewestFirst(survivors)
+}
+
+// CoverSource resolves a cover from a work's ISBNs *without* the author-match
+// guard. *GRClient satisfies it via CoverByISBN. Used only by unsafeCoverPass —
+// kept a separate interface so the guarded Matcher passes can't accidentally
+// reach the unguarded lookup.
+type CoverSource interface {
+	CoverByISBN(isbns []string) string
+}
+
+// unsafeCoverPass is the opt-in last resort behind ClusterWorks' unsafeCovers
+// flag: for each survivor still coverless (and carrying an ISBN), borrow a
+// Goodreads cover matched by ISBN alone, skipping the author guard. The guard is
+// what proves the ISBN resolved to *this* author's book, so a cover it lets
+// through is unverified — flagged CoverUnverified for the UI to mark. Cover
+// only: the resolved work id is never trusted for clustering here, so a wrong
+// ISBN can at worst mis-picture one tile, never merge two works. Bounded by
+// budget like the guarded passes; the common case (a work the Goodreads pass
+// already looked up but rejected on author) is served from that pass's per-ISBN
+// cache, so no extra fetch. A gr that isn't a CoverSource (nil, or a fake in
+// tests) skips the pass.
+func unsafeCoverPass(works []Work, gr Matcher, budget int) []Work {
+	cs, ok := gr.(CoverSource)
+	if !ok {
+		return works
+	}
+	spent := 0
+	for i := range works {
+		if works[i].CoverURL != "" || len(works[i].ISBNs) == 0 {
+			continue
+		}
+		if spent >= budget {
+			break
+		}
+		spent++
+		if cov := cs.CoverByISBN(works[i].ISBNs); cov != "" {
+			works[i].CoverURL = cov
+			works[i].CoverUnverified = true
+		}
+	}
+	return works
 }
 
 // matcherPass merges the survivors that resolve to the same matcher work id,
@@ -156,9 +211,10 @@ func matcherPass(works []Work, author string, m Matcher, budget int, want func(W
 // through the /book/isbn entry point.
 func hasISBN(w Work) bool { return len(w.ISBNs) > 0 }
 
-// coverlessFirst orders the Lubimyczytać pass so works missing a cover are looked
-// up before ones that already have one — the small LC budget goes to the tiles
-// where a backfilled cover is actually visible.
+// coverlessFirst orders a matcher pass so works missing a cover are looked up
+// before ones that already have one — a limited budget goes to the tiles where
+// a backfilled cover is actually visible. Used by both the Goodreads and
+// Lubimyczytać passes.
 func coverlessFirst(w Work) int {
 	if w.CoverURL == "" {
 		return 0

@@ -24,6 +24,18 @@ func (f *fakeMatcher) MatchWork(_, author string, isbns []string) Match {
 	return Match{}
 }
 
+// CoverByISBN mirrors *GRClient's unguarded cover lookup, letting fakeMatcher
+// stand in as a CoverSource for the unsafe cover pass: a cover for the first
+// resolving ISBN, author guard skipped.
+func (f *fakeMatcher) CoverByISBN(isbns []string) string {
+	for _, isbn := range isbns {
+		if m, ok := f.byISBN[isbn]; ok && m.CoverURL != "" {
+			return m.CoverURL
+		}
+	}
+	return ""
+}
+
 // fakeTitleMatcher resolves by normalized title (mirroring the real LCClient),
 // standing in for live Lubimyczytać so the Polish pass runs offline.
 type fakeTitleMatcher struct {
@@ -69,7 +81,7 @@ func brettMatcher() *fakeMatcher {
 }
 
 func TestClusterWorksCollapsesTranslations(t *testing.T) {
-	got := ClusterWorks(brettWorks(), "Peter V. Brett", brettMatcher(), nil, 100, 100)
+	got := ClusterWorks(brettWorks(), "Peter V. Brett", brettMatcher(), nil, 100, 100, false)
 	// Goodreads shares one work id (6589794) across EN/FR/ES, but the language
 	// bucket keeps English split from French+Spanish (which merge with each
 	// other, both untagged) so a translation is never absorbed into the
@@ -108,7 +120,7 @@ func TestClusterWorksBackfillsCoverWithinLanguage(t *testing.T) {
 		{WorkID: "OL2W", Title: "Le Cycle des démons", FirstPubYear: 2009, CoverURL: "", ISBNs: []string{"FR1"}},
 		{WorkID: "OL3W", Title: "El hombre marcado", FirstPubYear: 2009, CoverURL: "", ISBNs: []string{"ES1"}},
 	}
-	got := ClusterWorks(works, "Peter V. Brett", brettMatcher(), nil, 100, 100)
+	got := ClusterWorks(works, "Peter V. Brett", brettMatcher(), nil, 100, 100, false)
 	if len(got) != 1 {
 		t.Fatalf("FR+ES share a work and a language bucket -> 1 cluster, got %d", len(got))
 	}
@@ -124,7 +136,7 @@ func TestClusterWorksDoesNotMergeAcrossLanguages(t *testing.T) {
 		{WorkID: "OL1W", Title: "The Warded Man", FirstPubYear: 2008, Language: "eng", ISBNs: []string{"EN1"}},
 		{WorkID: "OL2W", Title: "Le Cycle des démons", FirstPubYear: 2009, Language: "fre", ISBNs: []string{"FR1"}},
 	}
-	got := ClusterWorks(works, "Peter V. Brett", brettMatcher(), nil, 100, 100)
+	got := ClusterWorks(works, "Peter V. Brett", brettMatcher(), nil, 100, 100, false)
 	if len(got) != 2 {
 		t.Fatalf("differently-tagged languages sharing a GR id must stay separate, got %d: %+v", len(got), got)
 	}
@@ -141,7 +153,7 @@ func TestClusterWorksRejectsDirtyISBN(t *testing.T) {
 		"EN1":   {Found: true, WorkID: "6589794", Author: "Peter V. Brett"},
 		"DIRTY": {Found: true, WorkID: "3360681", Author: "Jane Doe"},
 	}}
-	got := ClusterWorks(works, "Peter V. Brett", m, nil, 100, 100)
+	got := ClusterWorks(works, "Peter V. Brett", m, nil, 100, 100, false)
 	if len(got) != 2 {
 		t.Fatalf("dirty ISBN must not merge -> 2 entries, got %d: %+v", len(got), got)
 	}
@@ -152,7 +164,7 @@ func TestClusterWorksNoISBNSkipsLookup(t *testing.T) {
 	works := []Work{
 		{WorkID: "OLx", Title: "The Warded Man", FirstPubYear: 2008}, // no ISBNs
 	}
-	ClusterWorks(works, "Peter V. Brett", m, nil, 100, 100)
+	ClusterWorks(works, "Peter V. Brett", m, nil, 100, 100, false)
 	if m.calls != 0 {
 		t.Errorf("a work with no ISBN should trigger no Goodreads lookup, got %d", m.calls)
 	}
@@ -164,7 +176,7 @@ func TestClusterWorksTitleNormFallback(t *testing.T) {
 		Work{WorkID: "OL6W", Title: "The Warded Man (Demon Cycle Box Set)", FirstPubYear: 2012},
 		Work{WorkID: "OL7W", Title: "the warded man", FirstPubYear: 2015},
 	)
-	got := ClusterWorks(works, "Peter V. Brett", nil, nil, 0, 0)
+	got := ClusterWorks(works, "Peter V. Brett", nil, nil, 0, 0, false)
 	for _, w := range got {
 		if strings.Contains(strings.ToLower(w.Title), "box set") {
 			t.Errorf("box set should be dropped: %q", w.Title)
@@ -179,9 +191,82 @@ func TestClusterWorksTitleNormFallback(t *testing.T) {
 
 func TestClusterWorksRespectsLookupBudget(t *testing.T) {
 	m := brettMatcher()
-	ClusterWorks(brettWorks(), "Peter V. Brett", m, nil, 2, 2)
+	ClusterWorks(brettWorks(), "Peter V. Brett", m, nil, 2, 2, false)
 	if m.calls != 2 {
 		t.Errorf("matcher should be called exactly maxLookups=2 times, got %d", m.calls)
+	}
+}
+
+func TestClusterWorksGRBudgetPrioritizesCoverless(t *testing.T) {
+	// #41: a prolific author's Goodreads pass must spend its limited budget on
+	// coverless works first, not exhaust it on earlier-ordered works that already
+	// have a cover. Three ISBN-bearing works in list order, the first already
+	// covered; with budget=2 the pass must skip it and backfill the two coverless
+	// ones rather than looking up the covered one and starving a later coverless.
+	works := []Work{
+		{WorkID: "A", Title: "Already Has A Cover", CoverURL: "have.jpg", ISBNs: []string{"IA"}},
+		{WorkID: "B", Title: "Coverless One", CoverURL: "", ISBNs: []string{"IB"}},
+		{WorkID: "C", Title: "Coverless Two", CoverURL: "", ISBNs: []string{"IC"}},
+	}
+	gr := &fakeMatcher{byISBN: map[string]Match{
+		"IA": {Found: true, WorkID: "gr:1", CoverURL: "gr-a.jpg", Author: "Graham Masterton"},
+		"IB": {Found: true, WorkID: "gr:2", CoverURL: "gr-b.jpg", Author: "Graham Masterton"},
+		"IC": {Found: true, WorkID: "gr:3", CoverURL: "gr-c.jpg", Author: "Graham Masterton"},
+	}}
+
+	got := ClusterWorks(works, "Graham Masterton", gr, nil, 2, 0, false)
+	if gr.calls != 2 {
+		t.Fatalf("budget=2 should mean exactly 2 lookups, got %d", gr.calls)
+	}
+	byTitle := map[string]Work{}
+	for _, w := range got {
+		byTitle[w.Title] = w
+	}
+	if byTitle["Coverless One"].CoverURL != "gr-b.jpg" || byTitle["Coverless Two"].CoverURL != "gr-c.jpg" {
+		t.Errorf("coverless works should have been backfilled first: %+v", got)
+	}
+	if byTitle["Already Has A Cover"].CoverURL != "have.jpg" {
+		t.Errorf("already-covered work should keep its cover (and not consume budget): %+v", byTitle["Already Has A Cover"])
+	}
+}
+
+func findByTitle(works []Work, title string) Work {
+	for _, w := range works {
+		if w.Title == title {
+			return w
+		}
+	}
+	return Work{}
+}
+
+func TestClusterWorksUnsafeCoverPass(t *testing.T) {
+	// Mirrors Wassailers (#41): an anthology whose OL ISBN resolves on Goodreads
+	// to a real book+cover, but credited to a different author — so the safe
+	// pass's author guard rejects it and the tile stays coverless. A normal
+	// same-author work gets its cover through the guarded pass.
+	works := []Work{
+		{WorkID: "OK", Title: "A Real Masterton Novel", CoverURL: "", ISBNs: []string{"GOOD"}},
+		{WorkID: "ANTH", Title: "The Wassailers", CoverURL: "", ISBNs: []string{"ANTHO"}},
+	}
+	gr := &fakeMatcher{byISBN: map[string]Match{
+		"GOOD":  {Found: true, WorkID: "gr:1", CoverURL: "gr-good.jpg", Author: "Graham Masterton"},
+		"ANTHO": {Found: true, WorkID: "gr:2", CoverURL: "gr-anth.jpg", Author: "Em Dehaney"}, // different author
+	}}
+
+	// Off (default): the guard holds, the anthology tile stays blank.
+	off := ClusterWorks(works, "Graham Masterton", gr, nil, 60, 0, false)
+	if a := findByTitle(off, "The Wassailers"); a.CoverURL != "" || a.CoverUnverified {
+		t.Errorf("unsafe off: anthology should stay coverless, got cover=%q unverified=%v", a.CoverURL, a.CoverUnverified)
+	}
+
+	// On: the anthology borrows the Goodreads cover, flagged unverified; the
+	// legitimately-matched novel keeps its guarded (verified, unflagged) cover.
+	on := ClusterWorks(works, "Graham Masterton", gr, nil, 60, 0, true)
+	if a := findByTitle(on, "The Wassailers"); a.CoverURL != "gr-anth.jpg" || !a.CoverUnverified {
+		t.Errorf("unsafe on: anthology should borrow the cover flagged unverified, got cover=%q unverified=%v", a.CoverURL, a.CoverUnverified)
+	}
+	if n := findByTitle(on, "A Real Masterton Novel"); n.CoverURL != "gr-good.jpg" || n.CoverUnverified {
+		t.Errorf("guarded match must not be flagged unverified, got cover=%q unverified=%v", n.CoverURL, n.CoverUnverified)
 	}
 }
 
@@ -206,7 +291,7 @@ func TestClusterWorksPolishSecondPass(t *testing.T) {
 		"malowany człowiek: księga i": {Found: true, WorkID: "cykl:1594#1", CoverURL: "lc-pl.jpg", Author: "Peter V. Brett"},
 	}}
 
-	got := ClusterWorks(works, "Peter V. Brett", gr, lc, 100, 100)
+	got := ClusterWorks(works, "Peter V. Brett", gr, lc, 100, 100, false)
 	if len(got) != 2 {
 		t.Fatalf("want 2 clusters (English bk1, merged Polish bk1), got %d: %+v", len(got), got)
 	}
@@ -243,7 +328,7 @@ func TestClusterWorksLCBudgetPrioritizesCoverless(t *testing.T) {
 		normTitle("Inna książka pusta"):     {Found: true, WorkID: "lc:3", CoverURL: "lc-c.jpg", Author: "Stanisław Lem"},
 	}}
 
-	got := ClusterWorks(works, "Stanisław Lem", nil, lc, 0, 2)
+	got := ClusterWorks(works, "Stanisław Lem", nil, lc, 0, 2, false)
 	if lc.calls != 2 {
 		t.Fatalf("budget=2 should mean exactly 2 lookups, got %d", lc.calls)
 	}

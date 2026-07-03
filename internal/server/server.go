@@ -700,6 +700,7 @@ func (s *Server) handleOLAuthorWorks(w http.ResponseWriter, r *http.Request) {
 	// pure pass-1 title-normalization result is returned.
 	author := r.URL.Query().Get("author")
 	var gr, lc provider.Matcher
+	var unsafeCovers bool
 	if r.URL.Query().Get("cluster") == "1" {
 		if s.gr != nil {
 			gr = s.gr
@@ -707,8 +708,13 @@ func (s *Server) handleOLAuthorWorks(w http.ResponseWriter, r *http.Request) {
 		if s.lc != nil {
 			lc = s.lc
 		}
+		// Opt-in (Settings): when neither OL nor a guarded match yields a cover,
+		// borrow a Goodreads cover by ISBN alone, flagged unverified (#41).
+		if v, ok, _ := s.st.GetSetting("unsafe_cover_match"); ok && v == "1" {
+			unsafeCovers = true
+		}
 	}
-	respond(w, provider.ClusterWorks(works, author, gr, lc, grClusterBudget, lcClusterBudget), nil)
+	respond(w, provider.ClusterWorks(works, author, gr, lc, grClusterBudget, lcClusterBudget, unsafeCovers), nil)
 }
 
 func (s *Server) handleOLSearch(w http.ResponseWriter, r *http.Request) {
