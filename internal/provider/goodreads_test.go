@@ -256,3 +256,25 @@ func TestStripSeries(t *testing.T) {
 		}
 	}
 }
+
+// TestGRDescription guards #42: og:description is truncated by Goodreads to
+// one sentence plus an ellipsis, so the real blurb has to come from the
+// page's embedded Apollo JSON instead. This fixture carries both, trimmed
+// from a live page, plus a second book/show node (another edition, no
+// description key) to confirm the regex doesn't grab the wrong one.
+func TestGRDescription(t *testing.T) {
+	html := `<!DOCTYPE html><html><head>
+<meta property="og:description" content="Later it was said the man came from the north…"/>
+</head><body><script>
+window.__APOLLO_STATE__ = {"Book:1":{"webUrl":"https://www.goodreads.com/book/show/40603587-the-last-wish"},"Book:2":{"webUrl":"https://www.goodreads.com/book/show/23592346-ostatnie-yczenie","description":"Later it was said the man came from the north, from the Rope Bridge.<br /><br />He was not old, but his hair was pure white."}};
+</script></body></html>`
+	if got := grDescription(html); got != "Later it was said the man came from the north, from the Rope Bridge.\n\nHe was not old, but his hair was pure white." {
+		t.Errorf("grDescription() = %q", got)
+	}
+}
+
+func TestGRDescriptionNoMatch(t *testing.T) {
+	if got := grDescription(`<html><body>no json here</body></html>`); got != "" {
+		t.Errorf("grDescription() = %q, want empty", got)
+	}
+}

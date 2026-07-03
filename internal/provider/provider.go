@@ -31,6 +31,12 @@ type Edition struct {
 	Title    string
 	Language string
 	CoverURL string
+	// ISBN is this edition's own ISBN (13-digit preferred, else 10) — the
+	// language-correct cross-source key for a Goodreads/Lubimyczytać
+	// description/author backfill (#42). Work.ISBNs mixes every edition's
+	// ISBN regardless of language, which risks resolving a translated
+	// edition's blurb for a work whose display language is different.
+	ISBN string
 }
 
 // Work is a catalog work record.
@@ -101,6 +107,19 @@ func FindEdition(eds []Edition, lang string) (Edition, bool) {
 		}
 	}
 	return Edition{}, false
+}
+
+// EditionISBNs returns the ISBNs of every edition tagged with lang — the
+// language-scoped ISBN set for a Goodreads/Lubimyczytać backfill match (#42),
+// as opposed to Work.ISBNs' unfiltered mix of every translation's ISBNs.
+func EditionISBNs(eds []Edition, lang string) []string {
+	var out []string
+	for _, e := range eds {
+		if e.Language == lang && e.ISBN != "" {
+			out = append(out, e.ISBN)
+		}
+	}
+	return out
 }
 
 // SelectCover returns the cover URL for the first edition matching lang.

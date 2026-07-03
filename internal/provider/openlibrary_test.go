@@ -68,12 +68,14 @@ const editionsFixture = `{
     {
       "title": "The Warded Man",
       "languages": [{"key": "/languages/eng"}],
-      "covers": [7890277]
+      "covers": [7890277],
+      "isbn_13": ["9780345518705"]
     },
     {
       "title": "Malowany człowiek",
       "languages": [{"key": "/languages/pol"}],
-      "covers": [9876543]
+      "covers": [9876543],
+      "isbn_13": ["9788375740578"]
     },
     {
       "languages": [],
@@ -262,6 +264,21 @@ func TestWorkDetail(t *testing.T) {
 	// third edition has no language or cover
 	if got.Editions[2].CoverURL != "" {
 		t.Errorf("ed[2] cover should be empty, got %q", got.Editions[2].CoverURL)
+	}
+	if got.Editions[0].ISBN != "9780345518705" {
+		t.Errorf("ed[0] isbn %q", got.Editions[0].ISBN)
+	}
+	if got.Editions[1].ISBN != "9788375740578" {
+		t.Errorf("ed[1] isbn %q", got.Editions[1].ISBN)
+	}
+	// EditionISBNs must only surface the requested language's ISBNs (#42) —
+	// a caller backfilling an "eng" work's description must never receive
+	// the "pol" edition's ISBN, or it'll resolve the wrong language's blurb.
+	if got := EditionISBNs(got.Editions, "eng"); !slicesEqual(got, []string{"9780345518705"}) {
+		t.Errorf("EditionISBNs(eng) = %v", got)
+	}
+	if got := EditionISBNs(got.Editions, "pol"); !slicesEqual(got, []string{"9788375740578"}) {
+		t.Errorf("EditionISBNs(pol) = %v", got)
 	}
 }
 

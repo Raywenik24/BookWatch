@@ -480,6 +480,11 @@ func (s *Server) handleAddBook(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// maxBackfillISBNs caps how many same-language ISBNs the #42 author/
+// description backfill tries — the matcher stops at the first that
+// resolves, so a long list only adds dead lookups.
+const maxBackfillISBNs = 5
+
 // addBookFromCatalog creates a #Book note from an OpenLibrary candidate (no
 // scraping) — issue #34's add-a-book path. The cover is the catalog-language
 // edition (falls back to any edition with a cover); if watch_author is set,
@@ -502,6 +507,41 @@ func (s *Server) addBookFromCatalog(w http.ResponseWriter, body addBookBody) {
 	if work, err := s.ol.WorkDetail(body.WorkID); err == nil {
 		coverURL = provider.SelectCover(work, lang)
 		description = work.Description
+		// OL's own index can be missing author/description on a sparse
+		// translation work record (#42) — try the same matchers the
+		// baseline picker uses to backfill from Goodreads/Lubimyczytać.
+		// Only the catalog-language edition's own ISBNs are offered: a
+		// work's other editions resolve to *their* language's blurb on
+		// Goodreads (verified live on Glen Cook's "The White Rose" —
+		// an English work whose editions.json lists a German ISBN
+		// first), so mixing every edition's ISBNs risks backfilling the
+		// wrong language entirely.
+		if body.Author == "" || description == "" {
+			isbns := provider.EditionISBNs(work.Editions, lang)
+			if len(isbns) > maxBackfillISBNs {
+				isbns = isbns[:maxBackfillISBNs]
+			}
+			var matchers []provider.Matcher
+			if s.gr != nil {
+				matchers = append(matchers, s.gr)
+			}
+			if s.lc != nil {
+				matchers = append(matchers, s.lc)
+			}
+			for _, m := range matchers {
+				if body.Author != "" && description != "" {
+					break
+				}
+				if gm := m.MatchWork(work.Title, body.Author, isbns); gm.Found {
+					if body.Author == "" && gm.Author != "" {
+						body.Author = gm.Author
+					}
+					if description == "" && gm.Description != "" {
+						description = gm.Description
+					}
+				}
+			}
+		}
 	}
 
 	opts := notes.Options{

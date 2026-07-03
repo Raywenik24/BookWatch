@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -58,7 +59,12 @@ type Match struct {
 	Title    string
 	CoverURL string
 	Author   string
-	Found    bool
+	// Description is the book blurb, when the matcher can read one off the
+	// resolved page — used to backfill a sparse OL work record that has no
+	// description of its own (#42). Lubimyczytać's matcher never sets this
+	// (its search-tile hits don't carry a blurb); Goodreads does.
+	Description string
+	Found       bool
 }
 
 // NewGoodreads creates a Goodreads ISBN-resolution client. A blank userAgent
@@ -184,23 +190,35 @@ func (c *GRClient) fetch(path string) (*goquery.Document, error) {
 // --- pure parse helpers (fixture-tested) ---
 
 var (
-	grWorkIDRE    = regexp.MustCompile(`/work/editions/(\d+)`)
-	grCoverSize   = regexp.MustCompile(`\._S[XY]\d+_(\.(?:jpg|jpeg|png|gif))$`)
-	grSeriesNum   = regexp.MustCompile(`#([\d.]+)`)
-	grAuthorSlug  = regexp.MustCompile(`/author/show/\d+\.([A-Za-z0-9_]+)`)
-	grLDPersonRE  = regexp.MustCompile(`"@type":"Person","name":"([^"]+)"`)
+	grWorkIDRE   = regexp.MustCompile(`/work/editions/(\d+)`)
+	grCoverSize  = regexp.MustCompile(`\._S[XY]\d+_(\.(?:jpg|jpeg|png|gif))$`)
+	grSeriesNum  = regexp.MustCompile(`#([\d.]+)`)
+	grAuthorSlug = regexp.MustCompile(`/author/show/\d+\.([A-Za-z0-9_]+)`)
+	grLDPersonRE = regexp.MustCompile(`"@type":"Person","name":"([^"]+)"`)
+	// grDescRE captures the full blurb out of the page's embedded Apollo JSON
+	// state. og:description is NOT this — Goodreads truncates that meta tag to
+	// one sentence plus an ellipsis (confirmed live, #42). The book's own JSON
+	// node is the only one in the page whose "webUrl":".../book/show/<id>-..."
+	// is immediately followed by a "description" key — sibling nodes for other
+	// editions of the same work appear in the same blob but without one.
+	grDescRE    = regexp.MustCompile(`"webUrl":"https://www\.goodreads\.com/book/show/[^"]*","description":"((?:[^"\\]|\\.)*)"`)
+	grBRTagRE   = regexp.MustCompile(`(?i)<br\s*/?>`)
+	grTagRE     = regexp.MustCompile(`<[^>]+>`)
+	grBlankRuns = regexp.MustCompile(`\n{3,}`)
 )
 
 // parseGRBook reads a Goodreads book page into a Match (work id, title, cover,
-// author). The work id — the dedup key every edition shares — appears as a
-// "/work/editions/<id>" reference inside the page's embedded JSON (not as an
-// <a href>, so it's matched by regex over the raw HTML); the cover and title come
-// from Open Graph meta; the author from JSON-LD (falling back to the
-// /author/show/ slug) for the dirty-ISBN guard.
+// author, description). The work id — the dedup key every edition shares —
+// appears as a "/work/editions/<id>" reference inside the page's embedded
+// JSON (not as an <a href>, so it's matched by regex over the raw HTML); the
+// cover and title come from Open Graph meta; the author from JSON-LD
+// (falling back to the /author/show/ slug) for the dirty-ISBN guard; the
+// description from that same embedded JSON (see grDescRE).
 func parseGRBook(doc *goquery.Document) Match {
 	var m Match
 	if html, err := doc.Html(); err == nil {
 		m.WorkID = firstSubmatch(grWorkIDRE, html)
+		m.Description = grDescription(html)
 	}
 	m.Title = stripSeries(grMeta(doc, "og:title"))
 	if cov := grFullCover(grMeta(doc, "og:image")); !grPlaceholderCover(cov) {
@@ -208,6 +226,24 @@ func parseGRBook(doc *goquery.Document) Match {
 	}
 	m.Author = grAuthor(doc)
 	return m
+}
+
+// grDescription extracts and unescapes the book's blurb from the page's
+// embedded JSON (see grDescRE), then drops the HTML markup Goodreads embeds
+// in it (<br />) in favor of blank lines between paragraphs.
+func grDescription(html string) string {
+	m := grDescRE.FindStringSubmatch(html)
+	if m == nil {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal([]byte(`"`+m[1]+`"`), &s); err != nil {
+		return ""
+	}
+	s = grBRTagRE.ReplaceAllString(s, "\n\n")
+	s = grTagRE.ReplaceAllString(s, "")
+	s = grBlankRuns.ReplaceAllString(s, "\n\n")
+	return strings.TrimSpace(s)
 }
 
 // grAuthor extracts the book's author name for the guard. JSON-LD carries it
