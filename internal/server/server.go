@@ -176,6 +176,9 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 	b, _ := webFS.ReadFile("web/index.html")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	// The UI is embedded in the binary, so "refresh after rebuild" only works if
+	// the browser doesn't serve a cached copy of the previous build's HTML.
+	w.Header().Set("Cache-Control", "no-cache")
 	w.Write(b)
 }
 

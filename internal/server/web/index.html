@@ -4,6 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>BookWatch</title>
+<!-- Themed book favicon (matches the header 📖 — mauve on Catppuccin base), inline
+     as a data-URI SVG so it stays in this single embedded file. CSP img-src allows
+     data:; browsers without SVG-favicon support just fall back to the generic icon. -->
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='7'%20fill='%231e1e2e'/%3E%3Cpath%20d='M16%209C13.5%207.5%2010.5%207%207%207v14c3.5%200%206.5.5%209%202%202.5-1.5%205.5-2%209-2V7c-3.5%200-6.5.5-9%202z'%20fill='none'%20stroke='%23cba6f7'%20stroke-width='1.8'%20stroke-linejoin='round'/%3E%3Cline%20x1='16'%20y1='9'%20x2='16'%20y2='23'%20stroke='%23cba6f7'%20stroke-width='1.8'/%3E%3C/svg%3E">
 <style>
   /* Catppuccin palettes */
   html[data-theme="mocha"] {
@@ -18,9 +22,19 @@
   }
   * { box-sizing: border-box; }
   ::selection { background: color-mix(in srgb, var(--mauve) 45%, transparent); color: var(--text); }
-  body { font: 15px/1.5 system-ui, sans-serif; margin: 0; background: var(--base); color: var(--text); }
+  /* Fixed header + a single scrolling content pane (#scroll) below it, rather
+     than scrolling the whole document. This keeps the vertical scrollbar under
+     the menu bar (not alongside it) and, because #scroll always reserves its
+     gutter, the centered <main> never shifts when a tab's height crosses the
+     viewport — the two things #48 asked for. */
+  body { font: 15px/1.5 system-ui, sans-serif; margin: 0; background: var(--base); color: var(--text);
+         height: 100vh; height: 100dvh; display: flex; flex-direction: column; overflow: hidden; }
   header { background: var(--mantle); padding: .8rem 1.2rem; display: flex; align-items: center;
-           gap: 1rem; flex-wrap: wrap; border-bottom: 1px solid var(--surface0); position: sticky; top: 0; z-index: 5; }
+           gap: 1rem; flex-wrap: wrap; border-bottom: 1px solid var(--surface0); flex: 0 0 auto; z-index: 5; }
+  /* the only scroll container. overflow-x:hidden clips the ~15px the 100vw
+     full-bleed rows (#booksGrid, #wlWorksList) overshoot into the gutter, so
+     they stay symmetric with no horizontal scrollbar. */
+  #scroll { flex: 1 1 auto; overflow-y: auto; overflow-x: hidden; scrollbar-gutter: stable; }
   header h1 { font-size: 1.2rem; margin: 0; color: var(--mauve); }
   nav { display: flex; gap: .3rem; flex-wrap: wrap; }
   nav button { background: transparent; color: var(--subtext); border: 0; padding: .4rem .7rem;
@@ -43,6 +57,10 @@
   button.btn { background: var(--peach); border: 0; color: var(--crust); font-weight: 600; cursor: pointer; }
   button.btn.ghost { background: var(--surface0); color: var(--text); }
   button.btn.ghost.active { background: var(--surface1); color: var(--text); }
+  /* destructive/reset ghost button — red-tinted so it reads as "clears things",
+     filling solid red on hover. Still Catppuccin (#48 Clear filters). */
+  button.btn.ghost.danger { background: color-mix(in srgb, var(--red) 16%, var(--surface0)); color: var(--red); }
+  button.btn.ghost.danger:hover { background: var(--red); color: var(--crust); }
   button.btn:disabled { opacity: .5; cursor: default; }
   table { width: 100%; border-collapse: collapse; }
   th, td { text-align: left; padding: .4rem .5rem; border-bottom: 1px solid var(--surface0); font-size: .9rem; vertical-align: top; }
@@ -72,6 +90,10 @@
   a:visited { color: var(--lavender); }
   td.nowrap, th.nowrap { white-space: nowrap; }
   small, .muted { color: var(--subtext); }
+  /* centered, muted empty-state message for the Books views (#48) — reads as
+     information, not an error. In the grid it must span every column. */
+  .empty-state { text-align: center; color: var(--subtext); padding: 2.5rem 1rem; }
+  .cover-grid .empty-state { grid-column: 1 / -1; }
   /* toasts: stacked top-right, color-coded, auto-dismissing */
   #toasts { position: fixed; top: 4rem; right: .8rem; z-index: 50; display: flex; flex-direction: column;
             gap: .5rem; max-width: min(360px, calc(100vw - 1.6rem)); }
@@ -217,6 +239,7 @@
 
   <div id="toasts"></div>
 
+  <div id="scroll">
   <main>
     <div id="progress" hidden>
       <div class="bar"><span id="progressFill"></span></div>
@@ -292,6 +315,12 @@
         <button class="btn ghost filter-btn" id="filterNoPlanBtn" data-f="no plan to read" onclick="setStatusFilter('no plan to read')">No Plan to read</button>
         <button class="btn ghost filter-btn filter-validate" id="filterValidateBtn" data-f="validate" onclick="setStatusFilter('validate')">Validate</button>
       </div>
+      <!-- Resets only the content filters (search, author, status); view prefs
+           (kind, Table/Grid, sort) are kept. Shown only when a filter is set (#48).
+           Right-aligned to sit under the Validate button. -->
+      <div class="row" id="clearFiltersRow" hidden style="justify-content:flex-end;margin-top:0">
+        <button class="btn ghost danger" id="clearFiltersBtn" onclick="clearBookFilters()">Clear filters</button>
+      </div>
       <table id="booksTable"><thead><tr><th>Title</th><th>Vol</th><th>Link</th><th>Last checked</th><th></th></tr></thead>
       <tbody id="booksBody"><tr><td>loading…</td></tr></tbody></table>
       <div id="booksGrid" class="cover-grid" hidden></div>
@@ -301,8 +330,8 @@
     <section id="sources">
       <div class="row" style="margin-bottom:.6rem">
         <div class="viewtoggle">
-          <button id="srcTabRules" class="btn ghost active" onclick="setSrcTab('rules')">Scrape rules</button>
-          <button id="srcTabWatchlist" class="btn ghost" onclick="setSrcTab('watchlist')">Watchlist</button>
+          <button id="srcTabWatchlist" class="btn ghost active" onclick="setSrcTab('watchlist')">Watchlist</button>
+          <button id="srcTabRules" class="btn ghost" onclick="setSrcTab('rules')">Scrape rules</button>
         </div>
       </div>
 
@@ -469,6 +498,7 @@
       </div>
     </section>
   </main>
+  </div>
 
 <script>
 const $ = id => document.getElementById(id);
@@ -911,6 +941,36 @@ function toggleSort(){
   $('sortBtn').textContent = bookSort === 'asc' ? '↑ A–Z' : '↓ Z–A';
   renderBooks($('bookFilter') ? $('bookFilter').value : '');
 }
+/* Context-aware empty-state text (#48): explain WHY a view is empty — which
+   filter matched nothing, or that nothing's tracked yet — rather than a bare
+   "none". Precedence mirrors how specific each filter is. */
+function statusFilterLabel(){
+  const b = document.querySelector('.filter-btn[data-f="' + statusFilter + '"]');
+  return b ? b.textContent.trim() : statusFilter;
+}
+function booksEmptyMessage(q){
+  if(q) return 'No matches for “' + esc(q) + '”.';
+  if(authorQuery) return 'No authors match “' + esc(authorQuery) + '”.';
+  if(authorFilter) return 'No books by ' + esc(authorFilter) + '.';
+  if(statusFilter === 'validate') return 'No books need validating.';
+  if(statusFilter) return 'No books with status “' + esc(statusFilterLabel()) + '” yet.';
+  const noun = kindView === 'ln' ? 'light novels' : kindView === 'book' ? 'books' : 'tracked books';
+  return 'No ' + noun + ' yet — add one above to start tracking.';
+}
+/* content filters = search + author (dropdown & fuzzy) + status; NOT view
+   prefs (kind, table/grid, sort). Drives the "Clear filters" button (#48). */
+function anyBookFilterActive(){
+  const q = $('bookFilter') ? $('bookFilter').value.trim() : '';
+  return !!(q || authorFilter || authorQuery || statusFilter);
+}
+function clearBookFilters(){
+  if($('bookFilter')) $('bookFilter').value = '';
+  if($('authorQueryInput')) $('authorQueryInput').value = '';
+  authorQuery = '';
+  authorFilter = '';
+  if(authorPicker) authorPicker.setValue('');
+  setStatusFilter(''); // resets the status buttons and re-renders (also hides this button)
+}
 function renderBooks(q){
   q = (q || '').trim();
   let list = booksData;
@@ -926,6 +986,7 @@ function renderBooks(q){
     list = list.filter(x => (x.status||'').toLowerCase() === statusFilter);
   }
   list = list.slice().sort((a,b) => bookSort === 'asc' ? a.title.localeCompare(b.title) : b.title.localeCompare(a.title));
+  if($('clearFiltersRow')) $('clearFiltersRow').hidden = !anyBookFilterActive();
   if(bookView === 'grid') renderBooksGrid(list, q); else renderBooksTable(list, q);
 }
 function renderBooksTable(list, q){
@@ -937,8 +998,7 @@ function renderBooksTable(list, q){
      <td class="nowrap"><small>${esc(fmtTime(x.last_checked_at))}</small></td>
      <td><button class="btn ghost" title="${esc(UNTRACK_TIP)}" onclick="untrack(${x.id}, this)">Untrack</button></td></tr>`;
   }).join('')
-    : (q ? '<tr><td><span class="muted">no matches</span></td></tr>'
-         : '<tr><td><span class="muted">none</span></td></tr>');
+    : `<tr><td colspan="5" class="empty-state">${booksEmptyMessage(q)}</td></tr>`;
 }
 function renderBooksGrid(list, q){
   $('booksGrid').innerHTML = list.length ? list.map(x => {
@@ -956,7 +1016,7 @@ function renderBooksGrid(list, q){
       ${vol}
       <button class="cover-x" title="${esc(UNTRACK_TIP)}" aria-label="Untrack" onclick="untrack(${x.id}, this)">&times;</button>
     </div>`;
-  }).join('') : `<div class="muted">${q ? 'no matches' : 'none'}</div>`;
+  }).join('') : `<div class="empty-state">${booksEmptyMessage(q)}</div>`;
 }
 async function untrack(id, btn){
   btn.disabled = true;
@@ -1384,7 +1444,7 @@ async function saveSettings(){
 }
 
 /* ── Sources sub-tabs ────────────────────────────────────────── */
-let srcTab = lsGet('src_tab') || 'rules';
+let srcTab = lsGet('src_tab') || 'watchlist';
 function setSrcTab(t){
   srcTab = t; lsSet('src_tab', t);
   $('srcTabRules').classList.toggle('active', t==='rules');
