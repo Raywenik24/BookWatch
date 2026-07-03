@@ -46,6 +46,7 @@ type Server struct {
 	ol    provider.Provider
 	gb    *provider.GBClient
 	gr    *provider.GRClient
+	lc    *provider.LCClient
 
 	coverMu  sync.Mutex
 	coverIdx map[string]string // basename → abs path, lazy vault-wide cover index
@@ -57,8 +58,8 @@ type Server struct {
 // tests can force a rebuild.
 var coverIdxTTL = 5 * time.Minute
 
-func New(cfg config.Config, st *store.Store, sc *scraper.Client, sched *scheduler.Scheduler, ol provider.Provider, gb *provider.GBClient, gr *provider.GRClient) *Server {
-	return &Server{cfg: cfg, st: st, sc: sc, sched: sched, ol: ol, gb: gb, gr: gr}
+func New(cfg config.Config, st *store.Store, sc *scraper.Client, sched *scheduler.Scheduler, ol provider.Provider, gb *provider.GBClient, gr *provider.GRClient, lc *provider.LCClient) *Server {
+	return &Server{cfg: cfg, st: st, sc: sc, sched: sched, ol: ol, gb: gb, gr: gr, lc: lc}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -666,13 +667,23 @@ func (s *Server) handleOLAuthors(w http.ResponseWriter, r *http.Request) {
 	respond(w, results, err)
 }
 
-// clusterBudget caps how many Goodreads ISBN lookups one author-works request may
-// trigger. Each is a polite ~0.7s-throttled fetch of an ~800 KB book page, so a
-// full refine on a prolific author runs on the order of a minute — acceptable
-// because the picker fires it in the background over the fast view and the
-// per-ISBN cache makes repeat visits free. Survivors past the budget keep their
-// title-normalization grouping.
-const clusterBudget = 60
+// grClusterBudget caps how many Goodreads ISBN lookups one author-works request
+// may trigger. Each is a polite ~0.7s-throttled fetch of an ~800 KB book page,
+// so a full refine on a prolific author runs on the order of a minute —
+// acceptable because the picker fires it in the background over the fast view
+// and the per-ISBN cache makes repeat visits free.
+//
+// lcClusterBudget is smaller: a Polish author routes nearly every survivor to
+// the Lubimyczytać pass, so an unbounded LC pass is what originally turned a
+// Polish-author refine into minutes. Now that a lookup is a single search
+// request (no follow-up book-page fetch), the budget can afford to be a bit
+// higher and still land well under the old ceiling; spent coverless-works-first,
+// it backfills the most visible Polish covers first. Survivors past either
+// budget keep their title-normalization grouping.
+const (
+	grClusterBudget = 60
+	lcClusterBudget = 25
+)
 
 func (s *Server) handleOLAuthorWorks(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
@@ -687,11 +698,16 @@ func (s *Server) handleOLAuthorWorks(w http.ResponseWriter, r *http.Request) {
 	// blocks the first render. Without it (or without a Goodreads client) the
 	// pure pass-1 title-normalization result is returned.
 	author := r.URL.Query().Get("author")
-	var m provider.Matcher
-	if r.URL.Query().Get("cluster") == "1" && s.gr != nil {
-		m = s.gr
+	var gr, lc provider.Matcher
+	if r.URL.Query().Get("cluster") == "1" {
+		if s.gr != nil {
+			gr = s.gr
+		}
+		if s.lc != nil {
+			lc = s.lc
+		}
 	}
-	respond(w, provider.ClusterWorks(works, author, m, clusterBudget), nil)
+	respond(w, provider.ClusterWorks(works, author, gr, lc, grClusterBudget, lcClusterBudget), nil)
 }
 
 func (s *Server) handleOLSearch(w http.ResponseWriter, r *http.Request) {

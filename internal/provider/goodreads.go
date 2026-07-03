@@ -45,14 +45,15 @@ type GRClient struct {
 
 	mu       sync.Mutex
 	lastReq  time.Time
-	cache    map[string]GRMatch // key: ISBN
+	cache    map[string]Match // key: ISBN
 	warnOnce sync.Once
 }
 
-// GRMatch is the cluster identity an ISBN resolves to on Goodreads: the work id
-// every edition of that book shares (the dedup key), plus the resolved book's
-// title, cover and author.
-type GRMatch struct {
+// Match is the cluster identity a lookup resolves to: the work id every edition
+// of a book shares (the dedup key), plus the resolved book's title, cover and
+// author. Shared by both matchers — Goodreads keys it by ISBN, Lubimyczytać by
+// Polish title (see [[Goodreads Scraping]] / lubimyczytac.go).
+type Match struct {
 	WorkID   string
 	Title    string
 	CoverURL string
@@ -72,7 +73,7 @@ func NewGoodreads(userAgent string, timeout time.Duration) *GRClient {
 		http:      scraper.NewGuardedHTTPClient(timeout),
 		userAgent: userAgent,
 		minGap:    grMinGap,
-		cache:     map[string]GRMatch{},
+		cache:     map[string]Match{},
 	}
 }
 
@@ -81,7 +82,7 @@ func NewGoodreads(userAgent string, timeout time.Duration) *GRClient {
 // dirty-ISBN guard). Per-ISBN results are memoized, so re-loading an author's
 // bibliography is free. Never errors — a failure is a !Found miss. Implements
 // Matcher.
-func (c *GRClient) MatchWork(title, author string, isbns []string) GRMatch {
+func (c *GRClient) MatchWork(title, author string, isbns []string) Match {
 	for _, isbn := range isbns {
 		isbn = normalizeISBN(isbn)
 		if isbn == "" {
@@ -96,10 +97,10 @@ func (c *GRClient) MatchWork(title, author string, isbns []string) GRMatch {
 		}
 		return m
 	}
-	return GRMatch{}
+	return Match{}
 }
 
-func (c *GRClient) matchByISBN(isbn string) GRMatch {
+func (c *GRClient) matchByISBN(isbn string) Match {
 	c.mu.Lock()
 	if m, ok := c.cache[isbn]; ok {
 		c.mu.Unlock()
@@ -115,12 +116,12 @@ func (c *GRClient) matchByISBN(isbn string) GRMatch {
 	return m
 }
 
-func (c *GRClient) fetchByISBN(isbn string) GRMatch {
+func (c *GRClient) fetchByISBN(isbn string) Match {
 	// The guarded client follows the /book/isbn 301 to the book page itself.
 	doc, err := c.fetch("/book/isbn/" + isbn)
 	if err != nil {
 		c.warn(err)
-		return GRMatch{}
+		return Match{}
 	}
 	m := parseGRBook(doc)
 	m.Found = m.WorkID != ""
@@ -190,14 +191,14 @@ var (
 	grLDPersonRE  = regexp.MustCompile(`"@type":"Person","name":"([^"]+)"`)
 )
 
-// parseGRBook reads a Goodreads book page into a GRMatch (work id, title, cover,
+// parseGRBook reads a Goodreads book page into a Match (work id, title, cover,
 // author). The work id — the dedup key every edition shares — appears as a
 // "/work/editions/<id>" reference inside the page's embedded JSON (not as an
 // <a href>, so it's matched by regex over the raw HTML); the cover and title come
 // from Open Graph meta; the author from JSON-LD (falling back to the
 // /author/show/ slug) for the dirty-ISBN guard.
-func parseGRBook(doc *goquery.Document) GRMatch {
-	var m GRMatch
+func parseGRBook(doc *goquery.Document) Match {
+	var m Match
 	if html, err := doc.Html(); err == nil {
 		m.WorkID = firstSubmatch(grWorkIDRE, html)
 	}

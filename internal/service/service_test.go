@@ -62,7 +62,7 @@ func TestRunCheck_detectOnlyThenApply(t *testing.T) {
 	sc := scraper.New("t", 5*time.Second)
 
 	// Detect-only: finds the bump but writes nothing.
-	sum, err := RunCheck(sc, st, nil, vaultDir, false, nil)
+	sum, err := RunCheck(sc, st, nil, nil, vaultDir, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +114,7 @@ func TestRunCheck_logsScrapeAnomaly(t *testing.T) {
 	st := openStore(t)
 	sc := scraper.New("t", 5*time.Second)
 
-	sum, err := RunCheck(sc, st, nil, vaultDir, false, nil)
+	sum, err := RunCheck(sc, st, nil, nil, vaultDir, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +194,7 @@ func TestRunCheck_statusAutoCorrection(t *testing.T) {
 	// Dropped → never touched
 	pathDropped := writeNoteWithStatus(t, vaultDir, "Dropped", srv.URL+"/d", 2, 2, "Dropped")
 
-	if _, err := RunCheck(sc, st, nil, vaultDir, false, nil); err != nil {
+	if _, err := RunCheck(sc, st, nil, nil, vaultDir, false, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -242,7 +242,7 @@ func TestRunCheck_prunesOnlyMissingNotes(t *testing.T) {
 	os.WriteFile(existing, []byte("not a LN note"), 0o644)
 	st.UpsertBook("OnDisk", "https://nope/y", existing, 1, "", "", nil, "ln", "")
 
-	if _, err := RunCheck(sc, st, nil, vaultDir, false, nil); err != nil {
+	if _, err := RunCheck(sc, st, nil, nil, vaultDir, false, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -268,7 +268,7 @@ type fakeProvider struct {
 
 func (f *fakeProvider) SearchByTitle(string) ([]provider.Candidate, error) { return nil, nil }
 func (f *fakeProvider) AuthorSearch(string) ([]provider.Author, error)     { return nil, nil }
-func (f *fakeProvider) WorkByID(string) (provider.Candidate, error)       { return provider.Candidate{}, nil }
+func (f *fakeProvider) WorkByID(string) (provider.Candidate, error)        { return provider.Candidate{}, nil }
 
 func (f *fakeProvider) AuthorWorks(string) ([]provider.Work, error) {
 	if f.err != nil {
@@ -291,12 +291,12 @@ func TestPollTrackers_normalizesReleases(t *testing.T) {
 
 	fp := &fakeProvider{
 		works: []provider.Work{
-			{WorkID: "W1", Title: "Baseline Book", FirstPubYear: 2000},        // the baseline itself
-			{WorkID: "W2", Title: "Old Backlist", FirstPubYear: 1995},        // before baseline
-			{WorkID: "W3", Title: "New Book", FirstPubYear: 2005},            // should surface
-			{WorkID: "W4", Title: "New Book Box Set", FirstPubYear: 2006},    // bundle, filtered
-			{WorkID: "W5", Title: "Foreign Only", FirstPubYear: 2007},        // no eng edition
-			{WorkID: "W6", Title: "Tie Book", FirstPubYear: 2000},            // same year as baseline: kept
+			{WorkID: "W1", Title: "Baseline Book", FirstPubYear: 2000},    // the baseline itself
+			{WorkID: "W2", Title: "Old Backlist", FirstPubYear: 1995},     // before baseline
+			{WorkID: "W3", Title: "New Book", FirstPubYear: 2005},         // should surface
+			{WorkID: "W4", Title: "New Book Box Set", FirstPubYear: 2006}, // bundle, filtered
+			{WorkID: "W5", Title: "Foreign Only", FirstPubYear: 2007},     // no eng edition
+			{WorkID: "W6", Title: "Tie Book", FirstPubYear: 2000},         // same year as baseline: kept
 		},
 		details: map[string]provider.Work{
 			"W3": {WorkID: "W3", Title: "New Book", Editions: []provider.Edition{{Language: "eng", CoverURL: "c3"}}},
@@ -306,7 +306,7 @@ func TestPollTrackers_normalizesReleases(t *testing.T) {
 		},
 	}
 
-	checked, newReleases, errs := pollTrackers(fp, st, nil)
+	checked, newReleases, errs := pollTrackers(fp, nil, st, nil)
 	if checked != 1 || errs != 0 {
 		t.Fatalf("checked=%d errs=%d, want 1/0", checked, errs)
 	}
@@ -331,7 +331,7 @@ func TestPollTrackers_normalizesReleases(t *testing.T) {
 
 	// Re-polling must not re-surface a dismissed release.
 	st.DismissRelease(releases[0].ID)
-	if _, _, errs := pollTrackers(fp, st, nil); errs != 0 {
+	if _, _, errs := pollTrackers(fp, nil, st, nil); errs != 0 {
 		t.Fatalf("re-poll errs=%d", errs)
 	}
 	live, _ := st.ListReleases(10)
@@ -341,10 +341,77 @@ func TestPollTrackers_normalizesReleases(t *testing.T) {
 
 	// Provider failure on one tracker counts as a tracking error, not a scan error.
 	fpErr := &fakeProvider{err: fmt.Errorf("openlibrary down")}
-	checked, _, errs = pollTrackers(fpErr, st, nil)
+	checked, _, errs = pollTrackers(fpErr, nil, st, nil)
 	if checked != 1 || errs != 1 {
 		t.Fatalf("checked=%d errs=%d, want 1/1 on provider failure", checked, errs)
 	}
 
 	_ = trackerID
+}
+
+// fakePolishSource stubs provider.PolishSource (Lubimyczytać) for the poll's
+// Polish pass.
+type fakePolishSource struct {
+	path  string
+	works []provider.Work
+	err   error
+}
+
+func (f *fakePolishSource) AuthorSearch(string) string { return f.path }
+func (f *fakePolishSource) AuthorWorks(string) ([]provider.Work, error) {
+	return f.works, f.err
+}
+
+func TestPollTrackers_polishReleasesFromLubimyczytac(t *testing.T) {
+	st := openStore(t)
+	if _, err := st.UpsertTracker("author", "Peter V. Brett", "OL18930A", "W1", "2010", "pol"); err != nil {
+		t.Fatal(err)
+	}
+
+	// OL surfaces nothing Polish (the language:null fragmentation the issue
+	// describes): its only new work has no pol edition.
+	ol := &fakeProvider{
+		works:   []provider.Work{{WorkID: "OLnew", Title: "The Core", FirstPubYear: 2017}},
+		details: map[string]provider.Work{"OLnew": {WorkID: "OLnew", Editions: []provider.Edition{{Language: "eng"}}}},
+	}
+	// Lubimyczytać lists the Polish editions cleanly.
+	lc := &fakePolishSource{
+		path: "/autor/18930/peter-v-brett",
+		works: []provider.Work{
+			{WorkID: "cykl:1594", Title: "Malowany człowiek", FirstPubYear: 2021, CoverURL: "pl1.jpg"},
+			{WorkID: "cykl:1594#2", Title: "Pustynna Włócznia", FirstPubYear: 2022, CoverURL: "pl2.jpg"},
+			{WorkID: "lc:99", Title: "Stary Backlist", FirstPubYear: 2005},  // before baseline -> filtered
+			{WorkID: "lc:100", Title: "Zestaw Box Set", FirstPubYear: 2023}, // bundle -> filtered
+		},
+	}
+
+	checked, newReleases, errs := pollTrackers(ol, lc, st, nil)
+	if checked != 1 || errs != 0 {
+		t.Fatalf("checked=%d errs=%d, want 1/0", checked, errs)
+	}
+	if newReleases != 2 {
+		t.Fatalf("newReleases=%d, want 2 Polish editions", newReleases)
+	}
+	got := map[string]bool{}
+	rel, _ := st.ListReleases(10)
+	for _, r := range rel {
+		got[r.WorkID] = true
+	}
+	if !got["cykl:1594"] || !got["cykl:1594#2"] {
+		t.Errorf("both Polish editions should surface, got %+v", rel)
+	}
+	if got["lc:99"] || got["lc:100"] {
+		t.Errorf("pre-baseline / bundle Polish works must be filtered: %+v", rel)
+	}
+
+	// The Polish pass is best-effort: a Lubimyczytać failure is one tracking error,
+	// and an author simply absent from the site is not an error.
+	lcErr := &fakePolishSource{path: "/autor/1/x", err: fmt.Errorf("lubimyczytac down")}
+	if _, _, errs := pollTrackers(ol, lcErr, st, nil); errs != 1 {
+		t.Errorf("a Lubimyczytać failure should count as 1 tracking error, got %d", errs)
+	}
+	lcAbsent := &fakePolishSource{path: ""}
+	if _, _, errs := pollTrackers(ol, lcAbsent, st, nil); errs != 0 {
+		t.Errorf("an author absent from Lubimyczytać is not an error, got %d", errs)
+	}
 }

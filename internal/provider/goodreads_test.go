@@ -73,7 +73,7 @@ func newGRTestServer(t *testing.T) (*GRClient, *httptest.Server) {
 	return c, srv
 }
 
-func TestGRMatchWork(t *testing.T) {
+func TestMatchWork(t *testing.T) {
 	c, srv := newGRTestServer(t)
 	defer srv.Close()
 
@@ -92,7 +92,7 @@ func TestGRMatchWork(t *testing.T) {
 	}
 }
 
-func TestGRMatchWorkClustersTranslations(t *testing.T) {
+func TestMatchWorkClustersTranslations(t *testing.T) {
 	c, srv := newGRTestServer(t)
 	defer srv.Close()
 
@@ -107,7 +107,7 @@ func TestGRMatchWorkClustersTranslations(t *testing.T) {
 	}
 }
 
-func TestGRMatchWorkPolishStaysSeparate(t *testing.T) {
+func TestMatchWorkPolishStaysSeparate(t *testing.T) {
 	c, srv := newGRTestServer(t)
 	defer srv.Close()
 	en := c.MatchWork("The Warded Man", "Peter V. Brett", []string{"9780345518705"})
@@ -120,7 +120,7 @@ func TestGRMatchWorkPolishStaysSeparate(t *testing.T) {
 	}
 }
 
-func TestGRMatchWorkRejectsDirtyISBN(t *testing.T) {
+func TestMatchWorkRejectsDirtyISBN(t *testing.T) {
 	c, srv := newGRTestServer(t)
 	defer srv.Close()
 	// OL listed 072786596X under Brett's "Painted Man", but it resolves to a book
@@ -131,7 +131,7 @@ func TestGRMatchWorkRejectsDirtyISBN(t *testing.T) {
 	}
 }
 
-func TestGRMatchWorkTriesNextISBN(t *testing.T) {
+func TestMatchWorkTriesNextISBN(t *testing.T) {
 	c, srv := newGRTestServer(t)
 	defer srv.Close()
 	// First ISBN is dirty (Jane Doe), second is the real English edition — the
@@ -142,7 +142,7 @@ func TestGRMatchWorkTriesNextISBN(t *testing.T) {
 	}
 }
 
-func TestGRMatchWorkCache(t *testing.T) {
+func TestMatchWorkCache(t *testing.T) {
 	hits := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits++

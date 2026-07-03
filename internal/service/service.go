@@ -44,8 +44,9 @@ type CheckSummary struct {
 // RunCheck scans scanRoot, checks each book, optionally writes vault updates,
 // polls watched authors for new releases, and (when st != nil) records the
 // run + updates + books. ol may be nil to skip the author-tracker phase
-// (e.g. in tests that don't care about it). progress may be nil.
-func RunCheck(sc *scraper.Client, st *store.Store, ol provider.Provider, scanRoot string, write bool,
+// (e.g. in tests that don't care about it). lc may be nil to skip the Polish
+// (Lubimyczytać) release pass. progress may be nil.
+func RunCheck(sc *scraper.Client, st *store.Store, ol provider.Provider, lc provider.PolishSource, scanRoot string, write bool,
 	progress func(i, total int, title string)) (CheckSummary, error) {
 
 	entries, err := vault.Scan(scanRoot)
@@ -179,7 +180,7 @@ func RunCheck(sc *scraper.Client, st *store.Store, ol provider.Provider, scanRoo
 	}
 
 	if st != nil && ol != nil {
-		sum.TrackersChecked, sum.NewReleases, sum.TrackingErrors = pollTrackers(ol, st, progress)
+		sum.TrackersChecked, sum.NewReleases, sum.TrackingErrors = pollTrackers(ol, lc, st, progress)
 	}
 
 	if st != nil {
@@ -203,7 +204,7 @@ func RunCheck(sc *scraper.Client, st *store.Store, ol provider.Provider, scanRoo
 // errors so one provider outage doesn't read as a broken LN check. progress
 // (when non-nil) reports a second phase — restarting from 0 — so a long
 // tracker poll doesn't leave the UI's progress bar stuck at the LN total.
-func pollTrackers(ol provider.Provider, st *store.Store, progress func(i, total int, title string)) (checked, newReleases, errs int) {
+func pollTrackers(ol provider.Provider, lc provider.PolishSource, st *store.Store, progress func(i, total int, title string)) (checked, newReleases, errs int) {
 	trackers, err := st.ListTrackers()
 	if err != nil {
 		return 0, 0, 1
@@ -280,8 +281,57 @@ func pollTrackers(ol provider.Provider, st *store.Store, progress func(i, total 
 				newReleases++
 			}
 		}
+
+		// Polish pass: OL fragments Polish editions as language:null works it can't
+		// attribute to the author, so they never surface above. Lubimyczytać lists
+		// them cleanly (#43). Only for pol-catalog trackers, and best-effort.
+		if lc != nil && t.CatalogLanguage == "pol" {
+			nr, failed := pollLCReleases(lc, st, t, seen, baselineYear)
+			newReleases += nr
+			if failed {
+				errs++
+			}
+		}
 	}
 	return checked, newReleases, errs
+}
+
+// pollLCReleases surfaces an author's Polish releases from Lubimyczytać — the
+// editions OL can't attribute to the author. It reuses the poll's dedup set and
+// baseline floor, and marks each surfaced work seen so a duplicate id in the
+// bibliography can't surface twice. LC work ids are namespaced ("cykl:"/"lc:")
+// so they never collide with the OL work ids already in `seen`. Any failure
+// returns a failed flag without aborting the wider poll; an author simply absent
+// from Lubimyczytać is not a failure.
+func pollLCReleases(lc provider.PolishSource, st *store.Store, t store.Tracker, seen map[string]bool, baselineYear int) (newReleases int, failed bool) {
+	path := lc.AuthorSearch(t.Name)
+	if path == "" {
+		return 0, false
+	}
+	works, err := lc.AuthorWorks(path)
+	if err != nil {
+		return 0, true
+	}
+	for _, w := range works {
+		if w.WorkID == "" || seen[w.WorkID] {
+			continue
+		}
+		if baselineYear > 0 && w.FirstPubYear > 0 && w.FirstPubYear < baselineYear {
+			continue
+		}
+		if bundleRE.MatchString(w.Title) {
+			continue
+		}
+		seen[w.WorkID] = true
+		firstPub := ""
+		if w.FirstPubYear > 0 {
+			firstPub = strconv.Itoa(w.FirstPubYear)
+		}
+		if _, err := st.UpsertRelease(t.ID, w.WorkID, w.Title, t.Name, firstPub, w.CoverURL); err == nil {
+			newReleases++
+		}
+	}
+	return newReleases, false
 }
 
 // hasCatalogEdition reports whether w has an edition in lang. An unset lang
