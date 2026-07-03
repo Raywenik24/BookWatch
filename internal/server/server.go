@@ -26,6 +26,7 @@ import (
 	"bookwatch/internal/scraper"
 	"bookwatch/internal/service"
 	"bookwatch/internal/sources"
+	"bookwatch/internal/sse"
 	"bookwatch/internal/store"
 	"bookwatch/internal/vault"
 )
@@ -48,6 +49,10 @@ type Server struct {
 	gr    *provider.GRClient
 	lc    *provider.LCClient
 
+	// stream fans live check-status events out to connected clients (#47), so
+	// the progress bar updates on push instead of polling /api/status.
+	stream *sse.Broker
+
 	coverMu  sync.Mutex
 	coverIdx map[string]string // basename → abs path, lazy vault-wide cover index
 	coverAt  time.Time         // when coverIdx was last built (for TTL invalidation)
@@ -59,7 +64,11 @@ type Server struct {
 var coverIdxTTL = 5 * time.Minute
 
 func New(cfg config.Config, st *store.Store, sc *scraper.Client, sched *scheduler.Scheduler, ol provider.Provider, gb *provider.GBClient, gr *provider.GRClient, lc *provider.LCClient) *Server {
-	return &Server{cfg: cfg, st: st, sc: sc, sched: sched, ol: ol, gb: gb, gr: gr, lc: lc}
+	s := &Server{cfg: cfg, st: st, sc: sc, sched: sched, ol: ol, gb: gb, gr: gr, lc: lc, stream: sse.New()}
+	// Push a fresh status frame on every scheduler state change (start, each
+	// book, finish) so subscribers see progress the instant it moves.
+	sched.OnChange(func() { s.stream.Publish("status", s.statusPayload()) })
+	return s
 }
 
 func (s *Server) Handler() http.Handler {
@@ -70,6 +79,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/runs", s.handleRuns)
 	mux.HandleFunc("GET /api/events", s.handleEvents)
 	mux.HandleFunc("GET /api/status", s.handleStatus)
+	mux.HandleFunc("GET /api/stream", s.auth(s.stream.ServeHTTP))
 	mux.HandleFunc("GET /api/version", s.handleVersion)
 	mux.HandleFunc("GET /api/sources", s.handleSources)
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
@@ -200,19 +210,23 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.statusPayload())
+}
+
+// statusPayload is the shared check-status shape served by GET /api/status and
+// pushed over /api/stream. A CountPending error degrades to pending:0 rather
+// than failing — a live progress frame shouldn't die on a transient DB read,
+// and the pending count self-corrects on the next frame.
+func (s *Server) statusPayload() map[string]any {
 	cur, total, title := s.sched.Progress()
-	pending, err := s.st.CountPending()
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	pending, _ := s.st.CountPending()
+	return map[string]any{
 		"busy":          s.sched.Busy(),
 		"current":       cur,
 		"total":         total,
 		"current_title": title,
 		"pending":       pending,
-	})
+	}
 }
 
 func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {

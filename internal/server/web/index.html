@@ -631,7 +631,7 @@ function fmtTime(utc){
     .reduce((o,x)=>(o[x.type]=x.value,o),{});
   return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}`;
 }
-function saveToken(){ lsSet('pw_token', $('token').value); toast('Token saved.','success'); }
+function saveToken(){ lsSet('pw_token', $('token').value); toast('Token saved.','success'); reconnectStatusStream(); }
 
 async function getJSON(u){ const r = await fetch(u); return r.json(); }
 async function send(method, u, body){
@@ -642,6 +642,62 @@ async function send(method, u, body){
 }
 function need(r, h){ if(r.status===401){ const t='Unauthorized — set the password in Settings.';
   h ? h.update(t,'error') : toast(t,'error'); return true; } return false; }
+
+/* Generic server-sent-events client (issue #47). Deliberately app-agnostic —
+   nothing here knows about "status" or progress, so it lifts into other
+   projects wholesale. Uses fetch + ReadableStream rather than the browser's
+   native EventSource because EventSource can't set custom headers, and our
+   stream endpoint is guarded by the same X-BookWatch-Token header as every
+   other write route (no token-in-URL — that would leak into logs, per #19).
+   Parses the text/event-stream wire format, dispatches each event to
+   onEvent(name, data), and auto-reconnects after a drop using the server's
+   `retry:` hint. A 401/403 is treated as fatal (onFatal, no reconnect) so a
+   missing/wrong token doesn't hammer the endpoint. Returns { close() }. */
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+function sseConnect(url, { headers = {}, onEvent, onOpen, onFatal } = {}){
+  let closed = false, retryMs = 3000, ctrl = null;
+  function parseFrame(frame){
+    let event = null, data = [], retry = null;
+    for(const line of frame.split('\n')){
+      if(line === '' || line.startsWith(':')) continue; // blank / comment (keep-alive)
+      const c = line.indexOf(':');
+      const field = c < 0 ? line : line.slice(0, c);
+      let val = c < 0 ? '' : line.slice(c + 1);
+      if(val.startsWith(' ')) val = val.slice(1);
+      if(field === 'event') event = val;
+      else if(field === 'data') data.push(val);
+      else if(field === 'retry'){ const n = +val; if(!isNaN(n)) retry = n; }
+    }
+    return { event, retry, data: data.length ? data.join('\n') : null };
+  }
+  async function run(){
+    while(!closed){
+      ctrl = new AbortController();
+      try {
+        const r = await fetch(url, { headers, signal: ctrl.signal, cache: 'no-store' });
+        if(r.status === 401 || r.status === 403){ onFatal && onFatal(r.status); return; }
+        if(!r.ok || !r.body){ await sleep(retryMs); continue; }
+        onOpen && onOpen();
+        const reader = r.body.getReader(), dec = new TextDecoder();
+        let buf = '';
+        while(!closed){
+          const { value, done } = await reader.read();
+          if(done) break;
+          buf += dec.decode(value, { stream: true });
+          let idx;
+          while((idx = buf.indexOf('\n\n')) >= 0){
+            const ev = parseFrame(buf.slice(0, idx)); buf = buf.slice(idx + 2);
+            if(ev.retry) retryMs = ev.retry;
+            if(ev.data !== null && onEvent) onEvent(ev.event || 'message', ev.data);
+          }
+        }
+      } catch(e){ /* network drop or abort — fall through to reconnect */ }
+      if(!closed) await sleep(retryMs);
+    }
+  }
+  run();
+  return { close(){ closed = true; if(ctrl) ctrl.abort(); } };
+}
 
 /* nav */
 $('nav').addEventListener('click', e => {
@@ -1038,21 +1094,55 @@ function renderProgress(s){
   }
 }
 async function refreshStatus(){
-  try { const s = await getJSON('/api/status'); renderPending(s.pending||0); renderProgress(s); return s; }
+  try { const s = await getJSON('/api/status'); onStatus(s); return s; }
   catch(e){ return {}; }
+}
+
+/* Live check status over server push (#47) instead of polling. The server
+   pushes a `status` frame on every scheduler change — run start, each book,
+   run end — so the bar and pending button move the instant progress does. One
+   persistent stream is kept open; onStatus reacts to each frame and drives the
+   busy→idle transition (reloads, "Check done." toast) that the old poll loop
+   handled. A cron-triggered check now updates the bar live too, not just a
+   manually-started one. */
+let statusStream = null;    // active SSE handle, or null when disconnected
+let checkWasBusy = false;   // last seen busy state, for edge detection
+let checkToast = null;      // the "Check running…" toast for a user-started run
+function onStatus(s){
+  renderPending(s.pending||0);
+  renderProgress(s);
+  if(s.busy){
+    $('checkBtn').disabled = true;
+    loadUpdates(); // live — new bumps/releases land mid-check, not just at the end
+    checkWasBusy = true;
+  } else {
+    $('checkBtn').disabled = false;
+    if(checkWasBusy){ // just finished — refresh everything the run may have touched
+      checkWasBusy = false;
+      if(checkToast){ checkToast.update('Check done.','success'); checkToast = null; }
+      loadUpdates(); loadBooks(); loadLogs(); loadEvents();
+    }
+  }
+}
+function connectStatusStream(){
+  if(statusStream) return;
+  statusStream = sseConnect('/api/stream', {
+    headers: { 'X-BookWatch-Token': token() },
+    onEvent: (name, data) => { if(name==='status'){ try { onStatus(JSON.parse(data)); } catch(e){} } },
+    onFatal: () => { statusStream = null; }, // 401 (no/blank token) — stop, don't hammer
+  });
+}
+function reconnectStatusStream(){ // e.g. after the token changes in Settings
+  if(statusStream){ statusStream.close(); statusStream = null; }
+  connectStatusStream();
 }
 
 /* actions */
 async function runCheck(){
   const r = await send('POST','/api/check'); if(need(r)) return;
   if(r.status===409) return toast('A check is already running.','info');
-  const h = toast('Check running…','busy'); $('checkBtn').disabled = true;
-  const poll = setInterval(async () => {
-    const s = await refreshStatus();
-    loadUpdates(); // live — new bumps/releases land mid-check, not just at the end
-    if(!s.busy){ clearInterval(poll); $('checkBtn').disabled=false; h.update('Check done.','success');
-      loadBooks(); loadLogs(); loadEvents(); }
-  }, 1500);
+  checkToast = toast('Check running…','busy'); $('checkBtn').disabled = true;
+  connectStatusStream(); // ensure we're following the stream (re-arm if a prior 401 stopped it)
 }
 async function applyUpdates(){
   const updateIDs = [...updatesSelected].filter(k => k.startsWith('u:')).map(k => +k.slice(2));
@@ -1728,7 +1818,10 @@ setKindView(kindView);
 setLogTab(logTab);
 setSrcTab(srcTab);
 setUpdatesKind(updatesKind); // syncs the toggle buttons to the restored kind and loads
-loadBooks(); loadLogs(); loadEvents(); loadSources(); loadSettings(); refreshStatus(); loadVersion();
+loadBooks(); loadLogs(); loadEvents(); loadSources(); loadSettings(); loadVersion();
+// Seed the bar with current state (the stream only pushes on change, so an
+// in-flight check at page load needs one initial read), then follow via push.
+refreshStatus(); connectStatusStream();
 
 async function loadVersion(){
   const v = await getJSON('/api/version');

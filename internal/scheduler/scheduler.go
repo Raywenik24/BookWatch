@@ -26,10 +26,28 @@ type Scheduler struct {
 
 	cur, total int    // live progress of the in-flight run
 	curTitle   string
+
+	// observer, if set, is called (off-lock) after every state change — run
+	// start, each progress tick, and run end — so an interested party can
+	// publish live status without polling. Set once at wiring time via
+	// OnChange; never read under the mutex.
+	observer func()
 }
 
 func New(run RunFunc) *Scheduler {
 	return &Scheduler{run: run, c: cron.New()}
+}
+
+// OnChange registers a callback fired after every run-state change (start,
+// each progress tick, end). It runs off the scheduler lock, so the callback is
+// free to call Busy/Progress. Meant to be set once during wiring.
+func (s *Scheduler) OnChange(fn func()) { s.observer = fn }
+
+// notify fires the observer if one is registered. Always called off-lock.
+func (s *Scheduler) notify() {
+	if s.observer != nil {
+		s.observer()
+	}
 }
 
 // Start schedules the cron job (if spec is non-empty) and starts the ticker.
@@ -71,11 +89,13 @@ func (s *Scheduler) Trigger(source string) bool {
 	s.running = true
 	s.cur, s.total, s.curTitle = 0, 0, ""
 	s.mu.Unlock()
+	s.notify() // run started
 
 	progress := func(i, total int, title string) {
 		s.mu.Lock()
 		s.cur, s.total, s.curTitle = i, total, title
 		s.mu.Unlock()
+		s.notify()
 	}
 
 	go func() {
@@ -85,6 +105,7 @@ func (s *Scheduler) Trigger(source string) bool {
 			s.cur, s.total, s.curTitle = 0, 0, ""
 			s.lastRun = time.Now()
 			s.mu.Unlock()
+			s.notify() // run finished
 		}()
 		log.Printf("check started (%s)", source)
 		sum, err := s.run(progress)
