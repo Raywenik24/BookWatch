@@ -42,15 +42,18 @@ func (f *fakeTitleMatcher) MatchWork(title, author string, _ []string) Match {
 }
 
 // The Brett cluster as live data actually behaves: English/French/Spanish share
-// Goodreads work 6589794; Polish is a separate Goodreads work; one OL work has a
-// dirty ISBN that resolves to a different author and must not merge.
+// Goodreads work 6589794 (Goodreads' normal model — one work spans every
+// translated edition); Polish is a separate Goodreads work; one OL work has a
+// dirty ISBN that resolves to a different author and must not merge. English
+// editions are reliably OL-tagged; French/Spanish commonly aren't (#45) —
+// mirrored here so the language-bucket guard has something real to bite on.
 func brettWorks() []Work {
 	return []Work{
-		{WorkID: "OL1W", Title: "The Warded Man", FirstPubYear: 2008, CoverURL: "warded.jpg", ISBNs: []string{"EN1"}},
+		{WorkID: "OL1W", Title: "The Warded Man", FirstPubYear: 2008, CoverURL: "warded.jpg", Language: "eng", ISBNs: []string{"EN1"}},
 		{WorkID: "OL2W", Title: "Le Cycle des démons", FirstPubYear: 2009, CoverURL: "", ISBNs: []string{"FR1"}},
 		{WorkID: "OL3W", Title: "El hombre marcado", FirstPubYear: 2009, CoverURL: "", ISBNs: []string{"ES1"}},
 		{WorkID: "OL4W", Title: "Malowany człowiek", FirstPubYear: 2010, CoverURL: "", ISBNs: []string{"PL1"}},
-		{WorkID: "OL5W", Title: "The Desert Spear", FirstPubYear: 2010, CoverURL: "spear.jpg", ISBNs: []string{"EN2"}},
+		{WorkID: "OL5W", Title: "The Desert Spear", FirstPubYear: 2010, CoverURL: "spear.jpg", Language: "eng", ISBNs: []string{"EN2"}},
 	}
 }
 
@@ -67,10 +70,12 @@ func brettMatcher() *fakeMatcher {
 
 func TestClusterWorksCollapsesTranslations(t *testing.T) {
 	got := ClusterWorks(brettWorks(), "Peter V. Brett", brettMatcher(), nil, 100, 100)
-	// EN+FR+ES collapse to one; Polish stays separate (GR's own split); Desert
-	// Spear is its own book -> 3 clusters.
-	if len(got) != 3 {
-		t.Fatalf("want 3 clusters (Demon Cycle bk1, Polish bk1, Desert Spear), got %d: %+v", len(got), got)
+	// Goodreads shares one work id (6589794) across EN/FR/ES, but the language
+	// bucket keeps English split from French+Spanish (which merge with each
+	// other, both untagged) so a translation is never absorbed into the
+	// English tile (#45): English, French+Spanish, Polish, Desert Spear -> 4.
+	if len(got) != 4 {
+		t.Fatalf("want 4 clusters (English bk1, French+Spanish bk1, Polish bk1, Desert Spear), got %d: %+v", len(got), got)
 	}
 	var demon *Work
 	for i := range got {
@@ -79,10 +84,10 @@ func TestClusterWorksCollapsesTranslations(t *testing.T) {
 		}
 	}
 	if demon == nil {
-		t.Fatalf("English canonical (OL1W) should represent the Demon Cycle bk1 cluster: %+v", got)
+		t.Fatalf("English (OL1W) should be its own tile, not absorbed into another language: %+v", got)
 	}
 	if demon.Title != "The Warded Man" || demon.FirstPubYear != 2008 {
-		t.Errorf("canonical should be English, earliest year: got %q %d", demon.Title, demon.FirstPubYear)
+		t.Errorf("English tile should keep its own title/year: got %q %d", demon.Title, demon.FirstPubYear)
 	}
 	// Polish must still be present as its own tile.
 	var polish bool
@@ -96,18 +101,32 @@ func TestClusterWorksCollapsesTranslations(t *testing.T) {
 	}
 }
 
-func TestClusterWorksBackfillsCover(t *testing.T) {
-	// Two coverless translations of book 1; they collapse and inherit the GR cover.
+func TestClusterWorksBackfillsCoverWithinLanguage(t *testing.T) {
+	// Two coverless, untagged translations sharing a GR work id: same language
+	// bucket (both unknown) -> they still collapse and inherit the GR cover.
 	works := []Work{
 		{WorkID: "OL2W", Title: "Le Cycle des démons", FirstPubYear: 2009, CoverURL: "", ISBNs: []string{"FR1"}},
 		{WorkID: "OL3W", Title: "El hombre marcado", FirstPubYear: 2009, CoverURL: "", ISBNs: []string{"ES1"}},
 	}
 	got := ClusterWorks(works, "Peter V. Brett", brettMatcher(), nil, 100, 100)
 	if len(got) != 1 {
-		t.Fatalf("FR+ES share a work -> 1 cluster, got %d", len(got))
+		t.Fatalf("FR+ES share a work and a language bucket -> 1 cluster, got %d", len(got))
 	}
 	if got[0].CoverURL != "gr-warded.jpg" {
 		t.Errorf("coverless cluster should backfill the Goodreads cover, got %q", got[0].CoverURL)
+	}
+}
+
+func TestClusterWorksDoesNotMergeAcrossLanguages(t *testing.T) {
+	// Same GR work id, but explicitly tagged in two different languages —
+	// must never merge, even though Goodreads considers them one work (#45).
+	works := []Work{
+		{WorkID: "OL1W", Title: "The Warded Man", FirstPubYear: 2008, Language: "eng", ISBNs: []string{"EN1"}},
+		{WorkID: "OL2W", Title: "Le Cycle des démons", FirstPubYear: 2009, Language: "fre", ISBNs: []string{"FR1"}},
+	}
+	got := ClusterWorks(works, "Peter V. Brett", brettMatcher(), nil, 100, 100)
+	if len(got) != 2 {
+		t.Fatalf("differently-tagged languages sharing a GR id must stay separate, got %d: %+v", len(got), got)
 	}
 }
 

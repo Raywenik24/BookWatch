@@ -43,34 +43,39 @@ func normTitle(t string) string {
 }
 
 // ClusterWorks collapses an author's OL works that refer to the same logical book
-// — across translations, regional titles and reissues — into a single canonical
+// — across editions and reissues *within one language* — into a single canonical
 // entry, and backfills missing covers. OL files each translation/edition as a
 // separate work with no shared identifier, so title-normalization alone leaves
 // "The Warded Man", "Malowany człowiek" and "El hombre marcado" as three tiles.
 // Three passes:
 //
-//  1. title-normalization merges the easy English variants and drops box-set
-//     noise — cheap and offline.
+//  1. title-normalization merges the easy same-language variants and drops
+//     box-set noise — cheap and offline.
 //  2. the Goodreads matcher (gr): for each survivor with an ISBN, resolve the
 //     Goodreads work id every edition shares and merge survivors reporting the
-//     same id. Handles English/French/Spanish/Portuguese clusters.
+//     same id and language bucket. Handles English reissues/box-sets that pass
+//     1's title-norm can't catch.
 //  3. the Lubimyczytać matcher (lc): for each *Polish-titled* survivor left, do
 //     the same by Polish title — Goodreads files Polish editions as separate
 //     works and OL tags them language:null, so pass 2 can't collapse them (#43).
 //
-// Each matcher pass backfills a missing cover from its match and has its own
-// lookup budget, so a prolific author can't trigger an unbounded scrape — past
-// the budget (or when a survivor doesn't qualify for a pass) the survivor keeps
-// its current grouping. The two budgets are separate because the passes cost
-// very differently: Goodreads is one fetch per ISBN, Lubimyczytać is a title
-// search plus a book-page fetch, and a Polish author routes almost every
-// survivor to it — so lcBudget is kept small to bound picker latency. The LC
-// pass also spends its budget coverless-works-first, so the limited lookups go
-// where they show (backfilling a missing cover) rather than on works already
-// covered. Within a cluster the canonical entry is the English-titled,
-// earliest-year work, carrying the best available cover. A nil matcher (source
-// disabled or unavailable) simply skips its pass, so the picker degrades
-// gracefully rather than failing.
+// Every merge is gated by languageBucket, so a cluster never crosses languages
+// even when Goodreads/Lubimyczytać itself groups every translation of a book
+// under one shared id (their normal data model) — the baseline picker filters
+// per catalog language (#45), so collapsing a Polish original into its English
+// translation's tile would silently make the Polish edition unpickable. Each
+// matcher pass backfills a missing cover from its match and has its own lookup
+// budget, so a prolific author can't trigger an unbounded scrape — past the
+// budget (or when a survivor doesn't qualify for a pass) the survivor keeps its
+// current grouping. The two budgets are separate because the passes cost very
+// differently: Goodreads is one fetch per ISBN, Lubimyczytać is a title search
+// plus a book-page fetch, and a Polish author routes almost every survivor to
+// it — so lcBudget is kept small to bound picker latency. The LC pass also
+// spends its budget coverless-works-first, so the limited lookups go where they
+// show (backfilling a missing cover) rather than on works already covered.
+// Within a cluster the canonical entry is the earliest-year work, carrying the
+// best available cover. A nil matcher (source disabled or unavailable) simply
+// skips its pass, so the picker degrades gracefully rather than failing.
 func ClusterWorks(works []Work, author string, gr, lc Matcher, grBudget, lcBudget int) []Work {
 	survivors := normMerge(works)
 	survivors = matcherPass(survivors, author, gr, grBudget, hasISBN, nil)
@@ -115,6 +120,8 @@ func matcherPass(works []Work, author string, m Matcher, budget int, want func(W
 	}
 
 	// Cluster in original document order, applying whatever was resolved.
+	// The language bucket is always appended to the key so a matcher's shared
+	// id can never merge two different languages into one tile (#45).
 	clusters := map[string]*Work{}
 	var keys []string
 	for i := range works {
@@ -128,6 +135,7 @@ func matcherPass(works []Work, author string, m Matcher, budget int, want func(W
 				key = "id:" + gm.WorkID
 			}
 		}
+		key += "|" + languageBucket(w)
 		if existing, ok := clusters[key]; ok {
 			*existing = mergeWork(*existing, w)
 		} else {
@@ -168,6 +176,24 @@ const polishChars = "ąćęłńśźżĄĆĘŁŃŚŹŻ"
 // fire on titles that are actually Polish, not every accented foreign survivor.
 func looksPolish(w Work) bool {
 	return strings.ContainsAny(w.Title, polishChars)
+}
+
+// languageBucket classifies a work for merge safety: trust OL's own tag when
+// present (English editions are reliably tagged), otherwise fall back to the
+// Polish-title heuristic, since OL frequently leaves Polish editions
+// untagged (language:null, #43) rather than mistagging them. Anything left —
+// an untagged, non-Polish-looking title — shares a single "unknown" bucket,
+// which is the one gap this can't close: two untagged foreign editions in
+// different languages can still merge. That's a narrower failure than the
+// one this fixes (a real, tagged language silently absorbed into another).
+func languageBucket(w Work) string {
+	if w.Language != "" {
+		return w.Language
+	}
+	if looksPolish(w) {
+		return "pol"
+	}
+	return ""
 }
 
 // normMerge runs pass 1: drop noise, then keep the earliest-year work per
@@ -215,7 +241,32 @@ func mergeWork(a, b Work) Work {
 	if canon.Language == "" && other.Language != "" {
 		canon.Language = other.Language
 	}
+	canon.Languages = unionLangs(canon.Languages, other.Languages)
 	return canon
+}
+
+// unionLangs merges two works' Languages lists, deduped, preserving a's order
+// — a cluster's survivor should report every language any merged entry had
+// (#45), not just whichever entry happened to become canon.
+func unionLangs(a, b []string) []string {
+	if len(b) == 0 {
+		return a
+	}
+	seen := make(map[string]bool, len(a)+len(b))
+	out := make([]string, 0, len(a)+len(b))
+	for _, l := range a {
+		if !seen[l] {
+			seen[l] = true
+			out = append(out, l)
+		}
+	}
+	for _, l := range b {
+		if !seen[l] {
+			seen[l] = true
+			out = append(out, l)
+		}
+	}
+	return out
 }
 
 // preferCanon reports whether cand is a better cluster representative than cur:

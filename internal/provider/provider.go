@@ -22,8 +22,13 @@ type Author struct {
 	WorkCount  int
 }
 
-// Edition is one edition of a work with its language and cover.
+// Edition is one edition of a work with its title, language and cover. Title
+// matters because a work's display Title is itself just one edition's title
+// (often the English one) — a translated edition can carry a completely
+// different title, e.g. Work "Season of Storms" has a Polish edition titled
+// "Sezon Burz" (#45).
 type Edition struct {
+	Title    string
 	Language string
 	CoverURL string
 }
@@ -33,7 +38,8 @@ type Work struct {
 	WorkID       string
 	Title        string
 	FirstPubYear int
-	Language     string // OL language code, e.g. "eng"; empty if unknown
+	Language     string   // OL language code, e.g. "eng"; empty if unknown
+	Languages    []string // every language OL has an edition of this work in (#45) — Language is just Languages[0], or "" if empty
 	CoverURL     string
 	Description  string
 	Editions     []Edition
@@ -46,9 +52,50 @@ type Provider interface {
 	AuthorSearch(q string) ([]Author, error)
 	AuthorWorks(authorID string) ([]Work, error)
 	WorkDetail(workID string) (Work, error)
+	// WorkEditions returns per-edition language/cover data for a work — the
+	// accurate source for a work's language, unlike the aggregated tag
+	// AuthorWorks returns (#45).
+	WorkEditions(workID string) ([]Edition, error)
 	// WorkByID resolves a single work (e.g. from a pasted openlibrary.org/works/
 	// URL) into a Candidate, without going through title search.
 	WorkByID(workID string) (Candidate, error)
+}
+
+// MajorityLanguage returns the most common non-empty language among a
+// work's editions — a single work can have translated editions mixed in
+// under the same OL work record, so majority vote beats picking edition[0].
+func MajorityLanguage(eds []Edition) string {
+	counts := make(map[string]int, len(eds))
+	order := make([]string, 0, len(eds))
+	for _, e := range eds {
+		if e.Language == "" {
+			continue
+		}
+		if counts[e.Language] == 0 {
+			order = append(order, e.Language)
+		}
+		counts[e.Language]++
+	}
+	best, bestN := "", 0
+	for _, lang := range order {
+		if counts[lang] > bestN {
+			best, bestN = lang, counts[lang]
+		}
+	}
+	return best
+}
+
+// FindEdition returns the first edition tagged with lang — the accurate way
+// to check whether a work actually has an edition in a given catalog
+// language (and get its real title/cover), since a work's own Language field
+// is an unreliable aggregate that can miss or misreport translations (#45).
+func FindEdition(eds []Edition, lang string) (Edition, bool) {
+	for _, e := range eds {
+		if e.Language == lang {
+			return e, true
+		}
+	}
+	return Edition{}, false
 }
 
 // SelectCover returns the cover URL for the first edition matching lang.

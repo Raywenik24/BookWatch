@@ -32,6 +32,9 @@
   section { display: none; } section.active { display: block; }
   h2 { font-size: 1.05rem; color: var(--mauve); margin-top: 0; }
   .row { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; margin: .6rem 0; }
+  /* .row's display:flex outranks the UA [hidden] rule, so hidden .row elements
+     stay visible unless we restore it explicitly (#45 progress bar bug). */
+  .row[hidden] { display: none; }
   input:not([type="checkbox"]), select, button.btn { font: inherit; padding: .45rem .6rem; border-radius: 6px;
         border: 1px solid var(--surface1); background: var(--mantle); color: var(--text); }
   input:not([type="checkbox"]) { flex: 1; min-width: 160px; }
@@ -310,39 +313,13 @@
           </div>
         </div>
 
-        <!-- Step 2: Baseline picker (shown after author selected) -->
-        <div id="wlBaselineCard" hidden>
-          <div class="card">
-            <b style="font-size:.9rem; color:var(--subtext)">Baseline — watch for works published after:</b>
-            <div style="margin-top:.5rem">
-              <div class="row" style="gap:.5rem;align-items:center">
-                <input id="wlBaselineQ" placeholder="Filter by title…" autocomplete="off" spellcheck="false" oninput="filterWlWorks()" style="flex:1">
-                <label style="display:flex;align-items:center;gap:.35rem;white-space:nowrap;font-size:.85rem;color:var(--subtext);cursor:pointer">
-                  <input type="checkbox" id="wlEnglishOnly" onchange="filterWlWorks()" checked style="accent-color:var(--mauve)">
-                  English only
-                </label>
-              </div>
-              <div style="margin-top:.5rem">
-                <small class="muted">Or set a year baseline (watch all works after a given year):</small>
-                <div class="row" style="margin-top:.3rem">
-                  <input id="wlBaselineYear" type="number" placeholder="e.g. 2021" style="max-width:120px" onkeydown="if(event.key==='Enter')setManualBaseline()">
-                  <button class="btn ghost" onclick="setManualBaseline()">Use year</button>
-                </div>
-              </div>
-            </div>
-            <div id="wlBaselineSelected" hidden style="margin-top:.6rem; padding-top:.6rem; border-top:1px solid var(--surface0)">
-              Baseline: <strong id="wlBaselineLabel"></strong>
-              <button class="btn ghost" style="margin-left:.4rem" onclick="clearWlBaseline()">Change</button>
-            </div>
-          </div>
-          <div id="wlWorksList" style="width:100vw; margin-left:calc(-50vw + 50%); padding:0 2.4rem; box-sizing:border-box; margin-top:.5rem"></div>
-        </div>
-
-        <!-- Step 3: Language + submit -->
+        <!-- Step 2: Catalog language (shown after author selected — chosen before -->
+        <!-- baseline so the English-only default below can key off it, #45) -->
         <div class="card" id="wlLangCard" hidden>
           <div class="row" style="align-items:center">
             <label style="white-space:nowrap; color:var(--subtext)">Catalog language:</label>
-            <select id="wlLang">
+            <select id="wlLang" onchange="filterWlWorks()">
+              <option value="">All languages (browse only — pick a language to save)</option>
               <option value="eng">English</option>
               <option value="fre">French</option>
               <option value="ger">German</option>
@@ -358,8 +335,40 @@
               <option value="nor">Norwegian</option>
               <option value="dan">Danish</option>
             </select>
-            <button class="btn" onclick="saveTracker()">Watch this author</button>
           </div>
+        </div>
+
+        <!-- Step 3: Baseline picker (shown after author selected) -->
+        <div id="wlBaselineCard" hidden>
+          <div class="card">
+            <b style="font-size:.9rem; color:var(--subtext)">Baseline — watch for works published after:</b>
+            <div style="margin-top:.5rem">
+              <div class="row" style="gap:.5rem;align-items:center">
+                <input id="wlBaselineQ" placeholder="Filter by title… (searches every language)" autocomplete="off" spellcheck="false" oninput="filterWlWorks()" style="flex:1">
+              </div>
+              <div style="margin-top:.5rem">
+                <small class="muted">Or set a year baseline (watch all works after a given year):</small>
+                <div class="row" style="margin-top:.3rem">
+                  <input id="wlBaselineYear" type="number" placeholder="e.g. 2021" style="max-width:120px" onkeydown="if(event.key==='Enter')setManualBaseline()">
+                  <button class="btn ghost" onclick="setManualBaseline()">Use year</button>
+                </div>
+              </div>
+            </div>
+            <div id="wlBaselineSelected" hidden style="margin-top:.6rem; padding-top:.6rem; border-top:1px solid var(--surface0)">
+              Baseline: <strong id="wlBaselineLabel"></strong>
+              <button class="btn ghost" style="margin-left:.4rem" onclick="clearWlBaseline()">Change</button>
+            </div>
+          </div>
+          <div id="wlEnrichProgress" class="row" style="align-items:center;gap:.5rem;margin:.4rem 2.4rem 0" hidden>
+            <div class="bar" style="flex:1"><span id="wlEnrichFill"></span></div>
+            <small id="wlEnrichLabel" class="muted" style="white-space:nowrap"></small>
+          </div>
+          <div id="wlWorksList" style="width:100vw; margin-left:calc(-50vw + 50%); padding:0 2.4rem; box-sizing:border-box; margin-top:.5rem"></div>
+        </div>
+
+        <!-- Step 4: Submit -->
+        <div class="card" id="wlSubmitCard" hidden>
+          <button class="btn" onclick="saveTracker()">Watch this author</button>
         </div>
 
         <!-- Tracked authors list -->
@@ -1247,6 +1256,7 @@ function selectWlAuthor(a){
   $('wlAuthorQ').disabled = true;
   $('wlSelectedAuthorInfo').hidden = false;
   $('wlSelectedAuthorBadge').textContent = a.Name+' ('+a.WorkCount+' works)';
+  $('wlLangCard').hidden = false;
   $('wlBaselineCard').hidden = false;
   loadWlWorks(a.OLAuthorID);
 }
@@ -1261,6 +1271,7 @@ function clearWlAuthor(){
   $('wlSelectedAuthorInfo').hidden = true;
   $('wlBaselineCard').hidden = true;
   $('wlLangCard').hidden = true;
+  $('wlSubmitCard').hidden = true;
   if(_wlAuthorData.length > 1){
     $('wlAuthorResults').hidden = false;
   }
@@ -1330,35 +1341,35 @@ function dedupeWorks(works){
   // Return deduped list newest-first for display.
   return [...seen.values()].sort((a,b)=>(b.FirstPubYear||0)-(a.FirstPubYear||0));
 }
-// _wlView is the English-filtered (or full) subset of _wlWorks that pagination
-// and text search run against. Updated by filterWlWorks() whenever the checkbox
-// or text query changes.
+// _wlView is _wlWorks filtered to the chosen catalog language, and is what
+// pagination browses. Updated by filterWlWorks() whenever the catalog
+// language or text query changes. The coarse pass below checks the *whole*
+// Languages list (every language OL has an edition of this work in), not
+// just the single aggregated Language tag — a work titled "Season of Storms"
+// still has "pol" somewhere in its Languages even though its own display
+// edition is English (#45). This is still just a candidate filter: the
+// per-tile enrichment pass (startWlEnrichment) verifies each visible work
+// against a real Polish edition and drops it from view if that edition
+// turns out not to exist, and typing in the title filter searches every
+// language (not just _wlView) as a manual escape hatch too.
 let _wlView = [];
 
-function isEnglishWork(w){
-  // OL reliably tags English works as "eng" but often omits language on
-  // foreign translations — hiding unknowns catches those without losing
-  // real English books.
-  return w.Language === 'eng';
-}
-
-// filterWlWorks re-derives _wlView from _wlWorks + the English-only checkbox,
-// then re-renders. All entry points (checkbox, text input, load, refine, page
-// nav, clear) call this so the filter is always consistent.
 function filterWlWorks(){
-  const engOnly = $('wlEnglishOnly') && $('wlEnglishOnly').checked;
-  _wlView = engOnly ? _wlWorks.filter(w=>isEnglishWork(w)) : _wlWorks.slice();
+  const lang = $('wlLang').value;
+  _wlView = lang ? _wlWorks.filter(w=>(w.Languages||[]).includes(lang)) : _wlWorks.slice();
   _wlPage = 0;
   if(_wlAuthor) setWlAuthorBadge(_wlAuthor.Name, _wlView.length);
   renderWlWorks();
 }
 
 // renderWlWorks paginates _wlView, optionally narrowed by the text query.
+// A non-empty text query searches all of _wlWorks (every language), not just
+// _wlView, so a mistagged work is still findable by title (#45).
 // Text-search results show all matches without pagination (same prior behaviour).
 function renderWlWorks(){
   const q = $('wlBaselineQ') ? $('wlBaselineQ').value.trim().toLowerCase() : '';
   const isTextSearch = !!q;
-  const src = isTextSearch ? _wlView.filter(w=>w.Title.toLowerCase().includes(q)) : _wlView;
+  const src = isTextSearch ? _wlWorks.filter(w=>w.Title.toLowerCase().includes(q)) : _wlView;
   const totalPages = isTextSearch ? 1 : Math.ceil(_wlView.length / _wlPageSize) || 1;
   if(_wlPage >= totalPages) _wlPage = totalPages - 1;
   const start = isTextSearch ? 0 : _wlPage * _wlPageSize;
@@ -1375,9 +1386,14 @@ function renderWlWorks(){
 
   const tiles = vis.map(w=>{
     const hasCover = !!w.CoverURL;
-    return `<div class="cover-card${hasCover?'':' nocover'}" onclick="selectWlWork('${esc(w.WorkID)}')" style="cursor:pointer" title="${esc(w.Title)}"${hasCover?'':` data-gb-title="${esc(w.Title)}"`}>
+    // Shows the approximate language from the bulk search up front; the
+    // enrichment pass (startWlEnrichment) swaps in the accurate per-edition
+    // value once resolved (#45).
+    const badgeHidden = w.Language ? '' : ' hidden';
+    return `<div class="cover-card${hasCover?'':' nocover'}" data-work-id="${esc(w.WorkID)}" onclick="selectWlWork('${esc(w.WorkID)}')" style="cursor:pointer;position:relative" title="${esc(w.Title)}"${hasCover?'':` data-gb-title="${esc(w.Title)}"`}>
+      <span class="badge wl-lang-badge" style="position:absolute;top:.3rem;right:.3rem;font-size:.7rem"${badgeHidden}>${esc(w.Language||'')}</span>
       <div class="cover-link">${hasCover?`<img class="cover-img" src="${esc(w.CoverURL)}" loading="lazy" onerror="this.closest('.cover-card').classList.add('nocover');this.remove()">`:``}
-        <div class="cover-title">${esc(w.Title)}${w.FirstPubYear?'<br><small class="muted">'+w.FirstPubYear+'</small>':''}</div>
+        <div class="cover-title"><span class="wl-title-text">${esc(w.Title)}</span>${w.FirstPubYear?'<br><small class="muted">'+w.FirstPubYear+'</small>':''}</div>
       </div>
     </div>`;
   }).join('');
@@ -1385,7 +1401,7 @@ function renderWlWorks(){
   $('wlWorksList').innerHTML = pagBar(true) +
     `<div class="cover-grid" style="grid-template-columns:repeat(auto-fill,minmax(160px,1fr));margin:0">${tiles}</div>` +
     pagBar(false);
-  if(!isTextSearch) startGBCovers();
+  if(!isTextSearch) startWlEnrichment();
 }
 function wlPageNav(delta){
   _wlPage += delta;
@@ -1394,35 +1410,109 @@ function wlPageNav(delta){
 }
 function wlSetPageSize(n){ _wlPageSize = n; _wlPage = 0; renderWlWorks(); }
 
-/* Google Books cover fallback — lazy, rate-limited, cancellable */
-let _gbAbort = null;
-function startGBCovers(){
-  if(_gbAbort) _gbAbort = false; // cancel any prior run
+// startWlEnrichment lazily verifies each visible tile against OL's real
+// per-edition data (accurate — see WorkEditions comment, #45), then falls
+// back to Google Books for a cover only if OL had none. One rate-limited,
+// cancellable pass per tile instead of two separate ones — the OL lookup
+// already returns a cover when it has one, so most tiles never need the
+// Google Books trip at all.
+//
+// When a specific catalog language is selected, this is also what makes the
+// filter authoritative rather than a guess (#45): the coarse candidate list
+// (filterWlWorks) only checked whether the language *might* be present; here
+// we ask OL for that work's actual edition in that language. No match ->
+// the work genuinely isn't available in that language, so the tile is
+// dropped. A match -> the tile's title/cover are swapped to that edition's
+// own (a work titled "Season of Storms" has a "pol" edition titled "Sezon
+// Burz" — that's what should show, not the work's default display title),
+// and _wlWorks is updated in place so a later pick/search/re-render carries
+// the corrected data forward.
+let _wlEnrichAbort = null;
+function addWlTileCover(tile, src){
+  const img = document.createElement('img');
+  img.className = 'cover-img';
+  img.loading = 'lazy';
+  img.src = src;
+  img.onerror = () => { tile.classList.add('nocover'); img.remove(); };
+  img.onload = () => tile.classList.remove('nocover');
+  tile.querySelector('.cover-link').prepend(img);
+}
+// wlEnrichProgress paints the bar for `done` completed of `total`, and hides
+// it once every tile is done (done >= total) — so it only disappears after
+// the last edition check actually finishes, not when the last one *starts*.
+function wlEnrichProgress(done, total, lang){
+  const el = $('wlEnrichProgress'); if(!el) return;
+  if(total <= 0 || done >= total){ el.hidden = true; return; }
+  el.hidden = false;
+  $('wlEnrichFill').style.width = Math.round(done / total * 100) + '%';
+  const sel = $('wlLang');
+  const langName = lang && sel ? sel.options[sel.selectedIndex].textContent : '';
+  const verb = lang ? `Verifying ${langName} editions…` : 'Checking editions…';
+  $('wlEnrichLabel').textContent = `${verb} ${done}/${total}`;
+}
+function startWlEnrichment(){
+  if(_wlEnrichAbort) _wlEnrichAbort = false; // cancel any prior run
   const token = {};
-  _gbAbort = token;
+  _wlEnrichAbort = token;
   const author = _wlAuthor ? _wlAuthor.Name : '';
-  const tiles = [...document.querySelectorAll('#wlWorksList .cover-card[data-gb-title]')];
-  let i = 0;
+  const lang = $('wlLang') ? $('wlLang').value : '';
+  const tiles = [...document.querySelectorAll('#wlWorksList .cover-card[data-work-id]')];
+  const total = tiles.length;
+  let i = 0, done = 0;
+  // Show 0/total up front; the bar tracks *completed* tiles and hides itself
+  // only once done reaches total (in the wrap-up below), so a slow final
+  // editions fetch can't leave it frozen a step short.
+  if(total > 0) wlEnrichProgress(0, total, lang); else wlEnrichProgress(0, 0, lang);
+  // The whole body of each tile runs inside try/finally so the active run
+  // ALWAYS advances (done++, repaint, schedule the next tile) even if a fetch
+  // or a DOM write throws — otherwise a single hiccup on the last tile would
+  // strand the bar one step short (#45). The finally is token-guarded so a run
+  // that got superseded mid-flight (e.g. by the background refine re-render)
+  // stops silently and leaves the bar to whichever run is now active.
   async function next(){
-    if(_gbAbort !== token || i >= tiles.length) return;
+    if(_wlEnrichAbort !== token) return;
+    if(i >= tiles.length){ wlEnrichProgress(total, total, lang); return; } // all done -> hide
     const tile = tiles[i++];
-    const title = tile.dataset.gbTitle;
+    const workID = tile.dataset.workId;
     try {
-      const r = await getJSON('/api/gb/cover?title='+encodeURIComponent(title)+'&author='+encodeURIComponent(author));
-      if(r && r.cover && _gbAbort === token && tile.isConnected){
-        const img = document.createElement('img');
-        img.className = 'cover-img';
-        img.loading = 'lazy';
-        img.src = r.cover;
-        img.onerror = () => { tile.classList.add('nocover'); img.remove(); };
-        img.onload = () => tile.classList.remove('nocover');
-        tile.querySelector('.cover-link').prepend(img);
-        tile.removeAttribute('data-gb-title');
+      const url = '/api/ol/works/'+encodeURIComponent(workID)+'/editions'+(lang?'?lang='+encodeURIComponent(lang):'');
+      const r = await getJSON(url);
+      if(r && _wlEnrichAbort === token && tile.isConnected){
+        if(lang && !r.matched){
+          tile.remove(); // verified: this work has no edition in the selected language
+        } else {
+          if(r.language){
+            const badge = tile.querySelector('.wl-lang-badge');
+            if(badge){ badge.textContent = r.language; badge.hidden = false; }
+            const wk = _wlWorks.find(x=>x.WorkID===workID);
+            if(wk) wk.Language = r.language;
+          }
+          if(r.title){
+            const titleSpan = tile.querySelector('.wl-title-text');
+            if(titleSpan) titleSpan.textContent = r.title;
+            tile.title = r.title;
+            const wk = _wlWorks.find(x=>x.WorkID===workID);
+            if(wk) wk.Title = r.title;
+          }
+          if(tile.classList.contains('nocover') && r.cover_url){
+            addWlTileCover(tile, r.cover_url);
+          }
+        }
       }
-    } catch(_){}
-    setTimeout(next, 150);
+      if(_wlEnrichAbort === token && tile.isConnected && tile.classList.contains('nocover') && tile.dataset.gbTitle){
+        const gr = await getJSON('/api/gb/cover?title='+encodeURIComponent(tile.dataset.gbTitle)+'&author='+encodeURIComponent(author));
+        if(gr && gr.cover && _wlEnrichAbort === token && tile.isConnected) addWlTileCover(tile, gr.cover);
+      }
+    } catch(_){ /* best-effort per tile — never let one break the loop */ }
+    finally {
+      if(_wlEnrichAbort === token){
+        done++;
+        wlEnrichProgress(done, total, lang);
+        setTimeout(next, 150);
+      }
+    }
   }
-  setTimeout(next, 200);
+  if(total > 0) setTimeout(next, 200); else wlEnrichProgress(0, 0, lang);
 }
 function selectWlWork(workID){
   const w = _wlWorks.find(x=>x.WorkID===workID); if(!w) return;
@@ -1430,18 +1520,19 @@ function selectWlWork(workID){
   showWlBaselineSelected();
 }
 function showWlBaselineSelected(){
-  _gbAbort = null; // cancel in-flight cover queue
+  _wlEnrichAbort = null; // cancel in-flight enrichment queue
+  $('wlEnrichProgress').hidden = true;
   $('wlBaselineLabel').textContent = _wlBaseline.title+(_wlBaseline.year?' ('+_wlBaseline.year+')':'');
   $('wlBaselineSelected').hidden = false;
   $('wlWorksList').style.display = 'none';
-  $('wlLangCard').hidden = false;
+  $('wlSubmitCard').hidden = false;
 }
 function clearWlBaseline(){
   _wlBaseline = null;
   $('wlBaselineSelected').hidden = true;
   $('wlWorksList').style.display = '';
   $('wlBaselineQ').value = '';
-  $('wlLangCard').hidden = true;
+  $('wlSubmitCard').hidden = true;
   _wlPage = 0;
   if(_wlWorks.length) filterWlWorks();
 }
@@ -1454,6 +1545,7 @@ function setManualBaseline(){
 async function saveTracker(){
   if(!_wlAuthor||!_wlBaseline){ toast('Select author + baseline first.','error'); return; }
   const lang = $('wlLang').value;
+  if(!lang){ toast('Pick a catalog language ("All languages" is browse-only).','error'); return; }
   const r = await send('POST','/api/trackers',{
     name: _wlAuthor.Name,
     ol_key: _wlAuthor.OLAuthorID,

@@ -245,6 +245,12 @@ func (c *OLClient) AuthorWorks(authorID string) ([]Work, error) {
 		if d.CoverI > 0 {
 			cover = fmt.Sprintf("%s/b/id/%d-M.jpg", c.coversURL, d.CoverI)
 		}
+		// d.Language is every language OL has an edition of this work in, not
+		// just the display edition's — a work titled "Season of Storms" can
+		// still have a "pol" edition ("Sezon Burz") buried in this list even
+		// though [0] says "eng" (#45). Keep the whole thing so the picker can
+		// check "does this work have my catalog language at all" instead of
+		// trusting an arbitrarily-ordered single tag.
 		lang := ""
 		if len(d.Language) > 0 {
 			lang = d.Language[0]
@@ -254,6 +260,7 @@ func (c *OLClient) AuthorWorks(authorID string) ([]Work, error) {
 			Title:        d.Title,
 			FirstPubYear: d.FirstPublishYear,
 			Language:     lang,
+			Languages:    d.Language,
 			CoverURL:     cover,
 			ISBNs:        capISBNs(d.ISBN),
 		})
@@ -302,6 +309,7 @@ type olWorkDetail struct {
 }
 
 type olEditionEntry struct {
+	Title     string `json:"title"`
 	Languages []struct {
 		Key string `json:"key"`
 	} `json:"languages"`
@@ -317,9 +325,26 @@ func (c *OLClient) WorkDetail(id string) (Work, error) {
 	if err := c.get(c.url("/works/"+id+".json"), &detail); err != nil {
 		return Work{}, err
 	}
+	eds, err := c.WorkEditions(id)
+	if err != nil {
+		return Work{}, err
+	}
+	return Work{
+		WorkID:       id,
+		Title:        detail.Title,
+		FirstPubYear: parseYear(detail.FirstPublishDate),
+		Description:  detail.Description.Value,
+		Editions:     eds,
+	}, nil
+}
+
+// WorkEditions fetches per-edition language and cover data for a work — the
+// accurate source, unlike the search index's per-work "language" field which
+// aggregates every translated edition into one arbitrarily-picked tag (#45).
+func (c *OLClient) WorkEditions(id string) ([]Edition, error) {
 	var edResp olEditionsResp
 	if err := c.get(c.url("/works/"+id+"/editions.json?limit="+strconv.Itoa(editionsLimit)), &edResp); err != nil {
-		return Work{}, err
+		return nil, err
 	}
 	eds := make([]Edition, 0, len(edResp.Entries))
 	for _, e := range edResp.Entries {
@@ -332,17 +357,12 @@ func (c *OLClient) WorkDetail(id string) (Work, error) {
 			coverID = e.Covers[0]
 		}
 		eds = append(eds, Edition{
+			Title:    e.Title,
 			Language: lang,
 			CoverURL: coverURL(c.coversURL, coverID),
 		})
 	}
-	return Work{
-		WorkID:       id,
-		Title:        detail.Title,
-		FirstPubYear: parseYear(detail.FirstPublishDate),
-		Description:  detail.Description.Value,
-		Editions:     eds,
-	}, nil
+	return eds, nil
 }
 
 // --- WorkByID ---

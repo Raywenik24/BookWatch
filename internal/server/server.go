@@ -79,6 +79,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/ol/authors/{id}/works", s.handleOLAuthorWorks)
 	mux.HandleFunc("GET /api/ol/search", s.handleOLSearch)
 	mux.HandleFunc("GET /api/ol/work/{id}", s.handleOLWork)
+	mux.HandleFunc("GET /api/ol/works/{id}/editions", s.handleOLWorkEditions)
 	mux.HandleFunc("GET /api/trackers", s.handleListTrackers)
 	mux.HandleFunc("GET /api/releases", s.handleReleases)
 	mux.HandleFunc("GET /api/releases/dismissed", s.handleDismissedReleases)
@@ -727,6 +728,54 @@ func (s *Server) handleOLWork(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	cand, err := s.ol.WorkByID(id)
 	respond(w, cand, err)
+}
+
+// handleOLWorkEditions resolves a work's real per-edition data, since the
+// bulk author-works search only exposes an aggregated per-work language tag
+// that can pick the wrong translation, or even the wrong language entirely
+// when a work bundles many languages' editions under one title (#45). The
+// baseline picker calls this lazily per tile, alongside its existing
+// cover-backfill pass, rather than upfront for the whole author.
+//
+// With ?lang=xx (the currently selected catalog language): looks for an
+// edition actually tagged xx and, if found, returns matched=true plus that
+// edition's own title/cover — e.g. work "Season of Storms" has a "pol"
+// edition titled "Sezon Burz", which is what the picker should show and
+// filter on for a Polish tracker, not the work's default English title.
+// matched=false tells the picker this work genuinely has no xx edition, so
+// it should be dropped from that language's view rather than kept on a
+// guess. Without ?lang=, falls back to a majority-vote language across all
+// editions, used only for the "All languages" browse view's badge.
+func (s *Server) handleOLWorkEditions(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	eds, err := s.ol.WorkEditions(id)
+	if err != nil {
+		respond(w, nil, err)
+		return
+	}
+	if lang := r.URL.Query().Get("lang"); lang != "" {
+		ed, ok := provider.FindEdition(eds, lang)
+		if !ok {
+			respond(w, map[string]any{"matched": false}, nil)
+			return
+		}
+		cover := ed.CoverURL
+		if cover == "" {
+			cover = provider.SelectCover(provider.Work{Editions: eds}, lang)
+		}
+		respond(w, map[string]any{
+			"matched":   true,
+			"language":  lang,
+			"title":     ed.Title,
+			"cover_url": cover,
+		}, nil)
+		return
+	}
+	respond(w, map[string]any{
+		"matched":   true,
+		"language":  provider.MajorityLanguage(eds),
+		"cover_url": provider.SelectCover(provider.Work{Editions: eds}, ""),
+	}, nil)
 }
 
 // ── trackers ───────────────────────────────────────────────────

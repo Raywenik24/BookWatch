@@ -281,6 +281,10 @@ func (f *fakeProvider) WorkDetail(id string) (provider.Work, error) {
 	return f.details[id], nil
 }
 
+func (f *fakeProvider) WorkEditions(id string) ([]provider.Edition, error) {
+	return f.details[id].Editions, nil
+}
+
 func TestPollTrackers_normalizesReleases(t *testing.T) {
 	st := openStore(t)
 

@@ -45,7 +45,7 @@ const authorWorksFixture = `{
       "key": "/works/OL4966121W",
       "title": "The Warded Man",
       "first_publish_year": 2008,
-      "language": ["eng"],
+      "language": ["eng", "pol"],
       "cover_i": 7890277
     },
     {
@@ -66,10 +66,12 @@ const workDetailFixture = `{
 const editionsFixture = `{
   "entries": [
     {
+      "title": "The Warded Man",
       "languages": [{"key": "/languages/eng"}],
       "covers": [7890277]
     },
     {
+      "title": "Malowany człowiek",
       "languages": [{"key": "/languages/pol"}],
       "covers": [9876543]
     },
@@ -202,6 +204,21 @@ func TestAuthorWorks(t *testing.T) {
 	if got[1].Language != "" {
 		t.Errorf("work[1] language should be empty, got %q", got[1].Language)
 	}
+	if want := []string{"eng", "pol"}; !slicesEqual(got[0].Languages, want) {
+		t.Errorf("work[0] languages %v, want %v", got[0].Languages, want)
+	}
+}
+
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestWorkDetail(t *testing.T) {
@@ -227,11 +244,17 @@ func TestWorkDetail(t *testing.T) {
 	if got.Editions[0].Language != "eng" {
 		t.Errorf("ed[0] lang %q", got.Editions[0].Language)
 	}
+	if got.Editions[0].Title != "The Warded Man" {
+		t.Errorf("ed[0] title %q", got.Editions[0].Title)
+	}
 	if !strings.Contains(got.Editions[0].CoverURL, "7890277") {
 		t.Errorf("ed[0] cover %q", got.Editions[0].CoverURL)
 	}
 	if got.Editions[1].Language != "pol" {
 		t.Errorf("ed[1] lang %q", got.Editions[1].Language)
+	}
+	if got.Editions[1].Title != "Malowany człowiek" {
+		t.Errorf("ed[1] title %q", got.Editions[1].Title)
 	}
 	if !strings.Contains(got.Editions[1].CoverURL, "9876543") {
 		t.Errorf("ed[1] cover %q", got.Editions[1].CoverURL)
@@ -259,6 +282,23 @@ func TestSelectCover(t *testing.T) {
 	// no editions -> empty
 	if got := SelectCover(Work{}, "eng"); got != "" {
 		t.Errorf("want empty, got %q", got)
+	}
+}
+
+func TestFindEdition(t *testing.T) {
+	eds := []Edition{
+		{Language: "eng", Title: "Season of Storms", CoverURL: "eng.jpg"},
+		{Language: "pol", Title: "Sezon Burz", CoverURL: "pol.jpg"},
+	}
+	ed, ok := FindEdition(eds, "pol")
+	if !ok || ed.Title != "Sezon Burz" {
+		t.Errorf("want the Polish edition, got %+v ok=%v", ed, ok)
+	}
+	if _, ok := FindEdition(eds, "ger"); ok {
+		t.Error("no German edition exists, want ok=false")
+	}
+	if _, ok := FindEdition(nil, "eng"); ok {
+		t.Error("empty editions list, want ok=false")
 	}
 }
 
