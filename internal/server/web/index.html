@@ -212,6 +212,16 @@
   .bp-desc { margin-top: .75rem; font-size: .9rem; line-height: 1.5; white-space: pre-wrap;
         max-height: 12rem; overflow-y: auto; padding-right: .3rem; }
   .bp-desc.muted { color: var(--subtext); }
+  /* Recent-updates release title: clickable into the read-only preview (#53) */
+  .upd-title { cursor: pointer; }
+  .upd-title:hover { text-decoration: underline; }
+  /* hover popover — at-a-glance cover + author + blurb, floated near the cursor (#53) */
+  .rel-popover { position: fixed; z-index: 60; max-width: 340px; pointer-events: none;
+        background: var(--base); border: 1px solid var(--surface0); border-radius: 8px;
+        padding: .7rem .8rem; box-shadow: 0 12px 40px rgba(0,0,0,.5); }
+  .rel-popover[hidden] { display: none; }
+  .rel-pop-head { display: flex; gap: .7rem; align-items: flex-start; }
+  .rel-pop-desc { margin-top: .5rem; font-size: .82rem; line-height: 1.45; color: var(--text); }
   input[type="checkbox"] { accent-color: var(--mauve); width: 1rem; height: 1rem; vertical-align: -.15em; margin-right: .3rem; }
   /* reusable toggle switch (settings-style on/off) — checkbox visually hidden, .switch-track is the pill/knob */
   .switch { position: relative; display: inline-block; width: 2.4rem; height: 1.4rem; flex: 0 0 auto; }
@@ -536,6 +546,15 @@
       </div>
     </section>
   </main>
+  <!-- read-only release preview (#53) — reuses the shared bookPreviewModal with
+       no status picker. Lives outside the tab sections so it can open from the
+       Updates tab (a modal nested in a hidden section never shows). -->
+  <div id="previewModalBackdrop" class="modal-backdrop" hidden onclick="if(event.target===this)closeRelPreview()">
+    <div class="modal">
+      <button class="modal-close" onclick="closeRelPreview()" aria-label="Close">&times;</button>
+      <div id="previewModalBody"></div>
+    </div>
+  </div>
   </div>
 
 <script>
@@ -838,6 +857,7 @@ async function loadUpdates(){
   renderUpdatesTable();
 }
 function renderUpdatesTable(){
+  hideRelPopover(); // rows are being replaced — drop any popover pinned to an old one
   const q = updatesFilterText;
   const rows = q ? updatesRows.filter(row => {
     const t = (row.x.title||'').toLowerCase(), a = (row.x.author||'').toLowerCase();
@@ -858,8 +878,14 @@ function renderUpdatesTable(){
     const x = row.x;
     const link = `https://openlibrary.org/works/${esc(x.work_id)}`;
     const plBadge = x.kind === 'translation-of' ? ' <span class="badge" title="A Polish edition of an already-surfaced release (#46)">PL translation</span>' : '';
+    // Book-release rows carry OpenLibrary metadata: the title hovers into a
+    // popover and clicks into the read-only preview, with the author as a muted
+    // subtitle (#53). LN bump rows above have no OL work and stay plain text.
+    const titleCell = `<td class="new"><span class="upd-title" onmouseenter="showRelPopover(event,${x.id})"
+       onmousemove="moveRelPopover(event)" onmouseleave="hideRelPopover()" onclick="openRelPreview(${x.id})">${esc(x.title)}</span>${plBadge}${
+       x.author ? `<div class="cand-sub">${esc(x.author)}</div>` : ''}</td>`;
     if(row.kind === 'release-dismissed'){
-      return `<tr><td class="cb-col"></td><td class="new">${esc(x.title)}${plBadge}</td><td></td>
+      return `<tr><td class="cb-col"></td>${titleCell}<td></td>
        <td><span class="badge dismissed" title="${x.dismissed_at?esc(fmtTime(x.dismissed_at)):''}">Dismissed</span></td>
        <td><a href="${link}" target="_blank">link</a></td><td class="nowrap"><small>${esc(fmtTime(x.detected_at))}</small></td>
        <td class="actions"><button class="btn ghost" onclick="undismissRelease(${x.id})">Un-dismiss</button></td></tr>`;
@@ -869,7 +895,7 @@ function renderUpdatesTable(){
       : `<span class="badge pending">Pending</span>`;
     const cb = x.created ? '' : `<input type="checkbox" data-key="${row.key}" ${updatesSelected.has(row.key)?'checked':''} onchange="toggleUpdateSelect('${row.key}',this.checked)">`;
     const dismissBtn = x.created ? '' : `<button class="btn ghost" onclick="dismissRelease(${x.id})">Dismiss</button>`;
-    return `<tr><td class="cb-col">${cb}</td><td class="new">${esc(x.title)}${plBadge}</td><td></td>
+    return `<tr><td class="cb-col">${cb}</td>${titleCell}<td></td>
      <td>${status}</td>
      <td><a href="${link}" target="_blank">link</a></td><td class="nowrap"><small>${esc(fmtTime(x.detected_at))}</small></td>
      <td class="actions">${dismissBtn}</td></tr>`;
@@ -898,6 +924,92 @@ async function undismissRelease(id){
   if(!r.ok) return toast('Error: ' + (r.data.error||r.status),'error');
   loadUpdates(); refreshStatus();
 }
+// --- Recent-updates release preview (#53) ---
+// Book-release rows carry OpenLibrary metadata, so their title hovers into a
+// lightweight popover and clicks into the shared read-only bookPreviewModal.
+// The work blurb isn't in the release row (it's fetched lazily, same endpoint
+// the add flow uses) and is cached per work so hover-then-click is one request.
+const _relDetailCache = {}; // work_id -> { description }
+function releaseById(id){
+  const row = updatesRows.find(r => (r.kind === 'release' || r.kind === 'release-dismissed') && r.x.id === id);
+  return row ? row.x : null;
+}
+async function fetchReleaseDetail(x){
+  if(_relDetailCache[x.work_id]) return _relDetailCache[x.work_id];
+  try {
+    const d = await getJSON('/api/ol/work/' + encodeURIComponent(x.work_id) + '/detail');
+    _relDetailCache[x.work_id] = { description: (d && d.description) || '' };
+  } catch(e){
+    _relDetailCache[x.work_id] = { description: '' }; // blurb is optional — fail quietly
+  }
+  return _relDetailCache[x.work_id];
+}
+function clip(s, n){ s = String(s || ''); return s.length > n ? s.slice(0, n - 1).trimEnd() + '…' : s; }
+
+let _relPopEl = null, _relPopToken = 0;
+function relPopEl(){
+  if(!_relPopEl){
+    _relPopEl = document.createElement('div');
+    _relPopEl.className = 'rel-popover';
+    _relPopEl.hidden = true;
+    document.body.appendChild(_relPopEl);
+  }
+  return _relPopEl;
+}
+function popDescHTML(cached){
+  if(!cached) return '<span class="muted"><span class="spin"></span> Loading…</span>';
+  return cached.description ? esc(clip(cached.description, 260)) : '<span class="muted">No description.</span>';
+}
+function showRelPopover(e, id){
+  const x = releaseById(id); if(!x) return;
+  const pop = relPopEl();
+  const token = ++_relPopToken;
+  const img = x.cover_url
+    ? `<img class="cand-cover" src="${esc(x.cover_url)}" onerror="this.remove()">` : '';
+  const cached = _relDetailCache[x.work_id];
+  pop.innerHTML = `<div class="rel-pop-head">${img}<div style="min-width:0">
+      <div class="cand-title">${esc(x.title)}</div>
+      ${x.author ? `<div class="cand-sub">${esc(x.author)}</div>` : ''}
+    </div></div>
+    <div class="rel-pop-desc">${popDescHTML(cached)}</div>`;
+  pop.hidden = false;
+  moveRelPopover(e);
+  if(!cached){
+    fetchReleaseDetail(x).then(d => {
+      if(_relPopToken !== token || pop.hidden) return; // moved on / hidden — don't stomp
+      const el = pop.querySelector('.rel-pop-desc');
+      if(el) el.innerHTML = popDescHTML(d);
+    });
+  }
+}
+function moveRelPopover(e){
+  const pop = _relPopEl; if(!pop || pop.hidden) return;
+  const pad = 14, w = pop.offsetWidth, h = pop.offsetHeight;
+  let x = e.clientX + pad, y = e.clientY + pad;
+  if(x + w > window.innerWidth - 8)  x = e.clientX - w - pad;
+  if(y + h > window.innerHeight - 8) y = window.innerHeight - h - 8;
+  pop.style.left = Math.max(8, x) + 'px';
+  pop.style.top  = Math.max(8, y) + 'px';
+}
+function hideRelPopover(){ _relPopToken++; if(_relPopEl) _relPopEl.hidden = true; }
+function openRelPreview(id){
+  const x = releaseById(id); if(!x) return;
+  hideRelPopover();
+  const cached = _relDetailCache[x.work_id];
+  $('previewModalBody').innerHTML = bookPreviewModal(
+    { cover:x.cover_url, title:x.title, author:x.author, released:x.first_pub_date,
+      link:'https://openlibrary.org/works/' + x.work_id, workId:x.work_id,
+      description: cached ? cached.description : null }, // null → spinner until fetched
+    { mode:'read-only' });
+  $('previewModalBackdrop').hidden = false;
+  if(!cached){
+    fetchReleaseDetail(x).then(d => {
+      if($('previewModalBackdrop').hidden) return; // closed before it landed
+      patchPreviewDesc(d.description);
+    });
+  }
+}
+function closeRelPreview(){ $('previewModalBackdrop').hidden = true; $('previewModalBody').innerHTML = ''; }
 let booksData = [];
 async function loadBooks(){
   booksData = await getJSON('/api/books') || [];
@@ -1304,7 +1416,9 @@ function resetAddPanels(){
   _addCandidates = []; _addSelected = null; _addLNURL = null;
 }
 document.addEventListener('keydown', e => {
-  if(e.key === 'Escape' && !$('addModalBackdrop').hidden) closeAddModal();
+  if(e.key !== 'Escape') return;
+  if(!$('previewModalBackdrop').hidden) return closeRelPreview();
+  if(!$('addModalBackdrop').hidden) closeAddModal();
 });
 async function startAdd(){
   const raw = $('addField').value.trim();
