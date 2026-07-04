@@ -142,9 +142,9 @@ modified: %s
 }
 
 // CreateBook writes a new #Book note from catalog data (OpenLibrary) — no
-// scraping involved, unlike Create. coverURL/description may be empty. dup
-// may be nil to skip the duplicate check.
-func CreateBook(o Options, dup DupChecker, title, author, link, workID, coverURL, status, description string) (Result, error) {
+// scraping involved, unlike Create. coverURL/description/releasedEN may be
+// empty. dup may be nil to skip the duplicate check.
+func CreateBook(o Options, dup DupChecker, title, author, link, workID, coverURL, status, releasedEN, description string) (Result, error) {
 	if dup != nil {
 		exists, err := dup.BookExists(link)
 		if err != nil {
@@ -181,7 +181,7 @@ func CreateBook(o Options, dup DupChecker, title, author, link, workID, coverURL
 	if err := os.MkdirAll(noteAbs, 0o755); err != nil {
 		return Result{}, err
 	}
-	content := BuildBookNote(sanTitle, author, link, workID, coverName, status, "", description, today)
+	content := BuildBookNote(sanTitle, author, link, workID, coverName, status, releasedEN, description, today)
 	if err := vault.AtomicWrite(mdPath, []byte(content), 0o644); err != nil {
 		return Result{}, err
 	}

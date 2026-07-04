@@ -16,6 +16,11 @@ const (
 	defaultBaseURL   = "https://openlibrary.org"
 	defaultCoversURL = "https://covers.openlibrary.org"
 	searchLimit      = 20
+	// titleSearchLimit is deliberately larger than searchLimit: the add-a-book
+	// candidates modal filters the full fetched set client-side (#51/#7), so it
+	// wants many matches to sift through, unlike the author index where the top
+	// handful is enough.
+	titleSearchLimit = 100
 	worksLimit       = 500
 	editionsLimit    = 100
 )
@@ -123,7 +128,7 @@ type olSearchResp struct {
 func (c *OLClient) SearchByTitle(q string) ([]Candidate, error) {
 	path := "/search.json?title=" + url.QueryEscape(q) +
 		"&fields=key,title,author_name,author_key,first_publish_year,language,cover_i&limit=" +
-		strconv.Itoa(searchLimit)
+		strconv.Itoa(titleSearchLimit)
 	var resp olSearchResp
 	if err := c.get(c.url(path), &resp); err != nil {
 		return nil, err

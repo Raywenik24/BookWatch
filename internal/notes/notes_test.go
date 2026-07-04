@@ -206,7 +206,7 @@ func TestCreateBook(t *testing.T) {
 	defer srv.Close()
 
 	res, err := CreateBook(o, nil, "Rich Dad Poor Dad", "Robert T. Kiyosaki",
-		"https://openlibrary.org/works/OL20749838W", "OL20749838W", srv.URL+"/cover.jpg", "Completed", "A synopsis.")
+		"https://openlibrary.org/works/OL20749838W", "OL20749838W", srv.URL+"/cover.jpg", "Completed", "1997", "A synopsis.")
 	if err != nil {
 		t.Fatalf("CreateBook: %v", err)
 	}
@@ -226,9 +226,12 @@ func TestCreateBook(t *testing.T) {
 	if !strings.Contains(string(raw), "A synopsis.") {
 		t.Errorf("note should carry the description:\n%s", raw)
 	}
+	if !strings.Contains(string(raw), "Released EN: 1997") {
+		t.Errorf("note should carry the released year:\n%s", raw)
+	}
 
 	if _, err := CreateBook(o, nil, "Rich Dad Poor Dad", "Robert T. Kiyosaki",
-		"https://openlibrary.org/works/OLother", "OLother", "", "Backlog", ""); !errors.Is(err, ErrNoteExists) {
+		"https://openlibrary.org/works/OLother", "OLother", "", "Backlog", "", ""); !errors.Is(err, ErrNoteExists) {
 		t.Fatalf("expected ErrNoteExists for same-title note, got %v", err)
 	}
 }

@@ -203,6 +203,15 @@
   .cand-title { font-weight: 600; }
   .cand-sub { font-size: .85rem; color: var(--subtext); }
   .cand-link { font-size: .8rem; white-space: nowrap; }
+  /* candidate fuzzy-filter input (add-a-book #7) */
+  .cand-filter { width: 100%; margin: .5rem 0 .1rem; }
+  /* reusable book-preview card (bookPreviewModal, #51) */
+  .bp-head { align-items: flex-start; gap: .9rem; }
+  .bp-meta { font-size: .78rem; color: var(--subtext); margin-top: .3rem; }
+  .bp-meta code { color: var(--subtext); background: var(--mantle); padding: 0 .25rem; border-radius: 3px; }
+  .bp-desc { margin-top: .75rem; font-size: .9rem; line-height: 1.5; white-space: pre-wrap;
+        max-height: 12rem; overflow-y: auto; padding-right: .3rem; }
+  .bp-desc.muted { color: var(--subtext); }
   input[type="checkbox"] { accent-color: var(--mauve); width: 1rem; height: 1rem; vertical-align: -.15em; margin-right: .3rem; }
   /* reusable toggle switch (settings-style on/off) — checkbox visually hidden, .switch-track is the pill/knob */
   .switch { position: relative; display: inline-block; width: 2.4rem; height: 1.4rem; flex: 0 0 auto; }
@@ -1344,23 +1353,90 @@ async function resolveOLWork(workID){
     selectCandidate(cand);
   } catch(e){ h.update('Error: '+(e.message||'request failed'),'error'); }
 }
+/* bookPreviewModal — reusable "how the note would look" card (#51). Renders the
+   shared note fields for a source-agnostic data object:
+     { cover, title, author, link, workId, released, description }
+   description: a string to show it, '' for "no description", or null/undefined
+   to show a loading spinner (fetched lazily — see fetchCandidateDetail).
+   opts:
+     mode: 'add' | 'read-only' | 'edit'   (default 'read-only')
+     status: current status value — 'add'/'edit' render a #addStatus picker
+     headerActions / footer: extra HTML injected into the card (add-mode's
+       Change button and watch/submit controls live here)
+   Modes: 'add' shows the picker + footer; 'read-only' shows neither (#5 Updates
+   preview); 'edit' is editable — later (#3). */
+const BOOK_STATUSES = ['Completed', 'Backlog', 'Dropped'];
+function bookPreviewModal(data, opts){
+  opts = opts || {};
+  const mode = opts.mode || 'read-only';
+  const d = data || {};
+  const img = d.cover
+    ? `<img class="cand-cover" style="width:64px;height:96px" src="${esc(d.cover)}" onerror="this.remove()">`
+    : '<div class="cand-cover" style="width:64px;height:96px"></div>';
+  const sub = [d.author, d.released].filter(Boolean).map(x => esc(String(x))).join(' · ');
+  const metaBits = [];
+  if(d.workId) metaBits.push(`Work ID: <code>${esc(d.workId)}</code>`);
+  if(d.link) metaBits.push(`<a href="${esc(d.link)}" target="_blank">verify on OL ↗</a>`);
+  const descBlock = d.description == null
+    ? `<div id="bpDesc" class="bp-desc muted"><span class="spin"></span> Loading description…</div>`
+    : `<div id="bpDesc" class="bp-desc${d.description ? '' : ' muted'}">${d.description ? esc(d.description) : 'No description.'}</div>`;
+  const picker = (mode === 'add' || mode === 'edit')
+    ? `<div class="row" style="margin-top:.6rem; align-items:center">
+         <label style="color:var(--subtext); white-space:nowrap">Status</label>
+         <select id="addStatus" style="flex:0 0 auto">${
+           BOOK_STATUSES.map(s => `<option value="${s}"${s === (opts.status || 'Completed') ? ' selected' : ''}>${s}</option>`).join('')
+         }</select>
+       </div>` : '';
+  return `<div class="card">
+    <div class="row bp-head">
+      ${img}
+      <div style="flex:1; min-width:0">
+        <div class="cand-title">${esc(d.title || '')}</div>
+        ${sub ? `<div class="cand-sub">${sub}</div>` : ''}
+        ${metaBits.length ? `<div class="bp-meta">${metaBits.join(' · ')}</div>` : ''}
+      </div>
+      ${opts.headerActions || ''}
+    </div>
+    ${descBlock}
+    ${picker}
+    ${opts.footer || ''}
+  </div>`;
+}
+
 let _addCandidates = [];
 let _addSelected = null;
+let _addDetailToken = null;
 function renderCandidates(list){
   _addCandidates = list;
   showAddModal();
   const box = $('addCandidates'); box.hidden = false;
   box.innerHTML = '<small class="muted">Multiple matches — pick the right one:</small>'
-    + '<div class="cand-list" style="margin-top:.4rem">' + list.map((c,i) => {
-        const sub = [c.Author, c.Year||'', c.Language||''].filter(Boolean).join(' · ');
-        const img = c.CoverURL
-          ? `<img class="cand-cover" src="${esc(c.CoverURL)}" loading="lazy" onerror="this.remove()">`
-          : '<div class="cand-cover"></div>';
-        return `<div class="cand-row" onclick="selectCandidateIdx(${i})">${img}
-          <div class="cand-meta"><div class="cand-title">${esc(c.Title)}</div><div class="cand-sub">${esc(sub)}</div></div>
-          <a class="cand-link" href="${esc(c.OLURL)}" target="_blank" onclick="event.stopPropagation()">OL ↗</a>
-        </div>`;
-      }).join('') + '</div>';
+    + `<input id="candFilter" class="cand-filter" type="text" autocomplete="off" spellcheck="false"
+         placeholder="Filter these ${list.length} matches…" oninput="renderCandList(this.value.trim())">`
+    + '<div class="cand-list" id="candList" style="margin-top:.4rem"></div>';
+  renderCandList('');
+  const f = $('candFilter'); if(f) f.focus();
+}
+// renderCandList filters the already-fetched candidate set client-side with the
+// shared fuzzy matcher (#7) — no re-query. Matches title and author so an
+// author name typed into the filter narrows a title search's noise.
+function renderCandList(q){
+  const scored = q
+    ? _addCandidates.map((c, i) => ({ c, i, s: fzScore(q, (c.Title || '') + ' ' + (c.Author || '')) }))
+        .filter(x => x.s >= 0).sort((a, b) => b.s - a.s)
+    : _addCandidates.map((c, i) => ({ c, i, s: 0 }));
+  const list = $('candList'); if(!list) return;
+  if(!scored.length){ list.innerHTML = '<small class="muted">No matches — clear the filter to see all.</small>'; return; }
+  list.innerHTML = scored.map(({ c, i }) => {
+    const sub = [c.Author, c.Year || '', c.Language || ''].filter(Boolean).join(' · ');
+    const img = c.CoverURL
+      ? `<img class="cand-cover" src="${esc(c.CoverURL)}" loading="lazy" onerror="this.remove()">`
+      : '<div class="cand-cover"></div>';
+    return `<div class="cand-row" onclick="selectCandidateIdx(${i})">${img}
+      <div class="cand-meta"><div class="cand-title">${fzHighlight(c.Title || '', q)}</div><div class="cand-sub">${esc(sub)}</div></div>
+      <a class="cand-link" href="${esc(c.OLURL)}" target="_blank" onclick="event.stopPropagation()">OL ↗</a>
+    </div>`;
+  }).join('');
 }
 function selectCandidateIdx(i){ selectCandidate(_addCandidates[i]); }
 function selectCandidate(c){
@@ -1368,9 +1444,33 @@ function selectCandidate(c){
   showAddModal();
   $('addCandidates').hidden = true;
   renderAddConfirm();
+  if(c.Description === undefined) fetchCandidateDetail(c); // lazy blurb + spinner
+}
+// fetchCandidateDetail lazily pulls the work blurb (which the search index
+// doesn't carry) when a candidate is picked, then patches it into the preview's
+// description area. Tokened so a fast "Change" to another candidate can't let a
+// stale response overwrite the new one.
+async function fetchCandidateDetail(c){
+  const token = {}; _addDetailToken = token;
+  try {
+    const d = await getJSON('/api/ol/work/' + encodeURIComponent(c.WorkID) + '/detail');
+    if(_addDetailToken !== token || _addSelected !== c) return;
+    c.Description = (d && d.description) || '';
+    if(d && d.released && !c.Year) c.Year = d.released;
+  } catch(e){
+    if(_addDetailToken !== token || _addSelected !== c) return;
+    c.Description = ''; // fail quietly — the blurb is optional
+  }
+  patchPreviewDesc(c.Description);
+}
+function patchPreviewDesc(text){
+  const el = $('bpDesc'); if(!el) return;
+  el.className = 'bp-desc' + (text ? '' : ' muted');
+  el.innerHTML = text ? esc(text) : 'No description.';
 }
 function cancelAddConfirm(){
   _addSelected = null;
+  _addDetailToken = null;
   $('addConfirm').hidden = true; $('addConfirm').innerHTML = '';
   if(_addCandidates.length){ $('addCandidates').hidden = false; }
   else { closeAddModal(); }
@@ -1384,25 +1484,11 @@ function toggleAddWatchLang(){
 function renderAddConfirm(){
   const c = _addSelected;
   const box = $('addConfirm'); box.hidden = false;
-  const sub = [c.Author, c.Year||''].filter(Boolean).join(' · ');
-  const img = c.CoverURL ? `<img class="cand-cover" style="width:50px;height:75px" src="${esc(c.CoverURL)}">` : '';
   const langOpts = CATALOG_LANGS.map(([v,l]) => `<option value="${v}"${v==='eng'?' selected':''}>${l}</option>`).join('');
-  box.innerHTML = `<div class="card">
-    <div class="row" style="align-items:center">
-      ${img}
-      <div style="flex:1">
-        <div class="cand-title">${esc(c.Title)}</div>
-        <div class="cand-sub">${esc(sub)}${sub?' — ':''}<a href="${esc(c.OLURL)}" target="_blank">verify on OL ↗</a></div>
-      </div>
-      <button class="btn ghost" onclick="cancelAddConfirm()">Change</button>
-    </div>
-    <div class="row" style="margin-top:.6rem; align-items:center">
-      <label style="color:var(--subtext); white-space:nowrap">Status</label>
-      <select id="addStatus" style="flex:0 0 auto">
-        <option value="Completed" selected>Completed</option>
-        <option value="Backlog">Backlog</option>
-        <option value="Dropped">Dropped</option>
-      </select>
+  const headerActions = _addCandidates.length
+    ? `<button class="btn ghost" onclick="cancelAddConfirm()">Change</button>` : '';
+  const footer = `
+    <div class="row" style="margin-top:.4rem; align-items:center">
       <label style="white-space:nowrap"><input type="checkbox" id="addWatch" onchange="toggleAddWatchLang()"> Watch this author</label>
     </div>
     <div class="row" id="addWatchLangRow" hidden style="align-items:center">
@@ -1413,8 +1499,11 @@ function renderAddConfirm(){
       <span class="switch"><input id="addWatchPl" type="checkbox"><span class="switch-track"></span></span>
       <span style="font-size:.9rem">Also watch for a Polish translation</span>
     </label>
-    <div class="row"><button class="btn" id="addSubmitBtn" onclick="submitAddBook()">Add book</button></div>
-  </div>`;
+    <div class="row"><button class="btn" id="addSubmitBtn" onclick="submitAddBook()">Add book</button></div>`;
+  box.innerHTML = bookPreviewModal(
+    { cover:c.CoverURL, title:c.Title, author:c.Author, link:c.OLURL,
+      workId:c.WorkID, released:c.Year||'', description:c.Description },
+    { mode:'add', status:'Completed', headerActions, footer });
 }
 async function submitAddBook(){
   const c = _addSelected; if(!c) return;

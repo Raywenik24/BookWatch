@@ -89,6 +89,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/ol/authors/{id}/works", s.handleOLAuthorWorks)
 	mux.HandleFunc("GET /api/ol/search", s.handleOLSearch)
 	mux.HandleFunc("GET /api/ol/work/{id}", s.handleOLWork)
+	mux.HandleFunc("GET /api/ol/work/{id}/detail", s.handleOLWorkDetail)
 	mux.HandleFunc("GET /api/ol/works/{id}/editions", s.handleOLWorkEditions)
 	mux.HandleFunc("GET /api/trackers", s.handleListTrackers)
 	mux.HandleFunc("GET /api/releases", s.handleReleases)
@@ -373,14 +374,15 @@ func (s *Server) handleAddReleases(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		olURL := "https://openlibrary.org/works/" + rel.WorkID
-		coverURL, description := rel.CoverURL, ""
+		coverURL, description, releasedEN := rel.CoverURL, "", ""
 		if work, err := s.ol.WorkDetail(rel.WorkID); err == nil {
 			if coverURL == "" {
 				coverURL = provider.SelectCover(work, "eng")
 			}
 			description = work.Description
+			releasedEN = yearStr(work.FirstPubYear)
 		}
-		res, err := notes.CreateBook(opts, s.st, rel.Title, rel.Author, olURL, rel.WorkID, coverURL, "Backlog", description)
+		res, err := notes.CreateBook(opts, s.st, rel.Title, rel.Author, olURL, rel.WorkID, coverURL, "Backlog", releasedEN, description)
 		if err != nil {
 			failed++
 			results = append(results, releaseAddResult{Title: rel.Title, Error: err.Error()})
@@ -525,10 +527,17 @@ func (s *Server) addBookFromCatalog(w http.ResponseWriter, body addBookBody) {
 		status = "Completed"
 	}
 
-	coverURL, description := "", ""
+	// Released EN is the candidate's first_publish_year (the picker already
+	// showed it); fall back to the work record when the candidate carried none
+	// — it's the work's original-language first-publish year, not strictly the
+	// English edition (#51/#2).
+	coverURL, description, releasedEN := "", "", yearStr(body.Year)
 	if work, err := s.ol.WorkDetail(body.WorkID); err == nil {
 		coverURL = provider.SelectCover(work, lang)
 		description = work.Description
+		if releasedEN == "" {
+			releasedEN = yearStr(work.FirstPubYear)
+		}
 		// OL's own index can be missing author/description on a sparse
 		// translation work record (#42) — try the same matchers the
 		// baseline picker uses to backfill from Goodreads/Lubimyczytać.
@@ -571,7 +580,7 @@ func (s *Server) addBookFromCatalog(w http.ResponseWriter, body addBookBody) {
 		NewNoteDir:     s.effectiveBookNewNoteDir(),
 		AttachmentsDir: s.effectiveBookAttachmentsDir(),
 	}
-	res, err := notes.CreateBook(opts, s.st, body.Title, body.Author, body.OLURL, body.WorkID, coverURL, status, description)
+	res, err := notes.CreateBook(opts, s.st, body.Title, body.Author, body.OLURL, body.WorkID, coverURL, status, releasedEN, description)
 	if err != nil {
 		code := http.StatusBadRequest
 		if errors.Is(err, notes.ErrDuplicate) || errors.Is(err, notes.ErrNoteExists) {
@@ -797,6 +806,34 @@ func (s *Server) handleOLWork(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	cand, err := s.ol.WorkByID(id)
 	respond(w, cand, err)
+}
+
+// handleOLWorkDetail returns a work's blurb (and first-publish year) for the
+// add-a-book preview, which fetches it lazily when a candidate is picked and
+// shows a spinner meanwhile (#51/#2). Kept separate from handleOLWork: that
+// path resolves author identity for a pasted URL, this one just needs the
+// description the search index doesn't carry.
+func (s *Server) handleOLWorkDetail(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	work, err := s.ol.WorkDetail(id)
+	if err != nil {
+		respond(w, nil, err)
+		return
+	}
+	respond(w, map[string]any{
+		"title":       work.Title,
+		"released":    work.FirstPubYear,
+		"description": work.Description,
+	}, nil)
+}
+
+// yearStr renders a publish year for a note's "Released EN" field — blank for a
+// zero/unknown year rather than a literal "0".
+func yearStr(y int) string {
+	if y <= 0 {
+		return ""
+	}
+	return strconv.Itoa(y)
 }
 
 // handleOLWorkEditions resolves a work's real per-edition data, since the
