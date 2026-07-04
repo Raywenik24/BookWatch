@@ -179,7 +179,7 @@ func TestBuildBookNote(t *testing.T) {
 }
 
 func TestBuildBookNote_emptyCover(t *testing.T) {
-	out := BuildBookNote("Some Book", "Author", "https://openlibrary.org/works/OLxW", "OLxW", "", "Queue", "2020", "", "2026-06-29")
+	out := BuildBookNote("Some Book", "Author", "https://openlibrary.org/works/OLxW", "OLxW", "", "Backlog", "2020", "", "2026-06-29")
 	if strings.Contains(out, `"[["`) {
 		t.Errorf("empty cover should not produce [[...]] notation:\n%s", out)
 	}
@@ -190,8 +190,8 @@ func TestBuildBookNote_emptyCover(t *testing.T) {
 
 func TestBuildBookNote_defaultStatus(t *testing.T) {
 	out := BuildBookNote("Some Book", "Author", "https://openlibrary.org/works/OLxW", "OLxW", "", "", "2020", "", "2026-06-29")
-	if !strings.Contains(out, "  - Queue") {
-		t.Errorf("empty status should default to Queue:\n%s", out)
+	if !strings.Contains(out, "  - Backlog") {
+		t.Errorf("empty status should default to Backlog:\n%s", out)
 	}
 }
 
@@ -228,7 +228,7 @@ func TestCreateBook(t *testing.T) {
 	}
 
 	if _, err := CreateBook(o, nil, "Rich Dad Poor Dad", "Robert T. Kiyosaki",
-		"https://openlibrary.org/works/OLother", "OLother", "", "Queue", ""); !errors.Is(err, ErrNoteExists) {
+		"https://openlibrary.org/works/OLother", "OLother", "", "Backlog", ""); !errors.Is(err, ErrNoteExists) {
 		t.Fatalf("expected ErrNoteExists for same-title note, got %v", err)
 	}
 }

@@ -309,10 +309,10 @@
       </div>
       <div class="row filter-bar">
         <button class="btn ghost filter-btn active" data-f="" onclick="setStatusFilter('')">All</button>
-        <button class="btn ghost filter-btn" data-f="queue" onclick="setStatusFilter('queue')">Queue</button>
+        <button class="btn ghost filter-btn" data-f="backlog" onclick="setStatusFilter('backlog')">Backlog</button>
         <button class="btn ghost filter-btn" data-f="completed" onclick="setStatusFilter('completed')">Completed</button>
         <button class="btn ghost filter-btn" data-f="dropped" onclick="setStatusFilter('dropped')">Dropped</button>
-        <button class="btn ghost filter-btn" id="filterNoPlanBtn" data-f="no plan to read" onclick="setStatusFilter('no plan to read')">No Plan to read</button>
+        <button class="btn ghost filter-btn" id="filterShelvedBtn" data-f="shelved" onclick="setStatusFilter('shelved')">Shelved</button>
         <button class="btn ghost filter-btn filter-validate" id="filterValidateBtn" data-f="validate" onclick="setStatusFilter('validate')">Validate</button>
       </div>
       <!-- Resets only the content filters (search, author, status); view prefs
@@ -892,8 +892,8 @@ function setKindView(k){
 }
 function updateStatusFilterVisibility(){
   $('filterValidateBtn').hidden = kindView === 'book';
-  $('filterNoPlanBtn').hidden = kindView === 'ln';
-  if((statusFilter === 'validate' && kindView === 'book') || (statusFilter === 'no plan to read' && kindView === 'ln')){
+  $('filterShelvedBtn').hidden = kindView === 'ln';
+  if((statusFilter === 'validate' && kindView === 'book') || (statusFilter === 'shelved' && kindView === 'ln')){
     setStatusFilter('');
   }
 }
@@ -1367,7 +1367,7 @@ function renderAddConfirm(){
       <label style="color:var(--subtext); white-space:nowrap">Status</label>
       <select id="addStatus" style="flex:0 0 auto">
         <option value="Completed" selected>Completed</option>
-        <option value="Queue">Queue</option>
+        <option value="Backlog">Backlog</option>
         <option value="Dropped">Dropped</option>
       </select>
       <label style="white-space:nowrap"><input type="checkbox" id="addWatch" onchange="toggleAddWatchLang()"> Watch this author</label>

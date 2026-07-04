@@ -92,7 +92,7 @@ Cover: "[[%s]]"
 tags:
   - "#LightNovel"
 Status:
-  - Queue
+  - Backlog
 Template_used: LightNovelTemplate
 Series Status:
 created: %s
@@ -118,7 +118,7 @@ func BuildBookNote(title, author, link, workID, coverName, status, releasedEN, d
 		coverEmbed = fmt.Sprintf("![[%s]]\n\n", coverName)
 	}
 	if status == "" {
-		status = "Queue"
+		status = "Backlog"
 	}
 	return fmt.Sprintf(`---
 Title: %s

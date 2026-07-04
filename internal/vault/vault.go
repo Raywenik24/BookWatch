@@ -42,7 +42,7 @@ type Entry struct {
 	Volumes        int
 	Path           string
 	Cover          string // attachment filename from `Cover: "[[file]]"` (no path)
-	Status         string // e.g. "Queue", "Completed", "Dropped"
+	Status         string // e.g. "Backlog", "Completed", "Dropped"
 	ReadVolumes    int
 	HasReadVolumes bool   // false when the field is blank/absent
 	Kind           string // "ln" | "book"

@@ -157,13 +157,13 @@ func TestDetermineStatusCorrection(t *testing.T) {
 		want   string
 	}{
 		{"dropped ignored", vault.Entry{Status: "Dropped", Volumes: 5, ReadVolumes: 3, HasReadVolumes: true}, false, ""},
-		{"hasNew completed -> queue", vault.Entry{Status: "Completed", Volumes: 5, ReadVolumes: 5, HasReadVolumes: true}, true, "Queue"},
-		{"readVols < vols completed -> queue", vault.Entry{Status: "Completed", Volumes: 5, ReadVolumes: 3, HasReadVolumes: true}, false, "Queue"},
-		{"readVols == vols queue -> completed", vault.Entry{Status: "Queue", Volumes: 5, ReadVolumes: 5, HasReadVolumes: true}, false, "Completed"},
+		{"hasNew completed -> backlog", vault.Entry{Status: "Completed", Volumes: 5, ReadVolumes: 5, HasReadVolumes: true}, true, "Backlog"},
+		{"readVols < vols completed -> backlog", vault.Entry{Status: "Completed", Volumes: 5, ReadVolumes: 3, HasReadVolumes: true}, false, "Backlog"},
+		{"readVols == vols backlog -> completed", vault.Entry{Status: "Backlog", Volumes: 5, ReadVolumes: 5, HasReadVolumes: true}, false, "Completed"},
 		{"readVols > vols no change", vault.Entry{Status: "Completed", Volumes: 3, ReadVolumes: 5, HasReadVolumes: true}, false, ""},
-		{"blank readVols treated as 0 completed", vault.Entry{Status: "Completed", Volumes: 3, HasReadVolumes: false}, false, "Queue"},
-		{"blank readVols treated as 0 queue no change", vault.Entry{Status: "Queue", Volumes: 5, HasReadVolumes: false}, false, ""},
-		{"hasNew queue no change", vault.Entry{Status: "Queue", Volumes: 5, ReadVolumes: 5, HasReadVolumes: true}, true, ""},
+		{"blank readVols treated as 0 completed", vault.Entry{Status: "Completed", Volumes: 3, HasReadVolumes: false}, false, "Backlog"},
+		{"blank readVols treated as 0 backlog no change", vault.Entry{Status: "Backlog", Volumes: 5, HasReadVolumes: false}, false, ""},
+		{"hasNew backlog no change", vault.Entry{Status: "Backlog", Volumes: 5, ReadVolumes: 5, HasReadVolumes: true}, true, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -185,12 +185,12 @@ func TestRunCheck_statusAutoCorrection(t *testing.T) {
 	sc := scraper.New("t", 5*time.Second)
 	st := openStore(t)
 
-	// HasNew + Completed → Queue
+	// HasNew + Completed → Backlog
 	pathHasNew := writeNoteWithStatus(t, vaultDir, "HasNewCompleted", srv.URL+"/a", 1, 1, "Completed")
-	// !HasNew, ReadVols(1) < Vols(2), Completed → Queue
+	// !HasNew, ReadVols(1) < Vols(2), Completed → Backlog
 	pathLowRead := writeNoteWithStatus(t, vaultDir, "LowRead", srv.URL+"/b", 2, 1, "Completed")
-	// !HasNew, ReadVols == Vols, Queue → Completed
-	pathQueueDone := writeNoteWithStatus(t, vaultDir, "QueueDone", srv.URL+"/c", 2, 2, "Queue")
+	// !HasNew, ReadVols == Vols, Backlog → Completed
+	pathBacklogDone := writeNoteWithStatus(t, vaultDir, "BacklogDone", srv.URL+"/c", 2, 2, "Backlog")
 	// Dropped → never touched
 	pathDropped := writeNoteWithStatus(t, vaultDir, "Dropped", srv.URL+"/d", 2, 2, "Dropped")
 
@@ -206,9 +206,9 @@ func TestRunCheck_statusAutoCorrection(t *testing.T) {
 		}
 	}
 
-	checkContains(pathHasNew, "  - Queue")
-	checkContains(pathLowRead, "  - Queue")
-	checkContains(pathQueueDone, "  - Completed")
+	checkContains(pathHasNew, "  - Backlog")
+	checkContains(pathLowRead, "  - Backlog")
+	checkContains(pathBacklogDone, "  - Completed")
 	// Dropped note should not have been rewritten to list format (no correction applied)
 	checkContains(pathDropped, "Dropped")
 

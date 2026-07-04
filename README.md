@@ -25,7 +25,7 @@ scheduler; everything is stored in a local SQLite file.
 - **Configurable sources** — per-domain scrape rules (CSS selectors + regex for
   the volume list, title, cover, description) editable in the UI, with a **Test**
   button that shows what a rule set would extract before you save it.
-- **Status auto-correction** — nudges a note's `Status` between `Queue` and
+- **Status auto-correction** — nudges a note's `Status` between `Backlog` and
   `Completed` based on new volumes vs. your read progress (never touches
   `Dropped`).
 - **Anomaly guard** — a scrape that succeeds but reads fewer volumes than
@@ -85,7 +85,7 @@ Volumes: 12          # written on apply
 Last Update: 2026-06-29   # written on apply
 Cover: "[[some-novel.jpg]]"
 Status:
-  - Queue            # may be auto-corrected (Queue ⇄ Completed)
+  - Backlog          # may be auto-corrected (Backlog ⇄ Completed)
 Read Volumes: 9      # used for status correction; never overwritten
 ---
 ```

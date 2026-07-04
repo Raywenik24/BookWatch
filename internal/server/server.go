@@ -344,7 +344,7 @@ type releaseAddResult struct {
 }
 
 // handleAddReleases turns the selected surfaced releases into #Book notes
-// (status Queue), the same catalog flow as the add-a-book page, then marks
+// (status Backlog), the same catalog flow as the add-a-book page, then marks
 // each created and seen so the tracker poll never re-surfaces it.
 func (s *Server) handleAddReleases(w http.ResponseWriter, r *http.Request) {
 	var body struct {
@@ -376,13 +376,13 @@ func (s *Server) handleAddReleases(w http.ResponseWriter, r *http.Request) {
 			}
 			description = work.Description
 		}
-		res, err := notes.CreateBook(opts, s.st, rel.Title, rel.Author, olURL, rel.WorkID, coverURL, "Queue", description)
+		res, err := notes.CreateBook(opts, s.st, rel.Title, rel.Author, olURL, rel.WorkID, coverURL, "Backlog", description)
 		if err != nil {
 			failed++
 			results = append(results, releaseAddResult{Title: rel.Title, Error: err.Error()})
 			continue
 		}
-		if _, err := s.st.UpsertBook(res.Title, olURL, res.Path, 0, res.Cover, "Queue", nil, "book", rel.Author); err != nil {
+		if _, err := s.st.UpsertBook(res.Title, olURL, res.Path, 0, res.Cover, "Backlog", nil, "book", rel.Author); err != nil {
 			failed++
 			results = append(results, releaseAddResult{Title: rel.Title, Error: err.Error()})
 			continue

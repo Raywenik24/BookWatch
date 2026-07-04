@@ -126,7 +126,7 @@ func TestUpdateVolumes_preservesCRLF(t *testing.T) {
 func TestUpdateStatus_scalarToList(t *testing.T) {
 	// sample has "Status: reading" (scalar) → convert to list format
 	p := writeTemp(t, sample)
-	if err := UpdateStatus(p, "Queue"); err != nil {
+	if err := UpdateStatus(p, "Backlog"); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := os.ReadFile(p)
@@ -134,14 +134,14 @@ func TestUpdateStatus_scalarToList(t *testing.T) {
 	if !strings.Contains(out, "Status:\n") && !strings.Contains(out, "Status:\r\n") {
 		t.Errorf("expected Status: key-only line:\n%s", out)
 	}
-	if !strings.Contains(out, "  - Queue") {
-		t.Errorf("expected '  - Queue':\n%s", out)
+	if !strings.Contains(out, "  - Backlog") {
+		t.Errorf("expected '  - Backlog':\n%s", out)
 	}
 	if strings.Contains(out, "Status: reading") {
 		t.Errorf("old scalar Status not removed:\n%s", out)
 	}
 	e, ok, err := parse(p)
-	if err != nil || !ok || e.Status != "Queue" {
+	if err != nil || !ok || e.Status != "Backlog" {
 		t.Errorf("reparse: ok=%v status=%q err=%v", ok, e.Status, err)
 	}
 }
@@ -149,19 +149,19 @@ func TestUpdateStatus_scalarToList(t *testing.T) {
 func TestUpdateStatus_listFormat(t *testing.T) {
 	content := strings.Replace(sample, "Status: reading", "Status:\n  - Completed", 1)
 	p := writeTemp(t, content)
-	if err := UpdateStatus(p, "Queue"); err != nil {
+	if err := UpdateStatus(p, "Backlog"); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := os.ReadFile(p)
 	out := string(got)
-	if !strings.Contains(out, "  - Queue") {
-		t.Errorf("expected '  - Queue':\n%s", out)
+	if !strings.Contains(out, "  - Backlog") {
+		t.Errorf("expected '  - Backlog':\n%s", out)
 	}
 	if strings.Contains(out, "  - Completed") {
 		t.Errorf("old list value not replaced:\n%s", out)
 	}
 	e, ok, err := parse(p)
-	if err != nil || !ok || e.Status != "Queue" {
+	if err != nil || !ok || e.Status != "Backlog" {
 		t.Errorf("reparse: ok=%v status=%q err=%v", ok, e.Status, err)
 	}
 }
@@ -169,23 +169,23 @@ func TestUpdateStatus_listFormat(t *testing.T) {
 func TestUpdateStatus_noField(t *testing.T) {
 	content := strings.Replace(sample, "Status: reading\n", "", 1)
 	p := writeTemp(t, content)
-	if err := UpdateStatus(p, "Queue"); err != nil {
+	if err := UpdateStatus(p, "Backlog"); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := os.ReadFile(p)
 	out := string(got)
-	if !strings.Contains(out, "  - Queue") {
-		t.Errorf("expected '  - Queue' inserted:\n%s", out)
+	if !strings.Contains(out, "  - Backlog") {
+		t.Errorf("expected '  - Backlog' inserted:\n%s", out)
 	}
 	e, ok, err := parse(p)
-	if err != nil || !ok || e.Status != "Queue" {
+	if err != nil || !ok || e.Status != "Backlog" {
 		t.Errorf("reparse: ok=%v status=%q err=%v", ok, e.Status, err)
 	}
 }
 
 func TestUpdateStatus_preservesCRLF(t *testing.T) {
 	p := writeTemp(t, strings.ReplaceAll(sample, "\n", "\r\n"))
-	if err := UpdateStatus(p, "Queue"); err != nil {
+	if err := UpdateStatus(p, "Backlog"); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := os.ReadFile(p)
@@ -216,7 +216,7 @@ Work ID: OL20749838W
 Cover: "[[cover_RichDadPoorDad.jpg]]"
 Released EN: 1997
 Status:
-  - Queue
+  - Backlog
 tags:
   - "#Book"
 Template_used: BookTemplate
@@ -272,7 +272,7 @@ func TestScan_picksUpBookNote(t *testing.T) {
 	if book.ReleasedEN != "1997" {
 		t.Errorf("book released en: %q", book.ReleasedEN)
 	}
-	if book.Status != "Queue" {
+	if book.Status != "Backlog" {
 		t.Errorf("book status: %q", book.Status)
 	}
 	if book.Cover != "cover_RichDadPoorDad.jpg" {

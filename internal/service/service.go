@@ -406,12 +406,12 @@ func determineStatusCorrection(e vault.Entry, hasNew bool) string {
 	}
 	readVols := e.ReadVolumes // 0 when !HasReadVolumes
 	if hasNew && strings.EqualFold(e.Status, "Completed") {
-		return "Queue"
+		return "Backlog"
 	}
 	if readVols < e.Volumes && strings.EqualFold(e.Status, "Completed") {
-		return "Queue"
+		return "Backlog"
 	}
-	if !hasNew && e.Volumes > 0 && readVols == e.Volumes && strings.EqualFold(e.Status, "Queue") {
+	if !hasNew && e.Volumes > 0 && readVols == e.Volumes && strings.EqualFold(e.Status, "Backlog") {
 		return "Completed"
 	}
 	return ""

@@ -299,12 +299,12 @@ func TestUpsertBook_kindAndAuthor(t *testing.T) {
 	st := openTemp(t)
 
 	// LN book carries kind=ln.
-	lnID, err := st.UpsertBook("Mushoku Tensei", "https://jnovels.com/mt", "/mt.md", 25, "c.jpg", "Queue", nil, "ln", "Rifujin")
+	lnID, err := st.UpsertBook("Mushoku Tensei", "https://jnovels.com/mt", "/mt.md", 25, "c.jpg", "Backlog", nil, "ln", "Rifujin")
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Book note carries kind=book.
-	bookID, err := st.UpsertBook("Rich Dad Poor Dad", "https://openlibrary.org/works/OL20749838W", "/rdpd.md", 0, "", "Queue", nil, "book", "Robert T. Kiyosaki")
+	bookID, err := st.UpsertBook("Rich Dad Poor Dad", "https://openlibrary.org/works/OL20749838W", "/rdpd.md", 0, "", "Backlog", nil, "book", "Robert T. Kiyosaki")
 	if err != nil {
 		t.Fatal(err)
 	}
