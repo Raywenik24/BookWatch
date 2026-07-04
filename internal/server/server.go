@@ -253,9 +253,13 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"effective": map[string]string{
-			"scan_root":       s.effective("scan_root", s.cfg.ScanRoot),
-			"new_note_dir":    s.effective("new_note_dir", s.cfg.NewNoteDir),
-			"attachments_dir": s.effective("attachments_dir", s.cfg.AttachmentsDir),
+			"vault_dir":            s.effective("vault_dir", s.cfg.VaultDir),
+			"scan_root":            s.effective("scan_root", s.cfg.ScanRoot),
+			"new_note_dir":         s.effective("new_note_dir", s.cfg.NewNoteDir),
+			"attachments_dir":      s.effective("attachments_dir", s.cfg.AttachmentsDir),
+			"book_scan_root":       s.effectiveBookScanRoot(),
+			"book_new_note_dir":    s.effectiveBookNewNoteDir(),
+			"book_attachments_dir": s.effectiveBookAttachmentsDir(),
 		},
 		"overrides": saved,
 	})
@@ -356,8 +360,8 @@ func (s *Server) handleAddReleases(w http.ResponseWriter, r *http.Request) {
 	}
 	opts := notes.Options{
 		VaultDir:       s.effective("vault_dir", s.cfg.VaultDir),
-		NewNoteDir:     s.effective("new_note_dir", s.cfg.NewNoteDir),
-		AttachmentsDir: s.effective("attachments_dir", s.cfg.AttachmentsDir),
+		NewNoteDir:     s.effectiveBookNewNoteDir(),
+		AttachmentsDir: s.effectiveBookAttachmentsDir(),
 	}
 	created, failed := 0, 0
 	var results []releaseAddResult
@@ -564,8 +568,8 @@ func (s *Server) addBookFromCatalog(w http.ResponseWriter, body addBookBody) {
 
 	opts := notes.Options{
 		VaultDir:       s.effective("vault_dir", s.cfg.VaultDir),
-		NewNoteDir:     s.effective("new_note_dir", s.cfg.NewNoteDir),
-		AttachmentsDir: s.effective("attachments_dir", s.cfg.AttachmentsDir),
+		NewNoteDir:     s.effectiveBookNewNoteDir(),
+		AttachmentsDir: s.effectiveBookAttachmentsDir(),
 	}
 	res, err := notes.CreateBook(opts, s.st, body.Title, body.Author, body.OLURL, body.WorkID, coverURL, status, description)
 	if err != nil {
@@ -935,8 +939,7 @@ func (s *Server) handleSetSettings(w http.ResponseWriter, r *http.Request) {
 func (s *Server) resolveCover(name string) string {
 	name = filepath.Base(name)
 	vaultDir := s.effective("vault_dir", s.cfg.VaultDir)
-	direct := filepath.Join(vaultDir,
-		filepath.FromSlash(s.effective("attachments_dir", s.cfg.AttachmentsDir)), name)
+	direct := filepath.Join(vault.ResolvePath(vaultDir, s.effective("attachments_dir", s.cfg.AttachmentsDir)), name)
 	if _, err := os.Stat(direct); err == nil {
 		return direct
 	}
@@ -983,10 +986,52 @@ func indexVaultFiles(root string) map[string]string {
 
 // effective returns a settings-table override for key, else the cfg fallback.
 func (s *Server) effective(key, fallback string) string {
-	if v, ok, _ := s.st.GetSetting(key); ok && v != "" {
+	return effectiveSetting(s.st, key, fallback)
+}
+
+func effectiveSetting(st *store.Store, key, fallback string) string {
+	if v, ok, _ := st.GetSetting(key); ok && v != "" {
 		return v
 	}
 	return fallback
+}
+
+// effectiveBookScanRoot/NewNoteDir/AttachmentsDir mirror effective() for the
+// #Book path fields, falling back to the Light Novel field when the Book one
+// is blank — so an existing single-folder setup keeps working unchanged.
+func (s *Server) effectiveBookScanRoot() string {
+	if v := s.effective("book_scan_root", s.cfg.BookScanRoot); v != "" {
+		return v
+	}
+	return s.effective("scan_root", s.cfg.ScanRoot)
+}
+
+func (s *Server) effectiveBookNewNoteDir() string {
+	if v := s.effective("book_new_note_dir", s.cfg.BookNewNoteDir); v != "" {
+		return v
+	}
+	return s.effective("new_note_dir", s.cfg.NewNoteDir)
+}
+
+func (s *Server) effectiveBookAttachmentsDir() string {
+	if v := s.effective("book_attachments_dir", s.cfg.BookAttachmentsDir); v != "" {
+		return v
+	}
+	return s.effective("attachments_dir", s.cfg.AttachmentsDir)
+}
+
+// ScanRoots returns the effective Light Novel + Book scan roots (Book falls
+// back to the LN root when unset), each resolved against the vault dir so a
+// root entered relative to the vault (or as a full path) both work. Exported
+// for the scheduler and CLI check, which run before/without a Server instance.
+func ScanRoots(cfg config.Config, st *store.Store) []string {
+	vaultDir := effectiveSetting(st, "vault_dir", cfg.VaultDir)
+	ln := effectiveSetting(st, "scan_root", cfg.ScanRoot)
+	book := effectiveSetting(st, "book_scan_root", cfg.BookScanRoot)
+	if book == "" {
+		book = ln
+	}
+	return []string{vault.ResolvePath(vaultDir, ln), vault.ResolvePath(vaultDir, book)}
 }
 
 func respond(w http.ResponseWriter, v any, err error) {

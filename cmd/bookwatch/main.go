@@ -64,13 +64,9 @@ func runServe(argv []string) {
 	lc := provider.NewLubimyczytac(cfg.UserAgent, cfg.Timeout)
 
 	sched := scheduler.New(func(progress func(i, total int, title string)) (service.CheckSummary, error) {
-		scanRoot := cfg.ScanRoot
-		if v, ok, _ := st.GetSetting("scan_root"); ok && v != "" {
-			scanRoot = v
-		}
 		// Detect-only: a check never writes the vault. Writes happen on an
 		// explicit apply (POST /api/apply), never on a cron/manual check.
-		return service.RunCheck(sc, st, ol, lc, scanRoot, false, progress)
+		return service.RunCheck(sc, st, ol, lc, server.ScanRoots(cfg, st), false, progress)
 	})
 	if err := sched.Start(cfg.CheckCron); err != nil {
 		log.Fatal("scheduler: ", err)
@@ -133,7 +129,7 @@ func runCheck(argv []string) {
 		}
 	}
 
-	sum, err := service.RunCheck(sc, st, ol, lc, *root, *write, progress)
+	sum, err := service.RunCheck(sc, st, ol, lc, []string{*root}, *write, progress)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "check error:", err)
 		os.Exit(1)

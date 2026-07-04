@@ -85,6 +85,85 @@ func Scan(root string) ([]Entry, error) {
 	return entries, err
 }
 
+// ResolvePath resolves p against vaultDir: an absolute p (e.g. a full
+// "D:\..." path) is used as-is, so a setting can point outside the vault or
+// just be pasted from Explorer; anything else is treated as relative to the
+// vault root. Lets scan roots and new-note/attachments folders be entered
+// either way.
+func ResolvePath(vaultDir, p string) string {
+	p = filepath.FromSlash(p)
+	if filepath.IsAbs(p) {
+		return filepath.Clean(p)
+	}
+	return filepath.Join(vaultDir, p)
+}
+
+// ScanRoots walks each of roots (Light Novel + Book scan roots, typically),
+// dropping any root nested inside another so an overlapping pair isn't
+// walked twice, and merges the results — deduped by absolute note path in
+// case two configured roots turn out to be the same directory.
+func ScanRoots(roots []string) ([]Entry, error) {
+	var all []Entry
+	seen := map[string]bool{}
+	for _, root := range dedupeRoots(roots) {
+		entries, err := Scan(root)
+		if err != nil {
+			return nil, err
+		}
+		for _, e := range entries {
+			abs, err := filepath.Abs(e.Path)
+			if err != nil {
+				abs = e.Path
+			}
+			if seen[abs] {
+				continue
+			}
+			seen[abs] = true
+			all = append(all, e)
+		}
+	}
+	return all, nil
+}
+
+// dedupeRoots drops blanks, exact duplicates, and any root nested inside
+// another root in the list, so a Book path configured as a subfolder of the
+// Light Novel path (or vice versa) doesn't get scanned twice.
+func dedupeRoots(roots []string) []string {
+	var abs []string
+	for _, r := range roots {
+		if r == "" {
+			continue
+		}
+		a, err := filepath.Abs(r)
+		if err != nil {
+			a = r
+		}
+		abs = append(abs, a)
+	}
+	var out []string
+	for i, r := range abs {
+		nested := false
+		for j, other := range abs {
+			if i == j {
+				continue
+			}
+			if r == other {
+				if j < i { // exact duplicate: keep the earliest occurrence
+					nested = true
+				}
+				continue
+			}
+			if rel, err := filepath.Rel(other, r); err == nil && rel != "." && !strings.HasPrefix(rel, "..") {
+				nested = true
+			}
+		}
+		if !nested {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 // parse reads the YAML frontmatter and returns the entry. ok=true only for
 // notes tagged #LightNovel+LightNovelTemplate or #Book+BookTemplate with a Link.
 func parse(path string) (Entry, bool, error) {

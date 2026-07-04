@@ -158,7 +158,7 @@ func CreateBook(o Options, dup DupChecker, title, author, link, workID, coverURL
 	sanTitle := Sanitize(title, false)
 	today := time.Now().Format("2006-01-02")
 
-	noteAbs := filepath.Join(o.VaultDir, filepath.FromSlash(o.NewNoteDir))
+	noteAbs := vault.ResolvePath(o.VaultDir, o.NewNoteDir)
 	mdPath := filepath.Join(noteAbs, sanTitle+".md")
 	if _, err := os.Stat(mdPath); err == nil {
 		return Result{}, fmt.Errorf("%w: %s.md", ErrNoteExists, sanTitle)
@@ -169,7 +169,7 @@ func CreateBook(o Options, dup DupChecker, title, author, link, workID, coverURL
 	coverName := ""
 	if coverURL != "" {
 		coverName = "cover_" + Sanitize(title, true) + coverExt(coverURL)
-		attachAbs := filepath.Join(o.VaultDir, filepath.FromSlash(o.AttachmentsDir))
+		attachAbs := vault.ResolvePath(o.VaultDir, o.AttachmentsDir)
 		if err := os.MkdirAll(attachAbs, 0o755); err != nil {
 			return Result{}, err
 		}
@@ -215,7 +215,7 @@ func Create(o Options, sc *scraper.Client, dup DupChecker, rl scraper.Rules, sou
 	// Refuse to overwrite an existing note. Checked before the cover download so
 	// a duplicate filename neither clobbers the note nor its cover. Stat errors
 	// other than "not exist" are surfaced rather than assumed safe.
-	noteAbs := filepath.Join(o.VaultDir, filepath.FromSlash(o.NewNoteDir))
+	noteAbs := vault.ResolvePath(o.VaultDir, o.NewNoteDir)
 	mdPath := filepath.Join(noteAbs, title+".md")
 	if _, err := os.Stat(mdPath); err == nil {
 		return Result{}, fmt.Errorf("%w: %s.md", ErrNoteExists, title)
@@ -225,7 +225,7 @@ func Create(o Options, sc *scraper.Client, dup DupChecker, rl scraper.Rules, sou
 
 	// Download cover.
 	coverName := "cover_" + Sanitize(nd.Title, true) + coverExt(nd.CoverURL)
-	attachAbs := filepath.Join(o.VaultDir, filepath.FromSlash(o.AttachmentsDir))
+	attachAbs := vault.ResolvePath(o.VaultDir, o.AttachmentsDir)
 	if err := os.MkdirAll(attachAbs, 0o755); err != nil {
 		return Result{}, err
 	}

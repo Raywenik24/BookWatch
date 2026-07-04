@@ -41,15 +41,16 @@ type CheckSummary struct {
 	Updates         []UpdateInfo `json:"updates"`
 }
 
-// RunCheck scans scanRoot, checks each book, optionally writes vault updates,
+// RunCheck scans scanRoots (Light Novel + Book roots, deduped when one is
+// nested in another), checks each book, optionally writes vault updates,
 // polls watched authors for new releases, and (when st != nil) records the
 // run + updates + books. ol may be nil to skip the author-tracker phase
 // (e.g. in tests that don't care about it). lc may be nil to skip the Polish
 // (Lubimyczytać) release pass. progress may be nil.
-func RunCheck(sc *scraper.Client, st *store.Store, ol provider.Provider, lc provider.PolishSource, scanRoot string, write bool,
+func RunCheck(sc *scraper.Client, st *store.Store, ol provider.Provider, lc provider.PolishSource, scanRoots []string, write bool,
 	progress func(i, total int, title string)) (CheckSummary, error) {
 
-	entries, err := vault.Scan(scanRoot)
+	entries, err := vault.ScanRoots(scanRoots)
 	if err != nil {
 		return CheckSummary{}, fmt.Errorf("scan: %w", err)
 	}

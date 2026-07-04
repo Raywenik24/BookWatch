@@ -62,7 +62,7 @@ func TestRunCheck_detectOnlyThenApply(t *testing.T) {
 	sc := scraper.New("t", 5*time.Second)
 
 	// Detect-only: finds the bump but writes nothing.
-	sum, err := RunCheck(sc, st, nil, nil, vaultDir, false, nil)
+	sum, err := RunCheck(sc, st, nil, nil, []string{vaultDir}, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +114,7 @@ func TestRunCheck_logsScrapeAnomaly(t *testing.T) {
 	st := openStore(t)
 	sc := scraper.New("t", 5*time.Second)
 
-	sum, err := RunCheck(sc, st, nil, nil, vaultDir, false, nil)
+	sum, err := RunCheck(sc, st, nil, nil, []string{vaultDir}, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +194,7 @@ func TestRunCheck_statusAutoCorrection(t *testing.T) {
 	// Dropped → never touched
 	pathDropped := writeNoteWithStatus(t, vaultDir, "Dropped", srv.URL+"/d", 2, 2, "Dropped")
 
-	if _, err := RunCheck(sc, st, nil, nil, vaultDir, false, nil); err != nil {
+	if _, err := RunCheck(sc, st, nil, nil, []string{vaultDir}, false, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -242,7 +242,7 @@ func TestRunCheck_prunesOnlyMissingNotes(t *testing.T) {
 	os.WriteFile(existing, []byte("not a LN note"), 0o644)
 	st.UpsertBook("OnDisk", "https://nope/y", existing, 1, "", "", nil, "ln", "")
 
-	if _, err := RunCheck(sc, st, nil, nil, vaultDir, false, nil); err != nil {
+	if _, err := RunCheck(sc, st, nil, nil, []string{vaultDir}, false, nil); err != nil {
 		t.Fatal(err)
 	}
 

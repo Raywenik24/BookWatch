@@ -16,9 +16,16 @@ type Config struct {
 	DBPath    string
 
 	VaultDir       string // absolute vault root
-	NewNoteDir     string // relative to vault — where new notes go
-	AttachmentsDir string // relative to vault — where covers go
+	NewNoteDir     string // relative to vault — where new #LightNovel notes go
+	AttachmentsDir string // relative to vault — where #LightNovel covers go
 	ScanRoot       string // folder scanned for #LightNovel notes
+
+	// Book* mirror the fields above for #Book notes. Left blank by default —
+	// the settings/effective lookup falls back to the LN fields above, so an
+	// existing single-folder setup keeps working unchanged.
+	BookNewNoteDir     string
+	BookAttachmentsDir string
+	BookScanRoot       string
 
 	Port      string // HTTP listen port
 	Password  string // shared password for write endpoints
@@ -38,6 +45,11 @@ func Default() Config {
 		NewNoteDir:     env("BOOKWATCH_NEW_NOTE_DIR", "LightNovel"),
 		AttachmentsDir: env("BOOKWATCH_ATTACHMENTS_DIR", "LightNovel/_attachments"),
 		ScanRoot:       env("BOOKWATCH_SCAN_ROOT", vault+"/LightNovel"),
+
+		BookNewNoteDir:     env("BOOKWATCH_BOOK_NEW_NOTE_DIR", ""),
+		BookAttachmentsDir: env("BOOKWATCH_BOOK_ATTACHMENTS_DIR", ""),
+		BookScanRoot:       env("BOOKWATCH_BOOK_SCAN_ROOT", ""),
+
 		Port:      env("BOOKWATCH_PORT", "8080"),
 		Password:  env("BOOKWATCH_PASSWORD", ""),
 		CheckCron: env("BOOKWATCH_CHECK_CRON", "0 9 * * *"),

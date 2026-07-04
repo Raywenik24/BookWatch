@@ -115,6 +115,9 @@
           animation: spin .7s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
   .card { background: var(--mantle); border: 1px solid var(--surface0); border-radius: 8px; padding: .9rem; margin: .8rem 0; }
+  .card h3 { margin: 0 0 .6rem; color: var(--mauve); font-size: .95rem; }
+  .card h4 { margin: .8rem 0 .3rem; color: var(--subtext); font-size: .8rem; text-transform: uppercase; letter-spacing: .03em; }
+  .card h4:first-of-type { margin-top: 0; }
   .rule-grid { display: grid; grid-template-columns: 110px 1fr 1fr 70px; gap: .4rem; align-items: center; font-size: .85rem; }
   .rule-grid label { color: var(--subtext); }
   .preview { background: var(--crust); border-radius: 6px; padding: .6rem; font-size: .85rem; white-space: pre-wrap; }
@@ -441,8 +444,13 @@
 
     <!-- SETTINGS -->
     <section id="settings">
-      <h2>Settings</h2>
+      <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:.6rem">
+        <h2 style="margin:0">Settings</h2>
+        <button class="btn" onclick="saveSettings()">Save settings</button>
+      </div>
+
       <div class="card">
+        <h3>Password</h3>
         <div class="rule-grid" style="grid-template-columns:160px 1fr">
           <label>Password</label>
           <div class="row" style="margin:0">
@@ -452,22 +460,43 @@
         </div>
         <p class="muted"><small>Stored on this device. Needed for Books/Sources write actions and Run check.</small></p>
       </div>
+
       <div class="card">
+        <h3>Display</h3>
         <div class="rule-grid" style="grid-template-columns:160px 1fr">
           <label>Theme</label><div id="setThemeMount"></div>
           <label>Timezone</label><div id="setTzMount"></div>
-          <label>Scan root</label><input id="setScanRoot" placeholder="folder scanned for #LightNovel">
-          <label>New-note folder</label><input id="setNewNoteDir" placeholder="relative to vault">
-          <label>Attachments folder</label><input id="setAttachDir" placeholder="relative to vault">
         </div>
-        <label class="switch-row" style="margin:.6rem 0 0">
+      </div>
+
+      <div class="card">
+        <h3>Paths</h3>
+        <div class="rule-grid" style="grid-template-columns:160px 1fr">
+          <label>Vault root</label><input id="setVaultDir" placeholder="D:\...\vault (full path)">
+        </div>
+        <h4>Light Novel</h4>
+        <div class="rule-grid" style="grid-template-columns:160px 1fr">
+          <label>Scan root</label><input id="setScanRoot" placeholder="e.g. LightNovel or D:\...\LightNovel">
+          <label>New-note folder</label><input id="setNewNoteDir" placeholder="e.g. LightNovel or D:\...\LightNovel">
+          <label>Attachments folder</label><input id="setAttachDir" placeholder="e.g. LightNovel/_attachments">
+        </div>
+        <h4>Book</h4>
+        <div class="rule-grid" style="grid-template-columns:160px 1fr">
+          <label>Scan root</label><input id="setBookScanRoot" placeholder="blank = Light Novel scan root">
+          <label>New-note folder</label><input id="setBookNewNoteDir" placeholder="blank = Light Novel folder">
+          <label>Attachments folder</label><input id="setBookAttachDir" placeholder="blank = Light Novel folder">
+        </div>
+        <p class="muted"><small>Each folder is either a full path or a path relative to the vault root above — both work. Folders/scan-roots override the server's env defaults. Blank Book fields fall back to the matching Light Novel field, so a single-folder setup keeps working unchanged.</small></p>
+      </div>
+
+      <div class="card">
+        <h3>Matching</h3>
+        <label class="switch-row" style="margin:0">
           <span class="switch"><input id="setUnsafeCover" type="checkbox"><span class="switch-track"></span></span>
           <span>Use unsafe cover matching
             <br><small class="muted">When a book has no OpenLibrary cover and no author-verified Goodreads match, borrow a Goodreads cover found by ISBN alone — even if the author doesn't match. Fills otherwise-blank Watchlist tiles (e.g. anthologies where your author is an uncredited contributor), but the cover is a best guess and may be wrong; such tiles are marked <span class="unsafe-mark unsafe-mark-inline">?</span>.</small>
           </span>
         </label>
-        <div class="row"><button class="btn" onclick="saveSettings()">Save settings</button></div>
-        <p class="muted"><small>Folders/scan-root override the server's env defaults. Theme and timezone are shared across devices.</small></p>
       </div>
     </section>
 
@@ -1071,9 +1100,13 @@ async function loadSettings(){
   let s;
   try { s = await getJSON('/api/settings'); } catch(e){ return; }
   const eff = s.effective||{}, ov = s.overrides||{};
+  $('setVaultDir').value = eff.vault_dir || '';
   $('setScanRoot').value = eff.scan_root || '';
   $('setNewNoteDir').value = eff.new_note_dir || '';
   $('setAttachDir').value = eff.attachments_dir || '';
+  $('setBookScanRoot').value = eff.book_scan_root || '';
+  $('setBookNewNoteDir').value = eff.book_new_note_dir || '';
+  $('setBookAttachDir').value = eff.book_attachments_dir || '';
   $('setUnsafeCover').checked = ov.unsafe_cover_match === '1';
   const theme = ov.theme || lsGet('pw_theme') || 'mocha';
   themePicker.setValue(theme); applyTheme(theme);
@@ -1435,8 +1468,11 @@ async function delSource(id){
   toast(r.ok?'Source deleted.':'Error', r.ok?'success':'error'); loadSources();
 }
 async function saveSettings(){
-  const body = { scan_root:$('setScanRoot').value.trim(), new_note_dir:$('setNewNoteDir').value.trim(),
-                 attachments_dir:$('setAttachDir').value.trim(), theme:themePicker.getValue(),
+  const body = { vault_dir:$('setVaultDir').value.trim(),
+                 scan_root:$('setScanRoot').value.trim(), new_note_dir:$('setNewNoteDir').value.trim(),
+                 attachments_dir:$('setAttachDir').value.trim(),
+                 book_scan_root:$('setBookScanRoot').value.trim(), book_new_note_dir:$('setBookNewNoteDir').value.trim(),
+                 book_attachments_dir:$('setBookAttachDir').value.trim(), theme:themePicker.getValue(),
                  timezone:tzPicker.getValue(), unsafe_cover_match:$('setUnsafeCover').checked ? '1' : '' };
   const r = await send('PUT','/api/settings',body); if(need(r)) return;
   if(r.ok){ TZ = tzPicker.getValue(); loadUpdates(); loadBooks(); loadLogs(); loadEvents(); }
