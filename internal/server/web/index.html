@@ -32,8 +32,8 @@
   header { background: var(--mantle); padding: .8rem 1.2rem; display: flex; align-items: center;
            gap: 1rem; flex-wrap: wrap; border-bottom: 1px solid var(--surface0); flex: 0 0 auto; z-index: 5; }
   /* the only scroll container. overflow-x:hidden clips the ~15px the 100vw
-     full-bleed rows (#booksGrid, #wlWorksList) overshoot into the gutter, so
-     they stay symmetric with no horizontal scrollbar. */
+     full-bleed rows (#booksGrid, #randomizeGrid, #wlWorksList) overshoot into
+     the gutter, so they stay symmetric with no horizontal scrollbar. */
   #scroll { flex: 1 1 auto; overflow-y: auto; overflow-x: hidden; scrollbar-gutter: stable; }
   header h1 { font-size: 1.2rem; margin: 0; color: var(--mauve); }
   nav { display: flex; gap: .3rem; flex-wrap: wrap; }
@@ -42,7 +42,7 @@
   nav button.active { background: var(--surface0); color: var(--text); }
   .spacer { flex: 1; }
   main { max-width: 900px; margin: 0 auto; padding: 1.2rem; }
-  #booksGrid { width: 100vw; margin-left: calc(-50vw + 50%); padding: 0 2.4rem; box-sizing: border-box; margin-top: 2rem; }
+  #booksGrid, #randomizeGrid { width: 100vw; margin-left: calc(-50vw + 50%); padding: 0 2.4rem; box-sizing: border-box; margin-top: 2rem; }
   section { display: none; } section.active { display: block; }
   h2 { font-size: 1.05rem; color: var(--mauve); margin-top: 0; }
   .row { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; margin: .6rem 0; }
@@ -251,6 +251,7 @@
     <nav id="nav">
       <button data-s="updates" class="active">Updates</button>
       <button data-s="books">Books</button>
+      <button data-s="randomize">Randomizer</button>
       <button data-s="sources">Sources</button>
       <button data-s="settings">Settings</button>
       <button data-s="logs">Logs</button>
@@ -346,6 +347,22 @@
       <table id="booksTable"><thead><tr><th>Title</th><th>Vol</th><th>Link</th><th>Last checked</th><th></th></tr></thead>
       <tbody id="booksBody"><tr><td>loading…</td></tr></tbody></table>
       <div id="booksGrid" class="cover-grid" hidden></div>
+    </section>
+
+    <!-- RANDOMIZE -->
+    <section id="randomize">
+      <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:.4rem">
+        <h2 style="margin:0">What to read next</h2>
+        <button class="btn" onclick="rerollRandomize()">Reroll</button>
+      </div>
+      <div class="row">
+        <div class="viewtoggle" id="randomizeKindToggle">
+          <button class="btn ghost active" data-k="" onclick="setRandomizeKind('')">All</button>
+          <button class="btn ghost" data-k="ln" onclick="setRandomizeKind('ln')">Light Novels</button>
+          <button class="btn ghost" data-k="book" onclick="setRandomizeKind('book')">Books</button>
+        </div>
+      </div>
+      <div id="randomizeGrid" class="cover-grid"></div>
     </section>
 
     <!-- SOURCES -->
@@ -791,6 +808,7 @@ $('nav').addEventListener('click', e => {
   const b = e.target.closest('button[data-s]'); if(!b) return;
   document.querySelectorAll('#nav button').forEach(x => x.classList.toggle('active', x===b));
   document.querySelectorAll('section').forEach(s => s.classList.toggle('active', s.id===b.dataset.s));
+  if(b.dataset.s === 'randomize') rerollRandomize();
 });
 
 /* theme */
@@ -1167,6 +1185,50 @@ function renderBooksGrid(list, q){
       <button class="cover-x" title="${esc(UNTRACK_TIP)}" aria-label="Untrack" onclick="untrack(${x.id}, this)">&times;</button>
     </div>`;
   }).join('') : `<div class="empty-state">${booksEmptyMessage(q)}</div>`;
+}
+let randomizeKindView = lsGet('randomize_kind_view') || '';
+let randomizePicks = [];
+function shuffled(arr){
+  const a = arr.slice();
+  for(let i = a.length - 1; i > 0; i--){
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+function rerollRandomize(){
+  let pool = booksData.filter(x => (x.status||'').toLowerCase() === 'backlog');
+  if(randomizeKindView) pool = pool.filter(x => bookKind(x) === randomizeKindView);
+  randomizePicks = shuffled(pool).slice(0, 10);
+  renderRandomizeGrid();
+}
+function setRandomizeKind(k){
+  randomizeKindView = (k === 'ln' || k === 'book') ? k : '';
+  lsSet('randomize_kind_view', randomizeKindView);
+  document.querySelectorAll('#randomizeKindToggle button').forEach(b => b.classList.toggle('active', b.dataset.k === randomizeKindView));
+  rerollRandomize();
+}
+function randomizeEmptyMessage(){
+  const noun = randomizeKindView === 'ln' ? 'light novels' : randomizeKindView === 'book' ? 'books' : 'items';
+  return 'No backlog ' + noun + ' to suggest — add some to your Backlog first.';
+}
+function renderRandomizeGrid(){
+  const list = randomizePicks;
+  $('randomizeGrid').innerHTML = list.length ? list.map(x => {
+    const img = x.cover
+      ? `<img class="cover-img" src="/api/cover/${x.id}" alt="" loading="lazy" onerror="this.closest('.cover-card').classList.add('nocover');this.remove();">`
+      : '';
+    const isBook = bookKind(x) === 'book';
+    const vol = (!isBook && x.volumes) ? `<span class="cover-vol" title="${x.volumes} volume${x.volumes===1?'':'s'}">${x.volumes}</span>` : '';
+    const meta = isBook
+      ? `<div class="cover-title" style="padding-top:0"><small class="muted">${esc([x.author, x.status].filter(Boolean).join(' · '))}</small></div>`
+      : '';
+    return `<div class="cover-card${x.cover ? '' : ' nocover'}">
+      <a class="cover-link" href="${esc(x.link)}" target="_blank" title="${esc(x.title)}">
+        ${img}<span class="cover-title">${esc(x.title)}</span>${meta}</a>
+      ${vol}
+    </div>`;
+  }).join('') : `<div class="empty-state">${randomizeEmptyMessage()}</div>`;
 }
 async function untrack(id, btn){
   btn.disabled = true;
@@ -2152,6 +2214,7 @@ $('token').value = token();
 $('sortBtn').textContent = bookSort === 'asc' ? '↑ A–Z' : '↓ Z–A';
 setBookView(bookView);
 setKindView(kindView);
+document.querySelectorAll('#randomizeKindToggle button').forEach(b => b.classList.toggle('active', b.dataset.k === randomizeKindView));
 setLogTab(logTab);
 setSrcTab(srcTab);
 setUpdatesKind(updatesKind); // syncs the toggle buttons to the restored kind and loads
