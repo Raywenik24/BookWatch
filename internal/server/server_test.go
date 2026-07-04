@@ -74,6 +74,56 @@ func TestAuth_writeRequiresToken(t *testing.T) {
 	}
 }
 
+// The LN add-preview endpoint (#52) dry-runs the scrape and must inline the
+// cover as a data: URI (the source host isn't in the CSP img-src whitelist),
+// while writing no note. It's auth-gated like every other write route.
+func TestScrapePreview(t *testing.T) {
+	var src *httptest.Server
+	src = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/cover.webp" {
+			w.Header().Set("Content-Type", "image/webp")
+			w.Write([]byte("fake-image-bytes"))
+			return
+		}
+		fmt.Fprintf(w, `<html><body>
+<h1 class="post-title entry-title">Preview Novel Epub</h1>
+<div class="featured-media"><img src="%s/cover.webp"></div>
+<div class="synopsis-description"><p>A blurb.</p></div>
+<ol><li>VOLUME 1</li><li>VOLUME 2</li></ol>
+</body></html>`, src.URL)
+	}))
+	defer src.Close()
+
+	h, _, _ := newTestServer(t)
+	body := fmt.Sprintf(`{"url":%q}`, src.URL)
+
+	if rec := do(h, "POST", "/api/scrape/preview", "", body); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("no token: got %d, want 401", rec.Code)
+	}
+
+	rec := do(h, "POST", "/api/scrape/preview", "secret", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		Title     string `json:"title"`
+		Volumes   int    `json:"volumes"`
+		CoverData string `json:"cover_data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Title != "Preview Novel Epub" {
+		t.Errorf("title = %q", got.Title)
+	}
+	if got.Volumes != 2 {
+		t.Errorf("volumes = %d, want 2", got.Volumes)
+	}
+	if !strings.HasPrefix(got.CoverData, "data:image/") {
+		t.Errorf("cover_data not an inlined image: %.30q", got.CoverData)
+	}
+}
+
 func TestSecurityHeaders(t *testing.T) {
 	h, _, _ := newTestServer(t)
 	rec := do(h, "GET", "/", "", "")

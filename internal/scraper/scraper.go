@@ -199,7 +199,37 @@ func extractDescription(doc *goquery.Document, rl Rules) string {
 			return s
 		}
 	}
-	return ""
+	// Fallback for older jnovels pages that have no synopsis container at all:
+	// the synopsis is loose paragraphs sitting after a "SYNOPSIS" label (e.g.
+	// `<p><b>SYNOPSIS</b></p>` then the blurb `<p>`s, then an "Associated Names"
+	// heading or the volume <ol>). Not expressible as a stored CSS selector, so
+	// it lives here as a last resort after the configured selectors miss.
+	return synopsisAfterLabel(doc)
+}
+
+// synopsisAfterLabel finds a heading/paragraph whose text is just "SYNOPSIS"
+// (or "DESCRIPTION") and returns the following sibling <p> paragraphs, stopping
+// at the first non-<p> block (a heading or a list — where the volume table or
+// "Associated Names" section begins).
+func synopsisAfterLabel(doc *goquery.Document) string {
+	var out []string
+	doc.Find("h1, h2, h3, h4, h5, h6, p").EachWithBreak(func(_ int, s *goquery.Selection) bool {
+		label := strings.ToUpper(strings.Trim(strings.TrimSpace(s.Text()), ": "))
+		if label != "SYNOPSIS" && label != "DESCRIPTION" {
+			return true // keep looking
+		}
+		for n := s.Next(); n.Length() > 0; n = n.Next() {
+			if goquery.NodeName(n) != "p" {
+				break
+			}
+			n.Find("span").Remove()
+			if t := strings.TrimSpace(n.Text()); t != "" {
+				out = append(out, t)
+			}
+		}
+		return false // found the label; stop scanning
+	})
+	return strings.Join(out, " ")
 }
 
 func paragraphs(container *goquery.Selection) string {

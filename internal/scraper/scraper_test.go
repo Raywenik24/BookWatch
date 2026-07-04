@@ -76,6 +76,40 @@ func TestParseNovelHTML_defaults(t *testing.T) {
 	}
 }
 
+// Older jnovels pages have no synopsis container — the blurb is loose <p>s
+// after a `<p><b>SYNOPSIS</b></p>` label, ending at an "Associated Names"
+// heading (verified live on der-werwolf-the-annals-of-veight-epub). The
+// synopsisAfterLabel fallback must recover it, and stop before the heading.
+const novelPageOldLayout = `<!doctype html><html><body>
+<h1 class="post-title entry-title">Der Werwolf Epub</h1>
+<div class="post-content">
+  <div class="featured-media"><img src="/covers/w.jpg"></div>
+  <p><b>SYNOPSIS</b></p>
+  <p>The reborn werewolf known as Veight now leads the regiment.</p>
+  <p>He seeks peace between humans and demons.</p>
+  <h5 class="seriesother associated">Associated Names</h5>
+  <div id="editassociated">Jinrou e no Tensei</div>
+  <ol>
+    <li>VOLUME 01 Epub</li>
+    <li>VOLUME 02 Epub</li>
+  </ol>
+</div>
+</body></html>`
+
+func TestParseNovelHTML_synopsisLabelFallback(t *testing.T) {
+	nd, err := ParseNovelHTML(novelPageOldLayout, DefaultRules())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "The reborn werewolf known as Veight now leads the regiment. He seeks peace between humans and demons."
+	if nd.Description != want {
+		t.Errorf("desc %q, want %q", nd.Description, want)
+	}
+	if nd.Volumes != 2 {
+		t.Errorf("volumes %d, want 2", nd.Volumes)
+	}
+}
+
 func TestParseNovelHTML_missingTitle(t *testing.T) {
 	if _, err := ParseNovelHTML(`<html><body><ol><li>VOLUME 1</li></ol></body></html>`, DefaultRules()); err == nil {
 		t.Error("expected error on missing title")

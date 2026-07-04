@@ -184,7 +184,7 @@ func runAdd(argv []string) {
 
 	fmt.Printf("Adding %s\n", url)
 	rl := sources.NewResolver(st).For(url)
-	res, err := notes.Create(opts, sc, st, rl, url)
+	res, err := notes.Create(opts, sc, st, rl, url, "")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "add error:", err)
 		os.Exit(1)

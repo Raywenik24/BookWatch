@@ -1301,7 +1301,7 @@ function resetAddPanels(){
   $('addModalBackdrop').hidden = true;
   $('addCandidates').hidden = true; $('addCandidates').innerHTML = '';
   $('addConfirm').hidden = true; $('addConfirm').innerHTML = '';
-  _addCandidates = []; _addSelected = null;
+  _addCandidates = []; _addSelected = null; _addLNURL = null;
 }
 document.addEventListener('keydown', e => {
   if(e.key === 'Escape' && !$('addModalBackdrop').hidden) closeAddModal();
@@ -1321,14 +1321,48 @@ async function startAdd(){
   }
   return searchBooks(raw);
 }
+// addBookLN dry-runs the scrape (no note written) and shows the shared preview
+// so the user can pick a status before confirming (#52). Unlike the OpenLibrary
+// path there's no candidate list — a known source URL is a single direct scrape,
+// so it goes straight to the preview. Confirm re-scrapes via POST /api/books.
 async function addBookLN(url){
-  const btn = $('addBtn'); btn.disabled = true; const h = toast('Adding… (scraping the page)','busy');
+  const btn = $('addBtn'); btn.disabled = true; const h = toast('Scraping the page…','busy');
   try {
-    const r = await send('POST','/api/books',{url});
+    const r = await send('POST','/api/scrape/preview',{url});
+    if(need(r, h)) return;
+    if(!r.ok) return h.update('Error: ' + (r.data.error||r.status),'error');
+    h.close();
+    renderLNPreview(url, r.data);
+  } catch(e) {
+    h.update('Error: ' + (e.message || 'request failed'),'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+let _addLNURL = null;
+function renderLNPreview(url, nd){
+  _addLNURL = url;
+  showAddModal();
+  $('addCandidates').hidden = true;
+  const box = $('addConfirm'); box.hidden = false;
+  const footer = `<div class="row"><button class="btn" id="addSubmitBtn" onclick="submitAddBookLN()">Add light novel</button></div>`;
+  // cover_data is the source cover inlined as a data: URI (the source host
+  // isn't in the CSP img-src whitelist, so a direct URL <img> would be blocked).
+  box.innerHTML = bookPreviewModal(
+    { cover:nd.cover_data || '', title:nd.title, link:url, volumes:nd.volumes, description:nd.description || '' },
+    { mode:'add', status:'Backlog', linkLabel:'open source ↗', footer });
+}
+async function submitAddBookLN(){
+  const url = _addLNURL; if(!url) return;
+  const btn = $('addSubmitBtn'); btn.disabled = true;
+  const h = toast('Adding… (scraping the page)','busy');
+  try {
+    const r = await send('POST','/api/books',{url, status:$('addStatus').value});
     if(need(r, h)) return;
     if(r.status===409) return h.update('Already tracked — this book is in your list.','error');
     if(!r.ok) return h.update('Error: ' + (r.data.error||r.status),'error');
-    h.update(`Added: ${r.data.title} (${r.data.volumes} vol)`,'success'); $('addField').value=''; loadBooks(); loadEvents();
+    h.update(`Added: ${r.data.title} (${r.data.volumes} vol)`,'success');
+    $('addField').value=''; resetAddPanels(); loadBooks(); loadEvents();
   } catch(e) {
     h.update('Error: ' + (e.message || 'request failed'),'error');
   } finally {
@@ -1355,12 +1389,15 @@ async function resolveOLWork(workID){
 }
 /* bookPreviewModal — reusable "how the note would look" card (#51). Renders the
    shared note fields for a source-agnostic data object:
-     { cover, title, author, link, workId, released, description }
+     { cover, title, author, link, workId, volumes, released, description }
    description: a string to show it, '' for "no description", or null/undefined
    to show a loading spinner (fetched lazily — see fetchCandidateDetail).
+   volumes: shown as an "N vol" meta bit when set (LN scrape, #52).
    opts:
      mode: 'add' | 'read-only' | 'edit'   (default 'read-only')
      status: current status value — 'add'/'edit' render a #addStatus picker
+     linkLabel: text for the meta link (default 'verify on OL ↗'; LN uses
+       its source link — #52)
      headerActions / footer: extra HTML injected into the card (add-mode's
        Change button and watch/submit controls live here)
    Modes: 'add' shows the picker + footer; 'read-only' shows neither (#5 Updates
@@ -1376,7 +1413,8 @@ function bookPreviewModal(data, opts){
   const sub = [d.author, d.released].filter(Boolean).map(x => esc(String(x))).join(' · ');
   const metaBits = [];
   if(d.workId) metaBits.push(`Work ID: <code>${esc(d.workId)}</code>`);
-  if(d.link) metaBits.push(`<a href="${esc(d.link)}" target="_blank">verify on OL ↗</a>`);
+  if(d.volumes) metaBits.push(`${esc(String(d.volumes))} vol`);
+  if(d.link) metaBits.push(`<a href="${esc(d.link)}" target="_blank">${esc(opts.linkLabel || 'verify on OL ↗')}</a>`);
   const descBlock = d.description == null
     ? `<div id="bpDesc" class="bp-desc muted"><span class="spin"></span> Loading description…</div>`
     : `<div id="bpDesc" class="bp-desc${d.description ? '' : ' muted'}">${d.description ? esc(d.description) : 'No description.'}</div>`;

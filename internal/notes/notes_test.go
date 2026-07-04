@@ -37,7 +37,7 @@ func TestCreate_atomicAndRefusesOverwrite(t *testing.T) {
 	o := Options{VaultDir: t.TempDir(), NewNoteDir: "LN", AttachmentsDir: "LN/_att"}
 	sc := scraper.New("test", 5*time.Second)
 
-	res, err := Create(o, sc, nil, scraper.DefaultRules(), srv.URL)
+	res, err := Create(o, sc, nil, scraper.DefaultRules(), srv.URL, "")
 	if err != nil {
 		t.Fatalf("first create: %v", err)
 	}
@@ -47,7 +47,7 @@ func TestCreate_atomicAndRefusesOverwrite(t *testing.T) {
 	}
 
 	// Different link, same sanitized title → same path → must refuse.
-	_, err = Create(o, sc, nil, scraper.DefaultRules(), srv.URL+"/other")
+	_, err = Create(o, sc, nil, scraper.DefaultRules(), srv.URL+"/other", "")
 	if !errors.Is(err, ErrNoteExists) {
 		t.Fatalf("expected ErrNoteExists, got %v", err)
 	}
@@ -146,9 +146,21 @@ func TestParseNovelHTML_editDescriptionFallback(t *testing.T) {
 
 func TestBuildNote_hasAuthorField(t *testing.T) {
 	nd := scraper.NovelData{Title: "My Novel Epub", Volumes: 1}
-	out := BuildNote(nd, "https://jnovels.com/x", "c.jpg", "2026-06-29")
+	out := BuildNote(nd, "https://jnovels.com/x", "c.jpg", "", "2026-06-29")
 	if !strings.Contains(out, "Author:") {
 		t.Errorf("BuildNote missing Author field:\n%s", out)
+	}
+}
+
+func TestBuildNote_status(t *testing.T) {
+	nd := scraper.NovelData{Title: "My Novel", Volumes: 1}
+	// Explicit status is used.
+	if out := BuildNote(nd, "https://jnovels.com/x", "c.jpg", "Completed", "2026-06-29"); !strings.Contains(out, "\n  - Completed\n") {
+		t.Errorf("BuildNote missing chosen status Completed:\n%s", out)
+	}
+	// Empty falls back to Backlog (the historical default).
+	if out := BuildNote(nd, "https://jnovels.com/x", "c.jpg", "", "2026-06-29"); !strings.Contains(out, "\n  - Backlog\n") {
+		t.Errorf("BuildNote missing default status Backlog:\n%s", out)
 	}
 }
 
@@ -243,7 +255,7 @@ func TestBuildNote(t *testing.T) {
 		Description: "A synopsis.",
 		Volumes:     2,
 	}
-	out := BuildNote(nd, "https://jnovels.com/test", "cover_TestNovel.webp", "2026-06-17")
+	out := BuildNote(nd, "https://jnovels.com/test", "cover_TestNovel.webp", "", "2026-06-17")
 
 	for _, must := range []string{
 		"Series: Test Novel",

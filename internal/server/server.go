@@ -5,6 +5,7 @@ package server
 import (
 	"crypto/subtle"
 	"embed"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -106,6 +108,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/sources/{id}", s.auth(s.handleDeleteSource))
 	mux.HandleFunc("PUT /api/sources/{id}/rules", s.auth(s.handleSetRules))
 	mux.HandleFunc("POST /api/sources/test", s.auth(s.handleTest))
+	mux.HandleFunc("POST /api/scrape/preview", s.auth(s.handleScrapePreview))
 	mux.HandleFunc("PUT /api/settings", s.auth(s.handleSetSettings))
 	mux.HandleFunc("POST /api/trackers", s.auth(s.handleUpsertTracker))
 	mux.HandleFunc("DELETE /api/trackers/{id}", s.auth(s.handleDeleteTracker))
@@ -485,7 +488,7 @@ func (s *Server) handleAddBook(w http.ResponseWriter, r *http.Request) {
 		AttachmentsDir: s.effective("attachments_dir", s.cfg.AttachmentsDir),
 	}
 	rl := sources.NewResolver(s.st).For(body.URL)
-	res, err := notes.Create(opts, s.sc, s.st, rl, body.URL)
+	res, err := notes.Create(opts, s.sc, s.st, rl, body.URL, body.Status)
 	if err != nil {
 		code := http.StatusBadRequest
 		if errors.Is(err, notes.ErrDuplicate) || errors.Is(err, notes.ErrNoteExists) {
@@ -709,6 +712,78 @@ func (s *Server) handleTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, nd)
+}
+
+// handleScrapePreview dry-runs the LN scrape for the add-a-book preview (#52):
+// scrape the URL with its resolved source rules and return the data
+// (title, volumes, cover, description) without writing a note. The note is
+// created only when the user confirms — via the normal POST /api/books path,
+// which re-scrapes (the scrape is idempotent, so no server-side caching).
+func (s *Server) handleScrapePreview(w http.ResponseWriter, r *http.Request) {
+	var b struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&b); err != nil || b.URL == "" {
+		writeJSON(w, http.StatusBadRequest, errBody("missing url"))
+		return
+	}
+	if !notes.IsValidURL(b.URL) {
+		writeJSON(w, http.StatusBadRequest, errBody("invalid url"))
+		return
+	}
+	rl := sources.NewResolver(s.st).For(b.URL)
+	nd, err := s.sc.NovelData(b.URL, rl)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errBody(err.Error()))
+		return
+	}
+	// The scraped cover lives on the source's own host, which the page CSP's
+	// img-src doesn't (and can't — it's arbitrary) whitelist, so the browser
+	// would block an <img src> pointing straight at it. Inline it as a data:
+	// URI instead (CSP allows data:) by fetching it here through the same
+	// SSRF-guarded client the real note-creation cover download uses. Best
+	// effort: a fetch failure just yields no preview cover, same as before.
+	writeJSON(w, http.StatusOK, map[string]any{
+		"title":       nd.Title,
+		"volumes":     nd.Volumes,
+		"cover_url":   nd.CoverURL,
+		"cover_data":  coverDataURI(nd.CoverURL),
+		"description": nd.Description,
+	})
+}
+
+// maxPreviewCoverBytes caps the inlined preview cover. Cover art is well under
+// this; the guard keeps a hostile source from streaming a huge body into memory.
+const maxPreviewCoverBytes = 8 << 20 // 8 MiB
+
+// coverDataURI fetches a scraped cover URL through the SSRF-guarded client and
+// returns it as a base64 data: URI, or "" on any failure (the caller treats an
+// absent cover the same as a failed one).
+func coverDataURI(coverURL string) string {
+	if coverURL == "" {
+		return ""
+	}
+	client := scraper.NewGuardedHTTPClient(15 * time.Second)
+	resp, err := client.Get(coverURL)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxPreviewCoverBytes))
+	if err != nil || len(data) == 0 {
+		return ""
+	}
+	ct := resp.Header.Get("Content-Type")
+	if ct == "" || !strings.HasPrefix(ct, "image/") {
+		ct = http.DetectContentType(data)
+	}
+	if !strings.HasPrefix(ct, "image/") {
+		return ""
+	}
+	return "data:" + ct + ";base64," + base64.StdEncoding.EncodeToString(data)
 }
 
 // ── Google Books proxy (open — public API, key is optional) ───

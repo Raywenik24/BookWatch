@@ -80,8 +80,12 @@ func Sanitize(title string, removeSpaces bool) string {
 }
 
 // BuildNote renders the markdown for a new LN note (frontmatter + body).
-func BuildNote(nd scraper.NovelData, sourceURL, coverName, today string) string {
+// status may be empty to fall back to the "Backlog" default (#52).
+func BuildNote(nd scraper.NovelData, sourceURL, coverName, status, today string) string {
 	title := Sanitize(nd.Title, false)
+	if status == "" {
+		status = "Backlog"
+	}
 	return fmt.Sprintf(`---
 Series: %s
 Author:
@@ -92,7 +96,7 @@ Cover: "[[%s]]"
 tags:
   - "#LightNovel"
 Status:
-  - Backlog
+  - %s
 Template_used: LightNovelTemplate
 Series Status:
 created: %s
@@ -105,7 +109,7 @@ modified: %s
 [[Light Novel]]
 
 %s
-`, title, sourceURL, nd.Volumes, coverName, today, today, title, coverName, nd.Description)
+`, title, sourceURL, nd.Volumes, coverName, status, today, today, title, coverName, nd.Description)
 }
 
 // BuildBookNote renders a new book note: frontmatter, the cover embed (when
@@ -191,7 +195,8 @@ func CreateBook(o Options, dup DupChecker, title, author, link, workID, coverURL
 
 // Create scrapes the URL and writes a new note + cover into the vault.
 // dup may be nil to skip the duplicate check. rl are the scrape rules.
-func Create(o Options, sc *scraper.Client, dup DupChecker, rl scraper.Rules, sourceURL string) (Result, error) {
+// status may be empty to use the "Backlog" default (#52).
+func Create(o Options, sc *scraper.Client, dup DupChecker, rl scraper.Rules, sourceURL, status string) (Result, error) {
 	if !IsValidURL(sourceURL) {
 		return Result{}, errors.New("invalid URL")
 	}
@@ -238,7 +243,7 @@ func Create(o Options, sc *scraper.Client, dup DupChecker, rl scraper.Rules, sou
 	if err := os.MkdirAll(noteAbs, 0o755); err != nil {
 		return Result{}, err
 	}
-	content := BuildNote(nd, sourceURL, coverName, today)
+	content := BuildNote(nd, sourceURL, coverName, status, today)
 	if err := vault.AtomicWrite(mdPath, []byte(content), 0o644); err != nil {
 		return Result{}, err
 	}
