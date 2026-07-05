@@ -53,6 +53,7 @@
         border: 1px solid var(--surface1); background: var(--mantle); color: var(--text); }
   input:not([type="checkbox"]) { flex: 1; min-width: 160px; }
   input:focus, select:focus, textarea:focus { outline: none; border-color: var(--mauve); box-shadow: 0 0 0 3px color-mix(in srgb, var(--mauve) 30%, transparent); }
+  button:focus-visible, [tabindex]:focus-visible { outline: none; border-color: var(--mauve); box-shadow: 0 0 0 3px color-mix(in srgb, var(--mauve) 30%, transparent); }
   .rule-grid input { min-width: 0; width: 100%; }
   button.btn { background: var(--peach); border: 0; color: var(--crust); font-weight: 600; cursor: pointer; }
   button.btn.ghost { background: var(--surface0); color: var(--text); }
@@ -298,13 +299,13 @@
       </div>
       <div class="row">
         <div class="viewtoggle" id="updatesKindToggle">
-          <button class="btn ghost view-btn active" data-k="all" onclick="setUpdatesKind('all')">All</button>
-          <button class="btn ghost view-btn" data-k="book" onclick="setUpdatesKind('book')">Books</button>
-          <button class="btn ghost view-btn" data-k="ln" onclick="setUpdatesKind('ln')">Light Novels</button>
+          <button class="btn ghost view-btn active" data-k="all" tabindex="-1" onclick="setUpdatesKind('all')">All</button>
+          <button class="btn ghost view-btn" data-k="book" tabindex="-1" onclick="setUpdatesKind('book')">Books</button>
+          <button class="btn ghost view-btn" data-k="ln" tabindex="-1" onclick="setUpdatesKind('ln')">Light Novels</button>
         </div>
         <div class="viewtoggle" id="updatesViewToggle">
-          <button class="btn ghost view-btn active" data-v="active" onclick="setUpdatesView('active')">Active</button>
-          <button class="btn ghost view-btn" data-v="dismissed" onclick="setUpdatesView('dismissed')">Dismissed</button>
+          <button class="btn ghost view-btn active" data-v="active" tabindex="-1" onclick="setUpdatesView('active')">Active</button>
+          <button class="btn ghost view-btn" data-v="dismissed" tabindex="-1" onclick="setUpdatesView('dismissed')">Dismissed</button>
         </div>
       </div>
       <div class="row">
@@ -331,17 +332,17 @@
       <h2>Tracked books</h2>
       <div class="row">
         <div class="viewtoggle" id="kindToggle">
-          <button class="btn ghost active" data-k="" onclick="setKindView('')">All</button>
-          <button class="btn ghost" data-k="ln" onclick="setKindView('ln')">Light Novels</button>
-          <button class="btn ghost" data-k="book" onclick="setKindView('book')">Books</button>
+          <button class="btn ghost active" data-k="" tabindex="-1" onclick="setKindView('')">All</button>
+          <button class="btn ghost" data-k="ln" tabindex="-1" onclick="setKindView('ln')">Light Novels</button>
+          <button class="btn ghost" data-k="book" tabindex="-1" onclick="setKindView('book')">Books</button>
         </div>
       </div>
       <div class="row">
         <input id="bookFilter" placeholder="search title…" autocomplete="off" spellcheck="false" oninput="renderBooks(this.value)">
         <div class="viewtoggle">
-          <button id="sortBtn" class="btn ghost" onclick="toggleSort()">↑ A–Z</button>
-          <button id="viewTable" class="btn ghost" onclick="setBookView('table')">Table</button>
-          <button id="viewGrid" class="btn ghost" onclick="setBookView('grid')">Grid</button>
+          <button id="sortBtn" class="btn ghost" tabindex="-1" onclick="toggleSort()">↑ A–Z</button>
+          <button id="viewTable" class="btn ghost" tabindex="-1" onclick="setBookView('table')">Table</button>
+          <button id="viewGrid" class="btn ghost" tabindex="-1" onclick="setBookView('grid')">Grid</button>
         </div>
       </div>
       <div class="row" id="authorFilterRow">
@@ -349,12 +350,12 @@
         <input id="authorQueryInput" placeholder="fuzzy search by author…" autocomplete="off" spellcheck="false" oninput="setAuthorQuery(this.value)">
       </div>
       <div class="row filter-bar">
-        <button class="btn ghost filter-btn active" data-f="" onclick="setStatusFilter('')">All</button>
-        <button class="btn ghost filter-btn" data-f="backlog" onclick="setStatusFilter('backlog')">Backlog</button>
-        <button class="btn ghost filter-btn" data-f="completed" onclick="setStatusFilter('completed')">Completed</button>
-        <button class="btn ghost filter-btn" data-f="dropped" onclick="setStatusFilter('dropped')">Dropped</button>
-        <button class="btn ghost filter-btn" id="filterShelvedBtn" data-f="shelved" onclick="setStatusFilter('shelved')">Shelved</button>
-        <button class="btn ghost filter-btn filter-validate" id="filterValidateBtn" data-f="validate" onclick="setStatusFilter('validate')">Validate</button>
+        <button class="btn ghost filter-btn active" data-f="" tabindex="-1" onclick="setStatusFilter('')">All</button>
+        <button class="btn ghost filter-btn" data-f="backlog" tabindex="-1" onclick="setStatusFilter('backlog')">Backlog</button>
+        <button class="btn ghost filter-btn" data-f="completed" tabindex="-1" onclick="setStatusFilter('completed')">Completed</button>
+        <button class="btn ghost filter-btn" data-f="dropped" tabindex="-1" onclick="setStatusFilter('dropped')">Dropped</button>
+        <button class="btn ghost filter-btn" id="filterShelvedBtn" data-f="shelved" tabindex="-1" onclick="setStatusFilter('shelved')">Shelved</button>
+        <button class="btn ghost filter-btn filter-validate" id="filterValidateBtn" data-f="validate" tabindex="-1" onclick="setStatusFilter('validate')">Validate</button>
       </div>
       <!-- Resets only the content filters (search, author, status); view prefs
            (kind, Table/Grid, sort) are kept. Shown only when a filter is set (#48).
@@ -375,9 +376,9 @@
       </div>
       <div class="row">
         <div class="viewtoggle" id="randomizeKindToggle">
-          <button class="btn ghost active" data-k="" onclick="setRandomizeKind('')">All</button>
-          <button class="btn ghost" data-k="ln" onclick="setRandomizeKind('ln')">Light Novels</button>
-          <button class="btn ghost" data-k="book" onclick="setRandomizeKind('book')">Books</button>
+          <button class="btn ghost active" data-k="" tabindex="-1" onclick="setRandomizeKind('')">All</button>
+          <button class="btn ghost" data-k="ln" tabindex="-1" onclick="setRandomizeKind('ln')">Light Novels</button>
+          <button class="btn ghost" data-k="book" tabindex="-1" onclick="setRandomizeKind('book')">Books</button>
         </div>
       </div>
       <div id="randomizeGrid" class="cover-grid"></div>
@@ -387,8 +388,8 @@
     <section id="sources">
       <div class="row" style="margin-bottom:.6rem">
         <div class="viewtoggle">
-          <button id="srcTabWatchlist" class="btn ghost active" onclick="setSrcTab('watchlist')">Watchlist</button>
-          <button id="srcTabRules" class="btn ghost" onclick="setSrcTab('rules')">Scrape rules</button>
+          <button id="srcTabWatchlist" class="btn ghost active" tabindex="-1" onclick="setSrcTab('watchlist')">Watchlist</button>
+          <button id="srcTabRules" class="btn ghost" tabindex="-1" onclick="setSrcTab('rules')">Scrape rules</button>
         </div>
       </div>
 
@@ -558,8 +559,8 @@
     <section id="logs">
       <div class="row" style="margin-bottom:.6rem">
         <div class="viewtoggle">
-          <button id="logTabActivity" class="btn ghost active" onclick="setLogTab('activity')">Activity</button>
-          <button id="logTabRuns"     class="btn ghost"        onclick="setLogTab('runs')">Check Runs</button>
+          <button id="logTabActivity" class="btn ghost active" tabindex="-1" onclick="setLogTab('activity')">Activity</button>
+          <button id="logTabRuns"     class="btn ghost"        tabindex="-1" onclick="setLogTab('runs')">Check Runs</button>
         </div>
       </div>
       <table id="logsActivityTable"><thead><tr><th>Time</th><th>Event</th><th>Detail</th></tr></thead>
@@ -1376,9 +1377,9 @@ function renderBooksTable(list, q){
     const volCell = bookKind(x) === 'book'
       ? `<small class="muted">${esc([x.author, x.status].filter(Boolean).join(' · '))}</small>`
       : x.volumes;
-    return `<tr><td><a href="#" class="note-open" onclick="openNoteModal(${x.id});return false" title="View / edit note">${fzHighlight(x.title, q)}</a></td><td>${volCell}</td><td><a href="${esc(x.link)}" target="_blank">link</a></td>
+    return `<tr><td><a href="#" class="note-open" tabindex="-1" onclick="openNoteModal(${x.id});return false" title="View / edit note">${fzHighlight(x.title, q)}</a></td><td>${volCell}</td><td><a href="${esc(x.link)}" target="_blank" tabindex="-1">link</a></td>
      <td class="nowrap"><small>${esc(fmtTime(x.last_checked_at))}</small></td>
-     <td><button class="btn ghost" title="${esc(UNTRACK_TIP)}" onclick="untrack(${x.id}, this)">Untrack</button></td></tr>`;
+     <td><button class="btn ghost" title="${esc(UNTRACK_TIP)}" tabindex="-1" onclick="untrack(${x.id}, this)">Untrack</button></td></tr>`;
   }).join('')
     : `<tr><td colspan="5" class="empty-state">${booksEmptyMessage(q)}</td></tr>`;
 }
@@ -1393,10 +1394,10 @@ function renderBooksGrid(list, q){
       ? `<div class="cover-title" style="padding-top:0"><small class="muted">${esc([x.author, x.status].filter(Boolean).join(' · '))}</small></div>`
       : '';
     return `<div class="cover-card${x.cover ? '' : ' nocover'}">
-      <a class="cover-link" href="#" onclick="openNoteModal(${x.id});return false" title="View / edit note">
+      <a class="cover-link" href="#" tabindex="-1" onclick="openNoteModal(${x.id});return false" title="View / edit note">
         ${img}<span class="cover-title">${fzHighlight(x.title, q)}</span>${meta}</a>
       ${vol}
-      <button class="cover-x" title="${esc(UNTRACK_TIP)}" aria-label="Untrack" onclick="untrack(${x.id}, this)">&times;</button>
+      <button class="cover-x" title="${esc(UNTRACK_TIP)}" aria-label="Untrack" tabindex="-1" onclick="untrack(${x.id}, this)">&times;</button>
     </div>`;
   }).join('') : `<div class="empty-state">${booksEmptyMessage(q)}</div>`;
 }
@@ -1438,7 +1439,7 @@ function renderRandomizeGrid(){
       ? `<div class="cover-title" style="padding-top:0"><small class="muted">${esc([x.author, x.status].filter(Boolean).join(' · '))}</small></div>`
       : '';
     return `<div class="cover-card${x.cover ? '' : ' nocover'}">
-      <a class="cover-link" href="#" onclick="openNoteModal(${x.id});return false" title="View / edit note">
+      <a class="cover-link" href="#" tabindex="-1" onclick="openNoteModal(${x.id});return false" title="View / edit note">
         ${img}<span class="cover-title">${esc(x.title)}</span>${meta}</a>
       ${vol}
     </div>`;
