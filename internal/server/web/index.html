@@ -594,6 +594,13 @@
       <div id="previewModalBody"></div>
     </div>
   </div>
+  <!-- untrack-vs-delete choice (#58) -->
+  <div id="deleteModalBackdrop" class="modal-backdrop" hidden onclick="if(event.target===this)closeDeleteModal()">
+    <div class="modal">
+      <button class="modal-close" onclick="closeDeleteModal()" aria-label="Close">&times;</button>
+      <div id="deleteModalBody"></div>
+    </div>
+  </div>
   </div>
 
 <script>
@@ -1311,7 +1318,7 @@ function setBookView(v){
   $('booksGrid').hidden  = bookView !== 'grid';
   renderBooks($('bookFilter') ? $('bookFilter').value : '');
 }
-const UNTRACK_TIP = 'Remove from this list only — the note and cover are kept. If the note still exists it reappears on the next check.';
+const UNTRACK_TIP = 'Untrack, or delete the note entirely.';
 function setStatusFilter(f){
   statusFilter = f;
   document.querySelectorAll('.filter-btn').forEach(b => b.classList.toggle('active', b.dataset.f === f));
@@ -1382,7 +1389,7 @@ function renderBooksTable(list, q){
       : x.volumes;
     return `<tr><td><a href="#" class="note-open" tabindex="-1" onclick="openNoteModal(${x.id});return false" title="View / edit note">${fzHighlight(x.title, q)}</a></td><td>${volCell}</td><td><a href="${esc(x.link)}" target="_blank" tabindex="-1">link</a></td>
      <td class="nowrap"><small>${esc(fmtTime(x.last_checked_at))}</small></td>
-     <td><button class="btn ghost" title="${esc(UNTRACK_TIP)}" tabindex="-1" onclick="untrack(${x.id}, this)">Untrack</button></td></tr>`;
+     <td><button class="btn ghost" title="${esc(UNTRACK_TIP)}" tabindex="-1" onclick="openDeleteModal(${x.id})">Untrack</button></td></tr>`;
   }).join('')
     : `<tr><td colspan="5" class="empty-state">${booksEmptyMessage(q)}</td></tr>`;
 }
@@ -1400,7 +1407,7 @@ function renderBooksGrid(list, q){
       <a class="cover-link" href="#" tabindex="-1" onclick="openNoteModal(${x.id});return false" title="View / edit note">
         ${img}<span class="cover-title">${fzHighlight(x.title, q)}</span>${meta}</a>
       ${vol}
-      <button class="cover-x" title="${esc(UNTRACK_TIP)}" aria-label="Untrack" tabindex="-1" onclick="untrack(${x.id}, this)">&times;</button>
+      <button class="cover-x" title="${esc(UNTRACK_TIP)}" aria-label="Untrack" tabindex="-1" onclick="openDeleteModal(${x.id})">&times;</button>
     </div>`;
   }).join('') : `<div class="empty-state">${booksEmptyMessage(q)}</div>`;
 }
@@ -1448,15 +1455,34 @@ function renderRandomizeGrid(){
     </div>`;
   }).join('') : `<div class="empty-state">${randomizeEmptyMessage()}</div>`;
 }
-async function untrack(id, btn){
-  btn.disabled = true;
+/* untrack-vs-delete modal (#58) */
+let _deleteModal = null; // { id, title }
+function openDeleteModal(id){
+  const book = booksData.find(b => b.id === id);
+  _deleteModal = { id, title: book ? book.title : '' };
+  $('deleteModalBody').innerHTML = `<h3 style="margin-top:0">${esc(_deleteModal.title)}</h3>
+    <p class="muted">Untrack this session, or delete the note (and its cover) from the vault for good?</p>
+    <div class="row" style="margin-top:1rem; justify-content:flex-end; gap:.5rem">
+      <button class="btn ghost" onclick="closeDeleteModal()">Cancel</button>
+      <button class="btn ghost" onclick="untrack(false)">Untrack (this session)</button>
+      <button class="btn ghost danger" onclick="untrack(true)">Delete note</button>
+    </div>`;
+  $('deleteModalBackdrop').hidden = false;
+}
+function closeDeleteModal(){ $('deleteModalBackdrop').hidden = true; $('deleteModalBody').innerHTML = ''; _deleteModal = null; }
+async function untrack(hard){
+  const id = _deleteModal.id;
+  const url = '/api/books/' + id + (hard ? '?hard=1' : '');
+  const h = toast(hard ? 'Deleting…' : 'Untracking…','busy');
   try {
-    const r = await send('DELETE', '/api/books/'+id);
-    if(need(r)){ btn.disabled = false; return; }
-    if(!r.ok){ btn.disabled = false; return toast('Error: ' + (r.data.error||r.status),'error'); }
-    toast('Untracked — note kept; reappears on next check if it still exists.','success'); loadBooks();
+    const r = await send('DELETE', url);
+    if(need(r, h)) return;
+    if(!r.ok){ return h.update('Error: ' + (r.data.error||r.status),'error'); }
+    h.update(hard ? 'Note and cover deleted.' : 'Untracked — note kept; reappears on next check if it still exists.','success');
+    closeDeleteModal();
+    loadBooks();
   } catch(e) {
-    btn.disabled = false; toast('Error: ' + (e.message || 'request failed'),'error');
+    h.update('Error: ' + (e.message || 'request failed'),'error');
   }
 }
 async function loadLogs(){
@@ -1466,7 +1492,7 @@ async function loadLogs(){
      <td>${x.updated}</td><td>${x.errors}</td><td><small>${esc(x.summary)}</small></td></tr>`).join('')
     : '<tr><td><span class="muted">no runs yet</span></td></tr>';
 }
-const EVENT_LABELS = { add:'Book added', untrack:'Book untracked', apply:'Updates applied', prune:'Auto-pruned', anomaly:'Scrape anomaly', 'status-fix':'Status corrected' };
+const EVENT_LABELS = { add:'Book added', untrack:'Book untracked', delete:'Note deleted', apply:'Updates applied', prune:'Auto-pruned', anomaly:'Scrape anomaly', 'status-fix':'Status corrected' };
 async function loadEvents(){
   const r = await getJSON('/api/events');
   $('eventsBody').innerHTML = (r&&r.length) ? r.map(x =>

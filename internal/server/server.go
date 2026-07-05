@@ -651,8 +651,13 @@ func (s *Server) addBookFromCatalog(w http.ResponseWriter, body addBookBody) {
 
 // handleDeleteBook untracks a book: removes its DB row only. The vault note and
 // cover are left untouched, so the book reappears on the next check if the note
-// still exists.
+// still exists. With ?hard=1 (#58) it instead hard-deletes the note and cover
+// from the vault before untracking.
 func (s *Server) handleDeleteBook(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("hard") == "1" {
+		s.handleDeleteBookHard(w, r)
+		return
+	}
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, errBody("bad id"))
@@ -667,6 +672,34 @@ func (s *Server) handleDeleteBook(w http.ResponseWriter, r *http.Request) {
 		s.st.LogEvent("untrack", fmt.Sprintf("Untracked %q", title))
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "untracked"})
+}
+
+// handleDeleteBookHard hard-deletes a book's note and cover attachment from the
+// vault (#58), then untracks it. No trash folder — this is a permanent delete;
+// the vault's own version history (e.g. OneDrive) is the safety net.
+func (s *Server) handleDeleteBookHard(w http.ResponseWriter, r *http.Request) {
+	ref, ok := s.lookupBook(w, r)
+	if !ok {
+		return
+	}
+	if err := os.Remove(ref.Path); err != nil && !os.IsNotExist(err) {
+		writeErr(w, err)
+		return
+	}
+	if ref.Cover != "" {
+		opts := s.noteOptions(ref.Kind)
+		attachAbs := vault.ResolvePath(opts.VaultDir, opts.AttachmentsDir)
+		if err := os.Remove(filepath.Join(attachAbs, ref.Cover)); err != nil && !os.IsNotExist(err) {
+			writeErr(w, err)
+			return
+		}
+	}
+	if err := s.st.DeleteBook(ref.ID); err != nil {
+		writeErr(w, err)
+		return
+	}
+	s.st.LogEvent("delete", fmt.Sprintf("Deleted %q (note + cover)", ref.Title))
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 // maxCoverUploadBytes caps an uploaded cover image (matches notes' download cap).

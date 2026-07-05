@@ -319,6 +319,46 @@ func TestDeleteBook_untracksAndLogsEvent(t *testing.T) {
 	}
 }
 
+// Hard delete (#58): ?hard=1 removes the note and cover from disk, not just
+// the DB row.
+func TestDeleteBook_hardDeletesNoteAndCover(t *testing.T) {
+	h, st, vaultDir := newTestServer(t)
+	attach := filepath.Join(vaultDir, "_attachments")
+	if err := os.MkdirAll(attach, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	title, link := "Doomed Book", "https://openlibrary.org/works/OL1W"
+	cover := notes.CoverName(title, ".jpg")
+	notePath := filepath.Join(vaultDir, title+".md")
+	content := notes.BuildBookNote(title, "A", link, "OL1W", cover, "Backlog", "", "", "2026-07-05")
+	if err := os.WriteFile(notePath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	coverPath := filepath.Join(attach, cover)
+	if err := os.WriteFile(coverPath, []byte("img"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	id, _ := st.UpsertBook(title, link, notePath, 0, cover, "Backlog", nil, "book", "A")
+
+	if rec := do(h, "DELETE", fmt.Sprintf("/api/books/%d?hard=1", id), "secret", ""); rec.Code != http.StatusOK {
+		t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
+	}
+	if books, _ := st.ListBooks(); len(books) != 0 {
+		t.Error("book not untracked")
+	}
+	if _, err := os.Stat(notePath); !os.IsNotExist(err) {
+		t.Errorf("note not deleted: %v", err)
+	}
+	if _, err := os.Stat(coverPath); !os.IsNotExist(err) {
+		t.Errorf("cover not deleted: %v", err)
+	}
+	evs, _ := st.ListEvents(10)
+	if len(evs) != 1 || evs[0].Kind != "delete" {
+		t.Errorf("delete event missing: %+v", evs)
+	}
+}
+
 func TestWriteBody_sizeCapped(t *testing.T) {
 	h, _, _ := newTestServer(t)
 	big := `{"url":"` + strings.Repeat("a", 2<<20) + `"}` // > 1 MiB cap
