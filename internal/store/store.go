@@ -312,6 +312,7 @@ func (s *Store) ListBooks() ([]Book, error) {
 
 type Update struct {
 	ID         int64  `json:"id"`
+	BookID     int64  `json:"book_id"`
 	Title      string `json:"title"`
 	OldVolumes int    `json:"old_volumes"`
 	NewVolumes int    `json:"new_volumes"`
@@ -322,7 +323,7 @@ type Update struct {
 }
 
 func (s *Store) ListUpdates(limit int) ([]Update, error) {
-	rows, err := s.db.Query(`SELECT u.id, b.title, u.old_volumes, u.new_volumes, u.link,
+	rows, err := s.db.Query(`SELECT u.id, b.id, b.title, u.old_volumes, u.new_volumes, u.link,
 		u.detected_at, u.applied, COALESCE(u.applied_at,'')
 		FROM updates u JOIN books b ON b.id = u.book_id
 		ORDER BY u.detected_at DESC, u.id DESC LIMIT ?`, limit)
@@ -334,7 +335,7 @@ func (s *Store) ListUpdates(limit int) ([]Update, error) {
 	for rows.Next() {
 		var u Update
 		var applied int
-		if err := rows.Scan(&u.ID, &u.Title, &u.OldVolumes, &u.NewVolumes, &u.Link,
+		if err := rows.Scan(&u.ID, &u.BookID, &u.Title, &u.OldVolumes, &u.NewVolumes, &u.Link,
 			&u.DetectedAt, &applied, &u.AppliedAt); err != nil {
 			return nil, err
 		}

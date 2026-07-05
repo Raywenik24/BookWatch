@@ -918,7 +918,11 @@ function renderUpdatesTable(){
         ? `<span class="badge applied" title="Written to the vault${x.applied_at?' on '+esc(fmtTime(x.applied_at)):''}">Applied</span>`
         : `<span class="badge pending">Pending</span>`;
       const cb = x.applied ? '' : `<input type="checkbox" data-key="${row.key}" ${updatesSelected.has(row.key)?'checked':''} onchange="toggleUpdateSelect('${row.key}',this.checked)">`;
-      return `<tr><td class="cb-col">${cb}</td><td class="new">${esc(x.title)}</td><td>${x.old_volumes} → ${x.new_volumes}</td>
+      // LN bump rows have no OL work, so hover/click is sourced from the local
+      // note (#59) instead of the OpenLibrary-backed release preview above.
+      const titleCell = `<td class="new"><span class="upd-title" onmouseenter="showNotePopover(event,${x.book_id})"
+       onmousemove="moveRelPopover(event)" onmouseleave="hideRelPopover()" onclick="openNotePreview(${x.book_id})">${esc(x.title)}</span></td>`;
+      return `<tr><td class="cb-col">${cb}</td>${titleCell}<td>${x.old_volumes} → ${x.new_volumes}</td>
        <td>${status}</td>
        <td><a href="${esc(x.link)}" target="_blank">link</a></td><td class="nowrap"><small>${esc(fmtTime(x.detected_at))}</small></td><td></td></tr>`;
     }
@@ -1057,6 +1061,61 @@ function openRelPreview(id){
   }
 }
 function closeRelPreview(){ $('previewModalBackdrop').hidden = true; $('previewModalBody').innerHTML = ''; _noteModal = null; }
+
+// --- LN bump hover/click preview, sourced from the local note (#59) ---
+// Same popover/modal machinery as the release preview above, but the data
+// comes from GET /api/books/{id}/note (no OpenLibrary work involved) and the
+// click modal is read-only-only — no Edit button, unlike openNoteModal.
+const _noteDetailCache = {}; // book id -> note (or null while in flight)
+async function fetchNoteDetail(id){
+  if(id in _noteDetailCache) return _noteDetailCache[id];
+  try {
+    const n = await getJSON('/api/books/' + id + '/note');
+    _noteDetailCache[id] = n;
+    return n;
+  } catch(e){
+    return null; // note may have been untracked since the bump fired
+  }
+}
+function showNotePopover(e, id){
+  const pop = relPopEl();
+  const token = ++_relPopToken;
+  const cached = _noteDetailCache[id];
+  pop.innerHTML = notePopoverHTML(cached, id);
+  pop.hidden = false;
+  moveRelPopover(e);
+  if(cached === undefined){
+    fetchNoteDetail(id).then(n => {
+      if(_relPopToken !== token || pop.hidden) return; // moved on / hidden — don't stomp
+      pop.innerHTML = notePopoverHTML(n, id);
+      moveRelPopover(e);
+    });
+  }
+}
+function notePopoverHTML(n, id){
+  if(n === undefined) return '<div class="rel-pop-desc"><span class="spin"></span> Loading…</div>';
+  if(!n || n.error) return '<div class="rel-pop-desc muted">Could not load the note.</div>';
+  const img = n.cover
+    ? `<img class="cand-cover" src="/api/cover/${id}" onerror="this.remove()">` : '';
+  const metaBits = [n.status, n.volumes ? n.volumes + ' vol' : ''].filter(Boolean).map(esc).join(' · ');
+  return `<div class="rel-pop-head">${img}<div style="min-width:0">
+      <div class="cand-title">${esc(n.title)}</div>
+      ${n.author ? `<div class="cand-sub">${esc(n.author)}</div>` : ''}
+      ${metaBits ? `<div class="bp-meta">${metaBits}</div>` : ''}
+    </div></div>
+    <div class="rel-pop-desc">${n.description ? esc(clip(n.description, 260)) : '<span class="muted">No description.</span>'}</div>`;
+}
+async function openNotePreview(id){
+  hideRelPopover();
+  const cached = _noteDetailCache[id];
+  const n = cached !== undefined ? cached : await fetchNoteDetail(id);
+  if(!n || n.error) return toast('Could not read the note.','error');
+  $('previewModalBody').innerHTML = bookPreviewModal(
+    { cover: n.cover ? '/api/cover/' + id + '?t=' + Date.now() : '', title:n.title, author:n.author,
+      volumes: n.kind === 'book' ? 0 : n.volumes, description:n.description },
+    { mode:'read-only' });
+  $('previewModalBackdrop').hidden = false;
+}
 
 /* ── note view/edit modal (#55) ─────────────────────────────────
    Reuses the shared #previewModalBackdrop and bookPreviewModal for the
