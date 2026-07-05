@@ -145,6 +145,125 @@ modified: %s
 `, title, author, link, workID, coverField, releasedEN, status, today, today, title, coverEmbed, description)
 }
 
+// CoverName builds a cover attachment filename for a title + extension:
+// "cover_<TitleNoSpaces><ext>". ext must include the leading dot. Shared by note
+// creation, cover replacement, and title rename so the naming stays consistent.
+func CoverName(title, ext string) string {
+	return "cover_" + Sanitize(title, true) + ext
+}
+
+// CoverExt returns the file extension to use for a cover downloaded from
+// coverURL (defaulting to .jpg). Exported for the cover-replace endpoint.
+func CoverExt(coverURL string) string { return coverExt(coverURL) }
+
+// SaveCoverBytes writes an uploaded cover image to dest, capped at
+// maxCoverBytes (matching the download path). The parent dir is created.
+func SaveCoverBytes(dest string, r io.Reader) error {
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return err
+	}
+	f, err := os.Create(dest)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = io.Copy(f, io.LimitReader(r, maxCoverBytes))
+	return err
+}
+
+// DownloadCover downloads coverURL to dest via the guarded (SSRF-safe) client,
+// same as note creation uses. Unlike the internal download(), it rejects a
+// response whose Content-Type isn't an image — the paste-URL path is
+// user-facing, so a link to an HTML page (or a 404 page) should fail loudly
+// rather than save junk as the cover.
+func DownloadCover(coverURL, dest string) error {
+	client := scraper.NewGuardedHTTPClient(30 * time.Second)
+	resp, err := client.Get(coverURL)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("status %d", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "" && !strings.HasPrefix(ct, "image/") {
+		return fmt.Errorf("that URL is not an image (Content-Type: %s)", ct)
+	}
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return err
+	}
+	f, err := os.Create(dest)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = io.Copy(f, io.LimitReader(resp.Body, maxCoverBytes))
+	return err
+}
+
+// RenameNote renames a note's .md to match newTitle, and — when the note has a
+// cover — renames the cover attachment to follow (cover_<newTitle><ext>),
+// rewriting the in-body H3 heading and the Cover field/embed to match. It
+// refuses to clobber an existing note or cover (ErrNoteExists). Returns the new
+// note path and cover filename (unchanged cover name if the note had none).
+func RenameNote(o Options, oldPath, oldCover, newTitle string) (newPath, newCover string, err error) {
+	newBase := Sanitize(newTitle, false)
+	if newBase == "" {
+		return "", "", errors.New("empty title")
+	}
+	newPath = filepath.Join(filepath.Dir(oldPath), newBase+".md")
+	sameNote := strings.EqualFold(newPath, oldPath)
+	if !sameNote {
+		if _, e := os.Stat(newPath); e == nil {
+			return "", "", fmt.Errorf("%w: %s.md", ErrNoteExists, newBase)
+		} else if !errors.Is(e, fs.ErrNotExist) {
+			return "", "", e
+		}
+	}
+
+	// Rename the cover first (if present on disk) so a failure leaves the note
+	// untouched; a recorded-but-missing cover is left as-is rather than failing.
+	newCover = oldCover
+	if oldCover != "" {
+		attachAbs := vault.ResolvePath(o.VaultDir, o.AttachmentsDir)
+		newCover = CoverName(newTitle, filepath.Ext(oldCover))
+		oldCoverPath := filepath.Join(attachAbs, oldCover)
+		newCoverPath := filepath.Join(attachAbs, newCover)
+		if newCover != oldCover {
+			if _, statErr := os.Stat(oldCoverPath); statErr == nil {
+				if _, e := os.Stat(newCoverPath); e == nil && !strings.EqualFold(newCoverPath, oldCoverPath) {
+					return "", "", fmt.Errorf("%w: %s", ErrNoteExists, newCover)
+				}
+				if e := vault.RenameWithRetry(oldCoverPath, newCoverPath); e != nil {
+					return "", "", fmt.Errorf("cover rename: %w", e)
+				}
+			} else {
+				newCover = oldCover
+			}
+		}
+	}
+
+	if !sameNote {
+		if e := vault.RenameWithRetry(oldPath, newPath); e != nil {
+			return "", "", e
+		}
+	}
+	// Keep the in-body heading and (book notes) the `Title:` frontmatter field in
+	// step with the new filename.
+	if e := vault.SetTitleHeading(newPath, newBase); e != nil {
+		return newPath, newCover, e
+	}
+	if e := vault.UpdateTitleField(newPath, newBase); e != nil {
+		return newPath, newCover, e
+	}
+	if newCover != oldCover {
+		if e := vault.UpdateCover(newPath, newCover); e != nil {
+			return newPath, newCover, e
+		}
+	}
+	return newPath, newCover, nil
+}
+
 // CreateBook writes a new #Book note from catalog data (OpenLibrary) — no
 // scraping involved, unlike Create. coverURL/description/releasedEN may be
 // empty. dup may be nil to skip the duplicate check.
@@ -172,7 +291,7 @@ func CreateBook(o Options, dup DupChecker, title, author, link, workID, coverURL
 
 	coverName := ""
 	if coverURL != "" {
-		coverName = "cover_" + Sanitize(title, true) + coverExt(coverURL)
+		coverName = CoverName(title, coverExt(coverURL))
 		attachAbs := vault.ResolvePath(o.VaultDir, o.AttachmentsDir)
 		if err := os.MkdirAll(attachAbs, 0o755); err != nil {
 			return Result{}, err
@@ -229,7 +348,7 @@ func Create(o Options, sc *scraper.Client, dup DupChecker, rl scraper.Rules, sou
 	}
 
 	// Download cover.
-	coverName := "cover_" + Sanitize(nd.Title, true) + coverExt(nd.CoverURL)
+	coverName := CoverName(nd.Title, coverExt(nd.CoverURL))
 	attachAbs := vault.ResolvePath(o.VaultDir, o.AttachmentsDir)
 	if err := os.MkdirAll(attachAbs, 0o755); err != nil {
 		return Result{}, err

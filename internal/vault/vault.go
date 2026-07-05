@@ -28,10 +28,23 @@ var (
 	authorRE         = regexp.MustCompile(`(?i)^Author:\s*(.+)$`)
 	workIDRE         = regexp.MustCompile(`(?i)^Work ID:\s*(.+)$`)
 	releasedENRE     = regexp.MustCompile(`(?i)^Released EN:\s*(.+)$`)
+	seriesRE         = regexp.MustCompile(`(?i)^Series:\s*(.*)$`)
+	tagsKeyRE        = regexp.MustCompile(`(?i)^tags:\s*(.*)$`)
+	tagItemRE        = regexp.MustCompile(`^\s*-\s*"?#?([^"]+?)"?\s*$`)
 
 	// Prefix matchers for line-based rewriting.
-	volPrefixRE = regexp.MustCompile(`(?i)^Volumes:\s*`)
-	lastUpdRE   = regexp.MustCompile(`(?i)^Last Update:\s*`)
+	volPrefixRE      = regexp.MustCompile(`(?i)^Volumes:\s*`)
+	lastUpdRE        = regexp.MustCompile(`(?i)^Last Update:\s*`)
+	coverPrefixRE    = regexp.MustCompile(`(?i)^Cover:\s*`)
+	releasedPrefixRE = regexp.MustCompile(`(?i)^Released EN:\s*`)
+	titlePrefixRE    = regexp.MustCompile(`(?i)^Title:\s*`)
+
+	// Body structural lines (below the frontmatter): the H3 title, the cover
+	// embed, and the LN "[[Light Novel]]" link. Used to separate the editable
+	// description prose from the boilerplate the builders emit.
+	h3RE     = regexp.MustCompile(`^###\s`)
+	embedRE  = regexp.MustCompile(`^!\[\[(.+?)\]\]\s*$`)
+	lnLinkRE = regexp.MustCompile(`^\[\[Light Novel\]\]\s*$`)
 )
 
 // Entry is one tracked note — either a light novel (Kind="ln") or a book
@@ -409,6 +422,375 @@ func UpdateStatus(path, newStatus string) error {
 	return AtomicWrite(path, []byte(strings.Join(lines, nl)), 0o644)
 }
 
+// loadFrontmatter reads a note, detects its newline style, splits it into lines
+// (normalised to \n for indexing), and locates the closing `---` fence. Shared
+// by the line-based frontmatter/body rewriters below so each doesn't re-open and
+// re-scan the file.
+func loadFrontmatter(path string) (lines []string, nl string, closeIdx int, err error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, "", -1, err
+	}
+	nl = "\n"
+	if bytes.Contains(raw, []byte("\r\n")) {
+		nl = "\r\n"
+	}
+	lines = strings.Split(strings.ReplaceAll(string(raw), "\r\n", "\n"), "\n")
+	fence := 0
+	closeIdx = -1
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "---" {
+			fence++
+			if fence == 2 {
+				closeIdx = i
+				break
+			}
+		}
+	}
+	if closeIdx == -1 {
+		return nil, "", -1, fmt.Errorf("no frontmatter in %s", path)
+	}
+	return lines, nl, closeIdx, nil
+}
+
+// setFrontmatterScalar rewrites (or inserts before the closing fence) a
+// "Key: value" frontmatter line.
+func setFrontmatterScalar(path string, prefixRE *regexp.Regexp, key, value string) error {
+	lines, nl, closeIdx, err := loadFrontmatter(path)
+	if err != nil {
+		return err
+	}
+	wrote := false
+	for i := 0; i < closeIdx; i++ {
+		if prefixRE.MatchString(lines[i]) {
+			lines[i] = key + ": " + value
+			wrote = true
+			break
+		}
+	}
+	if !wrote {
+		lines = insertAt(lines, closeIdx, key+": "+value)
+	}
+	return AtomicWrite(path, []byte(strings.Join(lines, nl)), 0o644)
+}
+
+// UpdateReleasedEN rewrites the `Released EN:` frontmatter line (book notes).
+func UpdateReleasedEN(path, value string) error {
+	return setFrontmatterScalar(path, releasedPrefixRE, "Released EN", value)
+}
+
+// UpdateTags rewrites the `tags:` block list to exactly the given tags (each
+// stored as `  - "#Tag"`, matching the builders). A nil/empty list leaves just
+// the `tags:` key.
+func UpdateTags(path string, tags []string) error {
+	lines, nl, closeIdx, err := loadFrontmatter(path)
+	if err != nil {
+		return err
+	}
+	block := []string{"tags:"}
+	for _, t := range tags {
+		t = strings.TrimPrefix(strings.TrimSpace(t), "#")
+		if t == "" {
+			continue
+		}
+		block = append(block, `  - "#`+t+`"`)
+	}
+
+	tagsIdx := -1
+	for i := 0; i < closeIdx; i++ {
+		if tagsKeyRE.MatchString(lines[i]) {
+			tagsIdx = i
+			break
+		}
+	}
+
+	var out []string
+	if tagsIdx == -1 {
+		out = append(out, lines[:closeIdx]...)
+		out = append(out, block...)
+		out = append(out, lines[closeIdx:]...)
+	} else {
+		end := tagsIdx + 1
+		for end < closeIdx && tagItemRE.MatchString(lines[end]) {
+			end++
+		}
+		out = append(out, lines[:tagsIdx]...)
+		out = append(out, block...)
+		out = append(out, lines[end:]...)
+	}
+	return AtomicWrite(path, []byte(strings.Join(out, nl)), 0o644)
+}
+
+// SetTitleHeading rewrites the first body `### ` heading (inserting one if the
+// body has none). Used by note rename so the in-body title tracks the filename.
+func SetTitleHeading(path, title string) error {
+	lines, nl, closeIdx, err := loadFrontmatter(path)
+	if err != nil {
+		return err
+	}
+	for i := closeIdx + 1; i < len(lines); i++ {
+		if h3RE.MatchString(strings.TrimSpace(lines[i])) {
+			lines[i] = "### " + title
+			return AtomicWrite(path, []byte(strings.Join(lines, nl)), 0o644)
+		}
+	}
+	lines = insertAt(lines, closeIdx+1, "### "+title)
+	return AtomicWrite(path, []byte(strings.Join(lines, nl)), 0o644)
+}
+
+// UpdateTitleField rewrites the `Title:` frontmatter line when the note has one
+// (book notes do; LN notes key on `Series:` instead and are left untouched). A
+// rename changes the filename — this keeps the in-frontmatter title in step.
+func UpdateTitleField(path, title string) error {
+	lines, nl, closeIdx, err := loadFrontmatter(path)
+	if err != nil {
+		return err
+	}
+	for i := 0; i < closeIdx; i++ {
+		if titlePrefixRE.MatchString(lines[i]) {
+			lines[i] = "Title: " + title
+			return AtomicWrite(path, []byte(strings.Join(lines, nl)), 0o644)
+		}
+	}
+	return nil
+}
+
+// UpdateCover points the note at a new cover attachment: it rewrites the
+// `Cover: "[[name]]"` frontmatter field and the body `![[name]]` embed (adding
+// the embed after the H3 title if the note had no cover before).
+func UpdateCover(path, coverName string) error {
+	lines, nl, closeIdx, err := loadFrontmatter(path)
+	if err != nil {
+		return err
+	}
+	field := `Cover: "[[` + coverName + `]]"`
+	wrote := false
+	for i := 0; i < closeIdx; i++ {
+		if coverPrefixRE.MatchString(lines[i]) {
+			lines[i] = field
+			wrote = true
+			break
+		}
+	}
+	if !wrote {
+		lines = insertAt(lines, closeIdx, field)
+		closeIdx++
+	}
+
+	embed := "![[" + coverName + "]]"
+	found := false
+	for i := closeIdx + 1; i < len(lines); i++ {
+		if embedRE.MatchString(strings.TrimSpace(lines[i])) {
+			lines[i] = embed
+			found = true
+			break
+		}
+	}
+	if !found {
+		ins := closeIdx + 1
+		for i := closeIdx + 1; i < len(lines); i++ {
+			if h3RE.MatchString(strings.TrimSpace(lines[i])) {
+				ins = i + 1
+				break
+			}
+		}
+		lines = insertAt(lines, ins, "")
+		lines = insertAt(lines, ins+1, embed)
+	}
+	return AtomicWrite(path, []byte(strings.Join(lines, nl)), 0o644)
+}
+
+// UpdateDescription replaces the note's description prose (the body below the
+// structural header lines) with newDesc, preserving the H3 title, cover embed,
+// and LN "[[Light Novel]]" link exactly. Mirrors the body layout the builders
+// emit: one blank line separates the header from the description.
+func UpdateDescription(path, newDesc string) error {
+	lines, nl, closeIdx, err := loadFrontmatter(path)
+	if err != nil {
+		return err
+	}
+	// Description starts at the first non-structural, non-blank body line.
+	j := closeIdx + 1
+	for j < len(lines) {
+		t := strings.TrimSpace(lines[j])
+		if t == "" || h3RE.MatchString(t) || embedRE.MatchString(t) || lnLinkRE.MatchString(t) {
+			j++
+			continue
+		}
+		break
+	}
+	head := append([]string{}, lines[:j]...)
+	for len(head) > 0 && strings.TrimSpace(head[len(head)-1]) == "" {
+		head = head[:len(head)-1]
+	}
+	out := append(head, "") // single blank separator after the header
+	if strings.TrimSpace(newDesc) != "" {
+		out = append(out, strings.Split(strings.ReplaceAll(newDesc, "\r\n", "\n"), "\n")...)
+	}
+	out = append(out, "") // trailing newline
+	return AtomicWrite(path, []byte(strings.Join(out, nl)), 0o644)
+}
+
+// Note is the full contents of a tracked note — every frontmatter field the UI
+// shows or edits, plus the description prose from the body (the structural
+// lines — H3 title, cover embed, LN "[[Light Novel]]" link — stripped out).
+type Note struct {
+	Title          string   `json:"title"` // from the filename (rename target)
+	Kind           string   `json:"kind"`  // "ln" | "book"
+	Link           string   `json:"link"`
+	Author         string   `json:"author"`
+	WorkID         string   `json:"work_id"`
+	ReleasedEN     string   `json:"released_en"`
+	Series         string   `json:"series"`
+	Cover          string   `json:"cover"`
+	Status         string   `json:"status"`
+	Volumes        int      `json:"volumes"`
+	ReadVolumes    int      `json:"read_volumes"`
+	HasReadVolumes bool     `json:"-"`
+	Tags           []string `json:"tags"`
+	Description    string   `json:"description"`
+}
+
+// ReadNote reads a note's full frontmatter and description body. It's the
+// read side of the note-edit feature (#55); Scan/parse only extract the fields
+// the checker needs, so this is a separate, fuller pass over the same file.
+func ReadNote(path string) (Note, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return Note{}, err
+	}
+	lines := strings.Split(strings.ReplaceAll(string(raw), "\r\n", "\n"), "\n")
+
+	n := Note{Title: strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))}
+	fence := 0
+	closeIdx := -1
+	pendingStatus := false
+	inTags := false
+	var isLN, isBook, hasLNTempl, hasBookTempl bool
+
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "---" {
+			fence++
+			if fence == 2 {
+				closeIdx = i
+				break
+			}
+			continue
+		}
+		if fence != 1 {
+			continue
+		}
+
+		// Tag list items sit under the `tags:` key until a non-item line.
+		if inTags {
+			if m := tagItemRE.FindStringSubmatch(line); m != nil {
+				n.Tags = append(n.Tags, strings.TrimSpace(m[1]))
+				continue
+			}
+			inTags = false
+		}
+		if pendingStatus {
+			if m := statusListItemRE.FindStringSubmatch(line); m != nil {
+				n.Status = strings.TrimSpace(m[1])
+			}
+			pendingStatus = false
+		}
+
+		if strings.Contains(line, "#LightNovel") {
+			isLN = true
+		}
+		if strings.Contains(line, "#Book") {
+			isBook = true
+		}
+		if lnTemplateRE.MatchString(line) {
+			hasLNTempl = true
+		}
+		if bookTemplateRE.MatchString(line) {
+			hasBookTempl = true
+		}
+		if m := linkRE.FindStringSubmatch(line); m != nil {
+			n.Link = m[1]
+		}
+		if m := volumesRE.FindStringSubmatch(line); m != nil {
+			n.Volumes, _ = strconv.Atoi(m[1])
+		}
+		if m := coverRE.FindStringSubmatch(line); m != nil {
+			n.Cover = strings.TrimSpace(m[1])
+		}
+		if m := readVolumesRE.FindStringSubmatch(line); m != nil {
+			n.ReadVolumes, _ = strconv.Atoi(m[1])
+			n.HasReadVolumes = true
+		}
+		if m := authorRE.FindStringSubmatch(line); m != nil {
+			n.Author = strings.TrimSpace(m[1])
+		}
+		if m := workIDRE.FindStringSubmatch(line); m != nil {
+			n.WorkID = strings.TrimSpace(m[1])
+		}
+		if m := releasedENRE.FindStringSubmatch(line); m != nil {
+			n.ReleasedEN = strings.TrimSpace(m[1])
+		}
+		if m := seriesRE.FindStringSubmatch(line); m != nil {
+			n.Series = strings.TrimSpace(m[1])
+		}
+		if m := statusRE.FindStringSubmatch(line); m != nil {
+			if v := strings.TrimSpace(m[1]); v != "" {
+				n.Status = v
+			} else {
+				pendingStatus = true
+			}
+		}
+		if tagsKeyRE.MatchString(line) {
+			// `tags:` opens a list; any inline value (`tags: [..]`) is ignored —
+			// notes here always use the block-list form the builders emit.
+			inTags = true
+		}
+	}
+
+	// The tag list items are consumed above (with `continue`), so also derive the
+	// kind flags from the collected tags, not just an inline substring.
+	for _, tg := range n.Tags {
+		switch strings.ToLower(tg) {
+		case "lightnovel":
+			isLN = true
+		case "book":
+			isBook = true
+		}
+	}
+	switch {
+	case isBook && hasBookTempl:
+		n.Kind = "book"
+	case isLN && hasLNTempl:
+		n.Kind = "ln"
+	}
+
+	if closeIdx != -1 {
+		n.Description = extractDescription(lines[closeIdx+1:])
+	}
+	return n, nil
+}
+
+// extractDescription drops the structural body lines the builders emit (leading
+// blanks, the `### title`, the `![[cover]]` embed, and the `[[Light Novel]]`
+// link) and returns the remaining prose, trimmed of surrounding blank lines.
+func extractDescription(body []string) string {
+	i := 0
+	for i < len(body) {
+		t := strings.TrimSpace(body[i])
+		if t == "" || h3RE.MatchString(t) || embedRE.MatchString(t) || lnLinkRE.MatchString(t) {
+			i++
+			continue
+		}
+		break
+	}
+	desc := body[i:]
+	// Trim trailing blank lines.
+	for len(desc) > 0 && strings.TrimSpace(desc[len(desc)-1]) == "" {
+		desc = desc[:len(desc)-1]
+	}
+	return strings.Join(desc, "\n")
+}
+
 // AtomicWrite writes data to a temp file in the same directory and renames it
 // over path, so a crash or error mid-write can never leave a half-written note
 // (os.Rename replaces the destination atomically on the same filesystem).
@@ -430,7 +812,24 @@ func AtomicWrite(path string, data []byte, perm os.FileMode) error {
 	if err := os.Chmod(tmpName, perm); err != nil {
 		return err
 	}
-	return os.Rename(tmpName, path)
+	return RenameWithRetry(tmpName, path)
+}
+
+// RenameWithRetry renames oldpath→newpath, retrying briefly on failure. On
+// Windows a note living in a OneDrive-synced folder is intermittently locked by
+// the sync client (or an on-access AV scan) right after it's written, so the
+// rename fails with "Access is denied" / a sharing violation that clears within
+// a few hundred milliseconds. Retrying turns that transient failure — which the
+// user otherwise had to work around by waiting and re-saving — into a short wait.
+func RenameWithRetry(oldpath, newpath string) error {
+	var err error
+	for i := 0; i < 12; i++ {
+		if err = os.Rename(oldpath, newpath); err == nil {
+			return nil
+		}
+		time.Sleep(time.Duration(25*(i+1)) * time.Millisecond)
+	}
+	return err
 }
 
 func insertAt(lines []string, idx int, val string) []string {

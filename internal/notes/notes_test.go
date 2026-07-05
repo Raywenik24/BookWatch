@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +15,90 @@ import (
 )
 
 func init() { scraper.AllowPrivateHosts = true } // httptest binds to loopback
+
+func TestCoverName(t *testing.T) {
+	if got := CoverName("Rich Dad: Poor Dad", ".png"); got != "cover_RichDad-PoorDad.png" {
+		t.Errorf("CoverName: %q", got)
+	}
+}
+
+func writeBookNote(t *testing.T, dir, base string) string {
+	t.Helper()
+	p := filepath.Join(dir, base+".md")
+	content := BuildBookNote(base, "Andrzej Sapkowski",
+		"https://openlibrary.org/works/OL123W", "OL123W", "cover_"+base+".jpg",
+		"Backlog", "1993", "A witcher tale.", "2026-07-05")
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// RenameNote must move the .md, rename the cover attachment to follow, and fix
+// the in-body heading + Cover embed — including the Polish-diacritic case where
+// the on-disk name gained characters the search source had stripped.
+func TestRenameNote_polishAndCoverFollow(t *testing.T) {
+	vaultDir := t.TempDir()
+	attach := filepath.Join(vaultDir, "att")
+	if err := os.MkdirAll(attach, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldTitle := "Wiedzmin Ostatnie zyczenie"
+	oldPath := writeBookNote(t, vaultDir, oldTitle)
+	oldCover := CoverName(oldTitle, ".jpg")
+	if err := os.WriteFile(filepath.Join(attach, oldCover), []byte("img"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	o := Options{VaultDir: vaultDir, AttachmentsDir: "att"}
+	newTitle := "Wiedźmin - Ostatnie Życzenie"
+	newPath, newCover, err := RenameNote(o, oldPath, oldCover, newTitle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(oldPath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("old note still present: %v", err)
+	}
+	if filepath.Base(newPath) != Sanitize(newTitle, false)+".md" {
+		t.Errorf("new note name: %q", newPath)
+	}
+	if _, err := os.Stat(newPath); err != nil {
+		t.Errorf("new note missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(attach, newCover)); err != nil {
+		t.Errorf("renamed cover missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(attach, oldCover)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("old cover still present")
+	}
+	body, _ := os.ReadFile(newPath)
+	if !strings.Contains(string(body), "### "+Sanitize(newTitle, false)) {
+		t.Errorf("heading not updated:\n%s", body)
+	}
+	if !strings.Contains(string(body), "Title: "+Sanitize(newTitle, false)) {
+		t.Errorf("Title frontmatter field not updated:\n%s", body)
+	}
+	if strings.Contains(string(body), "Title: "+oldTitle) {
+		t.Errorf("old Title frontmatter still present:\n%s", body)
+	}
+	if !strings.Contains(string(body), "![["+newCover+"]]") {
+		t.Errorf("cover embed not updated:\n%s", body)
+	}
+}
+
+// A rename onto an existing sibling note must be refused, not clobber it.
+func TestRenameNote_collision(t *testing.T) {
+	vaultDir := t.TempDir()
+	oldPath := writeBookNote(t, vaultDir, "Source Book")
+	writeBookNote(t, vaultDir, "Target Book")
+	o := Options{VaultDir: vaultDir, AttachmentsDir: "att"}
+	if _, _, err := RenameNote(o, oldPath, "", "Target Book"); !errors.Is(err, ErrNoteExists) {
+		t.Errorf("expected ErrNoteExists, got %v", err)
+	}
+	if _, err := os.Stat(oldPath); err != nil {
+		t.Errorf("source note should be untouched: %v", err)
+	}
+}
 
 // Create scrapes + writes a note; a second add whose title sanitizes to the
 // same filename must be refused (ErrNoteExists) and leave the original intact.

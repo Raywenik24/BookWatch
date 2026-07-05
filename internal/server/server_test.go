@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"bookwatch/internal/config"
+	"bookwatch/internal/notes"
 	"bookwatch/internal/provider"
 	"bookwatch/internal/scheduler"
 	"bookwatch/internal/scraper"
@@ -153,6 +155,151 @@ func TestReadEndpoints_openAndJSON(t *testing.T) {
 	json.Unmarshal(do(h, "GET", "/api/books", "", "").Body.Bytes(), &books)
 	if len(books) != 1 || books[0].Title != "A" {
 		t.Errorf("books payload: %+v", books)
+	}
+}
+
+// End-to-end note view/edit (#55): read a book note, edit fields, rename it
+// (cover follows, duplicate detection survives), and replace the cover by URL.
+func TestNoteViewEdit(t *testing.T) {
+	h, st, vaultDir := newTestServer(t)
+	attach := filepath.Join(vaultDir, "_attachments")
+	if err := os.MkdirAll(attach, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	title, link := "My Book", "https://openlibrary.org/works/OL9W"
+	cover := notes.CoverName(title, ".jpg")
+	notePath := filepath.Join(vaultDir, title+".md")
+	content := notes.BuildBookNote(title, "Some Author", link, "OL9W", cover,
+		"Backlog", "1990", "Original blurb.", "2026-07-05")
+	if err := os.WriteFile(notePath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(attach, cover), []byte("img"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	id, _ := st.UpsertBook(title, link, notePath, 0, cover, "Backlog", nil, "book", "Some Author")
+
+	// Read.
+	rec := do(h, "GET", fmt.Sprintf("/api/books/%d/note", id), "", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("read: got %d: %s", rec.Code, rec.Body.String())
+	}
+	n := decodeNote(t, rec)
+	if n.Kind != "book" || n.Description != "Original blurb." || n.ReleasedEN != "1990" {
+		t.Fatalf("read payload: %+v", n)
+	}
+
+	// Edit description + status + tags + released.
+	edit := `{"description":"Edited blurb.","status":"Completed","tags":["Favorite"],"released_en":"1991"}`
+	if rec := do(h, "PUT", fmt.Sprintf("/api/books/%d/note", id), "secret", edit); rec.Code != http.StatusOK {
+		t.Fatalf("edit: got %d: %s", rec.Code, rec.Body.String())
+	}
+	on := readNote(t, h, id)
+	if on.Description != "Edited blurb." || on.Status != "Completed" || on.ReleasedEN != "1991" {
+		t.Fatalf("after edit: %+v", on)
+	}
+	// The defining #Book tag is preserved even though the edit didn't include it.
+	hasBook := false
+	for _, tg := range on.Tags {
+		if tg == "Book" {
+			hasBook = true
+		}
+	}
+	if !hasBook {
+		t.Errorf("kind tag dropped: %+v", on.Tags)
+	}
+
+	// Rename → file moves, cover follows, DB path updates, dup still by link.
+	newTitle := "My Renamed Book"
+	if rec := do(h, "PUT", fmt.Sprintf("/api/books/%d/note", id), "secret", fmt.Sprintf(`{"title":%q}`, newTitle)); rec.Code != http.StatusOK {
+		t.Fatalf("rename: got %d: %s", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(vaultDir, newTitle+".md")); err != nil {
+		t.Errorf("renamed note missing: %v", err)
+	}
+	if _, err := os.Stat(notePath); !os.IsNotExist(err) {
+		t.Errorf("old note still present")
+	}
+	if _, err := os.Stat(filepath.Join(attach, notes.CoverName(newTitle, ".jpg"))); err != nil {
+		t.Errorf("renamed cover missing: %v", err)
+	}
+	if dup, _ := st.BookExists(link); !dup {
+		t.Error("duplicate detection broke after rename (link should be unchanged)")
+	}
+
+	// Replace cover by URL.
+	img := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		w.Write([]byte("PNGDATA"))
+	}))
+	defer img.Close()
+	if rec := do(h, "POST", fmt.Sprintf("/api/books/%d/cover", id), "secret", fmt.Sprintf(`{"url":%q}`, img.URL+"/x.png")); rec.Code != http.StatusOK {
+		t.Fatalf("cover: got %d: %s", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(attach, notes.CoverName(newTitle, ".png"))); err != nil {
+		t.Errorf("new cover not written: %v", err)
+	}
+}
+
+type notePayload struct {
+	Kind        string   `json:"kind"`
+	Description string   `json:"description"`
+	Status      string   `json:"status"`
+	ReleasedEN  string   `json:"released_en"`
+	Title       string   `json:"title"`
+	Tags        []string `json:"tags"`
+}
+
+func decodeNote(t *testing.T, rec *httptest.ResponseRecorder) notePayload {
+	t.Helper()
+	var n notePayload
+	json.Unmarshal(rec.Body.Bytes(), &n)
+	return n
+}
+
+func readNote(t *testing.T, h http.Handler, id int64) notePayload {
+	t.Helper()
+	rec := do(h, "GET", fmt.Sprintf("/api/books/%d/note", id), "", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("read: got %d: %s", rec.Code, rec.Body.String())
+	}
+	return decodeNote(t, rec)
+}
+
+// A multipart cover upload larger than the 1 MiB JSON body cap must still
+// succeed — the cover route gets its own larger cap (regression: the generic
+// auth cap made real covers fail multipart parsing with "no cover file").
+func TestSetCover_multipartOverJSONCap(t *testing.T) {
+	h, st, vaultDir := newTestServer(t)
+	title, link := "Cap Book", "https://openlibrary.org/works/OL7W"
+	notePath := filepath.Join(vaultDir, title+".md")
+	content := notes.BuildBookNote(title, "A", link, "OL7W", "", "Backlog", "", "", "2026-07-05")
+	if err := os.WriteFile(notePath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	id, _ := st.UpsertBook(title, link, notePath, 0, "", "Backlog", nil, "book", "A")
+
+	// ~1.4 MiB payload — over the 1 MiB JSON cap, under the 16 MiB cover cap.
+	img := make([]byte, 1_400_000)
+	copy(img, []byte("\x89PNG\r\n\x1a\n"))
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	fw, _ := mw.CreateFormFile("cover", "big, image.png")
+	fw.Write(img)
+	mw.Close()
+
+	r := httptest.NewRequest("POST", fmt.Sprintf("/api/books/%d/cover", id), &buf)
+	r.Header.Set("Content-Type", mw.FormDataContentType())
+	r.Header.Set("X-BookWatch-Token", "secret")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("multipart cover upload: got %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(vaultDir, "_attachments", "cover_CapBook.png")); err != nil {
+		t.Errorf("uploaded cover not written: %v", err)
 	}
 }
 

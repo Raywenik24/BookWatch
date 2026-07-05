@@ -103,6 +103,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/releases/dismiss", s.auth(s.handleDismissReleases))
 	mux.HandleFunc("POST /api/releases/undismiss", s.auth(s.handleUndismissReleases))
 	mux.HandleFunc("POST /api/books", s.auth(s.handleAddBook))
+	mux.HandleFunc("GET /api/books/{id}/note", s.handleReadNote)
+	mux.HandleFunc("PUT /api/books/{id}/note", s.auth(s.handleEditNote))
+	mux.HandleFunc("POST /api/books/{id}/cover", s.authLimited(s.handleSetCover, maxCoverUploadBytes))
 	mux.HandleFunc("DELETE /api/books/{id}", s.auth(s.handleDeleteBook))
 	mux.HandleFunc("POST /api/sources", s.auth(s.handleUpsertSource))
 	mux.HandleFunc("DELETE /api/sources/{id}", s.auth(s.handleDeleteSource))
@@ -118,10 +121,19 @@ func (s *Server) Handler() http.Handler {
 
 // ── middleware ────────────────────────────────────────────────
 
+// auth guards a write route and caps its body at maxAPIBodyBytes — every JSON
+// write route decodes a tiny payload, so a 1 MiB cap is generous.
 func (s *Server) auth(h http.HandlerFunc) http.HandlerFunc {
+	return s.authLimited(h, maxAPIBodyBytes)
+}
+
+// authLimited is auth with a custom body cap. The cover-upload route sends an
+// image, not JSON, so it needs a much larger cap than the default — and because
+// MaxBytesReader can only tighten, not loosen, the cap has to be set here rather
+// than re-wrapped inside the handler.
+func (s *Server) authLimited(h http.HandlerFunc, maxBody int64) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Cap the body on every write route — they all decode small JSON.
-		r.Body = http.MaxBytesReader(w, r.Body, maxAPIBodyBytes)
+		r.Body = http.MaxBytesReader(w, r.Body, maxBody)
 		// Header only — a query-param token would leak the password into proxy
 		// access logs, browser history, and Referer headers (and weakens CSRF
 		// posture, since a custom header can't be set cross-origin without a
@@ -635,6 +647,267 @@ func (s *Server) handleDeleteBook(w http.ResponseWriter, r *http.Request) {
 		s.st.LogEvent("untrack", fmt.Sprintf("Untracked %q", title))
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "untracked"})
+}
+
+// maxCoverUploadBytes caps an uploaded cover image (matches notes' download cap).
+const maxCoverUploadBytes = 16 << 20 // 16 MiB
+
+// ── note view/edit (#55) ──────────────────────────────────────
+
+// lookupBook resolves the {id} path value to a tracked note on disk, writing
+// the appropriate error response (and returning ok=false) on any failure so the
+// note handlers can bail out cleanly.
+func (s *Server) lookupBook(w http.ResponseWriter, r *http.Request) (store.BookRef, bool) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errBody("bad id"))
+		return store.BookRef{}, false
+	}
+	ref, ok, err := s.st.BookByID(id)
+	if err != nil {
+		writeErr(w, err)
+		return store.BookRef{}, false
+	}
+	if !ok || ref.Path == "" {
+		writeJSON(w, http.StatusNotFound, errBody("no note for this book"))
+		return store.BookRef{}, false
+	}
+	if _, err := os.Stat(ref.Path); err != nil {
+		writeJSON(w, http.StatusNotFound, errBody("note file missing on disk"))
+		return store.BookRef{}, false
+	}
+	return ref, true
+}
+
+// noteOptions returns the vault paths for a note of the given kind (book notes
+// use the separate Book new-note/attachments folders when configured, #50).
+func (s *Server) noteOptions(kind string) notes.Options {
+	o := notes.Options{
+		VaultDir:       s.effective("vault_dir", s.cfg.VaultDir),
+		NewNoteDir:     s.effective("new_note_dir", s.cfg.NewNoteDir),
+		AttachmentsDir: s.effective("attachments_dir", s.cfg.AttachmentsDir),
+	}
+	if kind == "book" {
+		o.NewNoteDir = s.effectiveBookNewNoteDir()
+		o.AttachmentsDir = s.effectiveBookAttachmentsDir()
+	}
+	return o
+}
+
+// resyncNote refreshes the DB row for a note from its file after an edit. The
+// note is keyed on its (unchanged) Link, so a rename just updates title+path.
+func (s *Server) resyncNote(link, path string, n vault.Note) error {
+	var rv *int
+	if n.HasReadVolumes {
+		v := n.ReadVolumes
+		rv = &v
+	}
+	_, err := s.st.UpsertBook(n.Title, link, path, n.Volumes, n.Cover, n.Status, rv, n.Kind, n.Author)
+	return err
+}
+
+// ensureKindTag guarantees the note's defining tag (#Book / #LightNovel) stays
+// in the tag list — Scan and kind detection both key on it, so an edit that
+// dropped it would silently untrack the note. The kind tag is placed first;
+// remaining user tags follow, de-duplicated case-insensitively.
+func ensureKindTag(kind string, tags []string) []string {
+	kt := "LightNovel"
+	if kind == "book" {
+		kt = "Book"
+	}
+	out := []string{kt}
+	seen := map[string]bool{strings.ToLower(kt): true}
+	for _, t := range tags {
+		norm := strings.TrimPrefix(strings.TrimSpace(t), "#")
+		if norm == "" || seen[strings.ToLower(norm)] {
+			continue
+		}
+		seen[strings.ToLower(norm)] = true
+		out = append(out, norm)
+	}
+	return out
+}
+
+func (s *Server) handleReadNote(w http.ResponseWriter, r *http.Request) {
+	ref, ok := s.lookupBook(w, r)
+	if !ok {
+		return
+	}
+	n, err := vault.ReadNote(ref.Path)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, n)
+}
+
+// handleEditNote applies the edit fields present in the JSON body (any subset of
+// description, status, tags, released_en, title). Frontmatter/body edits run
+// first; a title change (file rename + cover follow) runs last since it moves
+// the path. The DB row is then re-synced from the file.
+func (s *Server) handleEditNote(w http.ResponseWriter, r *http.Request) {
+	ref, ok := s.lookupBook(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		Description *string   `json:"description"`
+		Status      *string   `json:"status"`
+		Tags        *[]string `json:"tags"`
+		ReleasedEN  *string   `json:"released_en"`
+		Title       *string   `json:"title"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, errBody("bad body"))
+		return
+	}
+
+	path := ref.Path
+	if body.Status != nil {
+		if err := vault.UpdateStatus(path, *body.Status); err != nil {
+			writeErr(w, err)
+			return
+		}
+	}
+	if body.Tags != nil {
+		if err := vault.UpdateTags(path, ensureKindTag(ref.Kind, *body.Tags)); err != nil {
+			writeErr(w, err)
+			return
+		}
+	}
+	if body.ReleasedEN != nil {
+		if err := vault.UpdateReleasedEN(path, *body.ReleasedEN); err != nil {
+			writeErr(w, err)
+			return
+		}
+	}
+	if body.Description != nil {
+		if err := vault.UpdateDescription(path, *body.Description); err != nil {
+			writeErr(w, err)
+			return
+		}
+	}
+	if body.Title != nil && strings.TrimSpace(*body.Title) != "" {
+		newPath, _, err := notes.RenameNote(s.noteOptions(ref.Kind), path, ref.Cover, *body.Title)
+		if err != nil {
+			code := http.StatusBadRequest
+			if errors.Is(err, notes.ErrNoteExists) {
+				code = http.StatusConflict
+			}
+			writeJSON(w, code, errBody(err.Error()))
+			return
+		}
+		path = newPath
+		s.bustCoverIndex()
+	}
+
+	n, err := vault.ReadNote(path)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if err := s.resyncNote(ref.Link, path, n); err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, n)
+}
+
+// handleSetCover replaces a note's cover from either an uploaded image
+// (multipart/form-data, field "cover") or a pasted URL (JSON {"url":…}). The new
+// file lands in the note's attachments dir named cover_<title><ext>, the note's
+// Cover field + embed are rewritten, and any superseded file is removed.
+func (s *Server) handleSetCover(w http.ResponseWriter, r *http.Request) {
+	ref, ok := s.lookupBook(w, r)
+	if !ok {
+		return
+	}
+	opts := s.noteOptions(ref.Kind)
+	attachAbs := vault.ResolvePath(opts.VaultDir, opts.AttachmentsDir)
+
+	var ext string
+	var save func(dest string) error
+
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
+		// Body cap is applied by authLimited (maxCoverUploadBytes); a file over it
+		// fails the multipart parse here.
+		file, hdr, err := r.FormFile("cover")
+		if err != nil {
+			msg := "no cover file"
+			if strings.Contains(err.Error(), "too large") {
+				msg = "cover image is too large (max 16 MiB)"
+			}
+			writeJSON(w, http.StatusBadRequest, errBody(msg))
+			return
+		}
+		defer file.Close()
+		ext = strings.ToLower(filepath.Ext(hdr.Filename))
+		if !isImageExt(ext) {
+			writeJSON(w, http.StatusBadRequest, errBody("cover must be an image (jpg, png, gif, webp)"))
+			return
+		}
+		save = func(dest string) error { return notes.SaveCoverBytes(dest, file) }
+	} else {
+		var b struct {
+			URL string `json:"url"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&b); err != nil || b.URL == "" {
+			writeJSON(w, http.StatusBadRequest, errBody("missing url"))
+			return
+		}
+		if !notes.IsValidURL(b.URL) {
+			writeJSON(w, http.StatusBadRequest, errBody("invalid url"))
+			return
+		}
+		ext = notes.CoverExt(b.URL)
+		url := b.URL
+		save = func(dest string) error { return notes.DownloadCover(url, dest) }
+	}
+	if ext == "" {
+		ext = ".jpg"
+	}
+
+	coverName := notes.CoverName(ref.Title, ext)
+	if err := save(filepath.Join(attachAbs, coverName)); err != nil {
+		writeErr(w, err)
+		return
+	}
+	// Drop a superseded cover whose name differs (e.g. a different extension).
+	if ref.Cover != "" && ref.Cover != coverName {
+		os.Remove(filepath.Join(attachAbs, ref.Cover))
+	}
+	if err := vault.UpdateCover(ref.Path, coverName); err != nil {
+		writeErr(w, err)
+		return
+	}
+	s.bustCoverIndex()
+
+	n, err := vault.ReadNote(ref.Path)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if err := s.resyncNote(ref.Link, ref.Path, n); err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, n)
+}
+
+// bustCoverIndex forces the vault-wide cover index to rebuild on next lookup, so
+// a just-added/renamed cover resolves immediately instead of after the TTL.
+func (s *Server) bustCoverIndex() {
+	s.coverMu.Lock()
+	s.coverIdx = nil
+	s.coverMu.Unlock()
+}
+
+func isImageExt(ext string) bool {
+	switch ext {
+	case ".jpg", ".jpeg", ".png", ".gif", ".webp":
+		return true
+	}
+	return false
 }
 
 func (s *Server) handleUpsertSource(w http.ResponseWriter, r *http.Request) {

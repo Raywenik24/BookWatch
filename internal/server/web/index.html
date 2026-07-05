@@ -52,7 +52,7 @@
   input:not([type="checkbox"]), select, button.btn { font: inherit; padding: .45rem .6rem; border-radius: 6px;
         border: 1px solid var(--surface1); background: var(--mantle); color: var(--text); }
   input:not([type="checkbox"]) { flex: 1; min-width: 160px; }
-  input:focus, select:focus { outline: none; border-color: var(--mauve); box-shadow: 0 0 0 3px color-mix(in srgb, var(--mauve) 30%, transparent); }
+  input:focus, select:focus, textarea:focus { outline: none; border-color: var(--mauve); box-shadow: 0 0 0 3px color-mix(in srgb, var(--mauve) 30%, transparent); }
   .rule-grid input { min-width: 0; width: 100%; }
   button.btn { background: var(--peach); border: 0; color: var(--crust); font-weight: 600; cursor: pointer; }
   button.btn.ghost { background: var(--surface0); color: var(--text); }
@@ -243,6 +243,24 @@
   .modal-close { position: absolute; top: .4rem; right: .5rem; background: transparent; border: 0;
         color: var(--subtext); font-size: 1.4rem; line-height: 1; padding: .25rem .45rem; cursor: pointer; border-radius: 6px; }
   .modal-close:hover { color: var(--text); background: var(--surface0); }
+  /* note view/edit modal (#55) */
+  .note-open { color: var(--text); text-decoration: none; cursor: pointer; }
+  .note-open:hover { text-decoration: underline; }
+  .ne-grid { display: grid; grid-template-columns: 7rem 1fr; gap: .55rem .7rem; align-items: start; margin-top: .3rem; }
+  .ne-grid > label { color: var(--subtext); font-size: .85rem; padding-top: .35rem; }
+  .ne-grid input[type="text"], .ne-grid input[type="url"], .ne-grid select, .ne-grid textarea {
+        width: 100%; background: var(--mantle); color: var(--text); border: 1px solid var(--surface0);
+        border-radius: 6px; padding: .4rem .5rem; font: inherit; }
+  .ne-grid textarea { resize: vertical; line-height: 1.45; }
+  .ne-grid input:focus, .ne-grid select:focus, .ne-grid textarea:focus, .cover-picker-controls input:focus {
+        outline: none; border-color: var(--mauve);
+        box-shadow: 0 0 0 3px color-mix(in srgb, var(--mauve) 30%, transparent); }
+  .cover-picker { display: flex; gap: .7rem; align-items: flex-start; border: 1px dashed var(--surface1);
+        border-radius: 8px; padding: .5rem; transition: border-color .15s, background .15s; }
+  .cover-picker.drag { border-color: var(--mauve); background: var(--surface0); }
+  .cover-picker-controls { display: flex; flex-direction: column; gap: .4rem; flex: 1; min-width: 0; }
+  .cover-picker-controls input[type="url"] { width: 100%; background: var(--mantle); color: var(--text);
+        border: 1px solid var(--surface0); border-radius: 6px; padding: .4rem .5rem; font: inherit; }
 </style>
 </head>
 <body>
@@ -1027,7 +1045,199 @@ function openRelPreview(id){
     });
   }
 }
-function closeRelPreview(){ $('previewModalBackdrop').hidden = true; $('previewModalBody').innerHTML = ''; }
+function closeRelPreview(){ $('previewModalBackdrop').hidden = true; $('previewModalBody').innerHTML = ''; _noteModal = null; }
+
+/* ── note view/edit modal (#55) ─────────────────────────────────
+   Reuses the shared #previewModalBackdrop and bookPreviewModal for the
+   read-only view; edit mode swaps in an editable form with the reusable
+   coverPicker. State lives in _noteModal so Save knows what to PUT. */
+let _noteModal = null;      // { id, kind, note }
+let _coverPending = null;   // { file } | { url } | null
+
+async function openNoteModal(id){
+  const book = booksData.find(b => b.id === id);
+  let n;
+  try { n = await getJSON('/api/books/' + id + '/note'); }
+  catch(e){ return toast('Could not read the note.','error'); }
+  if(!n || n.error){ return toast('Could not read the note' + (n && n.error ? ': ' + n.error : '') + '.','error'); }
+  _noteModal = { id, kind: n.kind || (book ? bookKind(book) : 'book'), note: n };
+  _coverPending = null;
+  renderNoteView();
+  $('previewModalBackdrop').hidden = false;
+}
+
+function noteCoverSrc(){
+  const n = _noteModal.note;
+  return n.cover ? '/api/cover/' + _noteModal.id + '?t=' + Date.now() : '';
+}
+
+function renderNoteView(){
+  const n = _noteModal.note, isBook = _noteModal.kind === 'book';
+  const headerActions = `<button class="btn ghost" onclick="startNoteEdit()">Edit</button>`;
+  $('previewModalBody').innerHTML = bookPreviewModal(
+    { cover: noteCoverSrc(), title: n.title, author: n.author,
+      released: isBook ? n.released_en : '', link: n.link, workId: n.work_id,
+      volumes: isBook ? 0 : n.volumes, description: n.description },
+    { mode:'read-only', linkLabel: isBook ? 'open on OL ↗' : 'open source ↗', headerActions });
+}
+
+function startNoteEdit(){ _coverPending = null; renderNoteEdit(); }
+function cancelNoteEdit(){ _coverPending = null; renderNoteView(); }
+
+function renderNoteEdit(){
+  const n = _noteModal.note, isBook = _noteModal.kind === 'book';
+  const tags = (n.tags || []).join(', ');
+  const statusOpts = BOOK_STATUSES.map(s => `<option value="${s}"${s === (n.status||'Backlog') ? ' selected' : ''}>${s}</option>`).join('');
+  $('previewModalBody').innerHTML = `<div class="card">
+    <div class="ne-grid">
+      <label>Title</label>
+      <input id="neTitle" type="text" value="${esc(n.title)}" spellcheck="false">
+      <label>Status</label>
+      <select id="neStatus">${statusOpts}</select>
+      <label>Tags</label>
+      <input id="neTags" type="text" value="${esc(tags)}" placeholder="comma or semicolon separated" spellcheck="false">
+      ${isBook ? `<label>Released EN</label><input id="neReleased" type="text" value="${esc(n.released_en||'')}" spellcheck="false">` : ''}
+      <label>Cover</label>
+      <div>${coverPicker({ id:'neCover', currentSrc: noteCoverSrc(), accept:'image/*', prompt:'Paste an image URL, upload, or drop a file' })}</div>
+      <label>Description</label>
+      <textarea id="neDesc" rows="7" spellcheck="false">${esc(n.description||'')}</textarea>
+    </div>
+    <div class="row" style="margin-top:.7rem; justify-content:flex-end">
+      <button class="btn ghost" onclick="cancelNoteEdit()">Cancel</button>
+      <button class="btn" id="neSaveBtn" onclick="saveNoteEdit()">Save</button>
+    </div>
+  </div>`;
+}
+
+/* coverPicker — reusable cover input (#55). Renders a preview thumbnail, a URL
+   field, an upload button, and a drop target; all three feed _coverPending and
+   update the preview. opts: { id, currentSrc, accept, prompt }. Parameterized so
+   the add-book flow can reuse it later. */
+function coverPicker(opts){
+  opts = opts || {};
+  const id = opts.id || 'cover';
+  const accept = opts.accept || 'image/*';
+  const prompt = opts.prompt || 'Paste an image URL, upload, or drop a file';
+  const hasImg = !!opts.currentSrc;
+  return `<div class="cover-picker" id="${id}Drop"
+       ondragover="event.preventDefault();this.classList.add('drag')"
+       ondragleave="this.classList.remove('drag')"
+       ondrop="coverPickerDrop(event,'${id}')">
+    <img id="${id}Preview" class="cand-cover" style="width:64px;height:96px;${hasImg?'':'display:none'}"
+         src="${hasImg?esc(opts.currentSrc):''}">
+    <div class="cover-picker-controls">
+      <input id="${id}Url" type="url" placeholder="Paste image URL…" spellcheck="false"
+             oninput="coverPickerUrl('${id}', this.value)">
+      <div class="row" style="align-items:center; gap:.4rem">
+        <input id="${id}File" type="file" accept="${esc(accept)}" hidden
+               onchange="coverPickerFile('${id}', this.files[0])">
+        <button type="button" class="btn ghost" onclick="$('${id}File').click()">Upload…</button>
+      </div>
+      <small class="muted" id="${id}Status">${esc(prompt)}</small>
+    </div>
+  </div>`;
+}
+// COVER_PLACEHOLDER — a neutral "cover will change" thumbnail (inline SVG data
+// URI, allowed by the CSP img-src) shown when a pasted URL can't be previewed in
+// the browser, so the change is visible and not text-only.
+const COVER_PLACEHOLDER = 'data:image/svg+xml,' + encodeURIComponent(
+  `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="96" viewBox="0 0 64 96">
+     <rect width="64" height="96" rx="4" fill="#313244"/>
+     <g fill="none" stroke="#a6adc8" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+       <rect x="16" y="28" width="32" height="26" rx="2"/>
+       <circle cx="24" cy="36" r="3"/>
+       <path d="M16 48 l9 -9 6 6 5 -5 8 8"/>
+     </g>
+     <text x="32" y="72" fill="#a6adc8" font-size="8" text-anchor="middle" font-family="sans-serif">new cover</text>
+     <text x="32" y="82" fill="#a6adc8" font-size="8" text-anchor="middle" font-family="sans-serif">on Save</text>
+   </svg>`);
+
+function coverPickerShow(id, src){ const p = $(id + 'Preview'); if(p){ p.style.display = ''; p.src = src; } }
+function coverPickerStatus(id, text, color){
+  const s = $(id + 'Status'); if(!s) return;
+  s.textContent = text; s.style.color = color || '';
+}
+function coverPickerUrl(id, url){
+  url = (url || '').trim();
+  _coverPending = url ? { url } : null;
+  if(!url){ const p = $(id + 'Preview'); if(p) p.style.display = 'none'; coverPickerStatus(id, 'Paste an image URL, upload, or drop a file'); return; }
+  coverPickerStatus(id, 'Loading…');
+  // Probe with a detached Image so the visible preview isn't driven by CSP
+  // errors: hosts outside the img-src whitelist can't render here even though
+  // the server can fetch them, so on failure we swap in a placeholder (the
+  // change stays visible) and defer the real check to Save.
+  const probe = new Image();
+  probe.onload = () => { if(_coverPending && _coverPending.url === url){ coverPickerShow(id, url); coverPickerStatus(id, '✓ Image loaded — Save to apply', 'var(--green)'); } };
+  probe.onerror = () => { if(_coverPending && _coverPending.url === url){ coverPickerShow(id, COVER_PLACEHOLDER); coverPickerStatus(id, '⚠ Can’t preview here — it’ll be fetched & checked on Save', 'var(--yellow)'); } };
+  probe.src = url;
+}
+const MAX_COVER_BYTES = 16 * 1024 * 1024;
+function coverPickerFile(id, file){
+  if(!file) return;
+  if(!/^image\//.test(file.type)){ coverPickerStatus(id, '⚠ Not an image file', 'var(--red)'); return; }
+  if(file.size > MAX_COVER_BYTES){ coverPickerStatus(id, '⚠ Too large (max 16 MiB)', 'var(--red)'); return; }
+  _coverPending = { file };
+  const u = $(id + 'Url'); if(u) u.value = '';
+  // Preview via a data: URL (FileReader), not a blob: object URL — the page's
+  // CSP img-src allows data: but not blob:, so a blob preview would be blocked
+  // and show nothing (which is what made dropped/selected files look broken).
+  const reader = new FileReader();
+  reader.onload = e => coverPickerShow(id, e.target.result);
+  reader.readAsDataURL(file);
+  coverPickerStatus(id, '✓ Selected: ' + file.name + ' — Save to apply', 'var(--green)');
+}
+function coverPickerDrop(e, id){
+  e.preventDefault();
+  const drop = $(id + 'Drop'); if(drop) drop.classList.remove('drag');
+  const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+  if(file) coverPickerFile(id, file);
+}
+
+async function saveNoteEdit(){
+  const btn = $('neSaveBtn'); if(btn) btn.disabled = true;
+  const n = _noteModal.note, id = _noteModal.id, isBook = _noteModal.kind === 'book';
+  const h = toast('Saving…','busy');
+  try {
+    const body = {
+      description: $('neDesc').value,
+      status: $('neStatus').value,
+      tags: $('neTags').value.split(/[;,]/).map(t => t.trim()).filter(Boolean),
+    };
+    if(isBook) body.released_en = $('neReleased').value.trim();
+    const newTitle = $('neTitle').value.trim();
+    if(newTitle && newTitle !== n.title) body.title = newTitle;
+
+    const r = await send('PUT', '/api/books/' + id + '/note', body);
+    if(need(r, h)){ if(btn) btn.disabled = false; return; }
+    if(r.status === 409){ if(btn) btn.disabled = false; return h.update('A note with that title already exists.','error'); }
+    if(!r.ok){ if(btn) btn.disabled = false; return h.update('Error: ' + (r.data.error || r.status),'error'); }
+
+    if(_coverPending){
+      const cr = await sendCover(id, _coverPending);
+      if(!cr.ok){ if(btn) btn.disabled = false; return h.update('Saved, but cover failed: ' + (cr.data.error || cr.status),'error'); }
+      _noteModal.note = cr.data;
+    } else {
+      _noteModal.note = r.data;
+    }
+    h.update('Saved.','success');
+    _coverPending = null;
+    renderNoteView();
+    loadBooks();
+  } catch(e){
+    if(btn) btn.disabled = false;
+    h.update('Error: ' + (e.message || 'request failed'),'error');
+  }
+}
+// sendCover posts a new cover as multipart (uploaded/dropped file) or JSON (URL).
+async function sendCover(id, pending){
+  const url = '/api/books/' + id + '/cover';
+  if(pending.file){
+    const fd = new FormData(); fd.append('cover', pending.file);
+    const r = await fetch(url, { method:'POST', headers:{ 'X-BookWatch-Token': token() }, body: fd });
+    return { ok:r.ok, status:r.status, data: await r.json().catch(()=>({})) };
+  }
+  return send('POST', url, { url: pending.url });
+}
 let booksData = [];
 async function loadBooks(){
   booksData = await getJSON('/api/books') || [];
@@ -1157,12 +1367,16 @@ function renderBooks(q){
   if($('clearFiltersRow')) $('clearFiltersRow').hidden = !anyBookFilterActive();
   if(bookView === 'grid') renderBooksGrid(list, q); else renderBooksTable(list, q);
 }
+// coverSrc builds the grid cover URL with a version tag keyed on updated_at, so
+// a replaced cover (which bumps updated_at) busts the browser cache and shows
+// immediately instead of after a manual refresh.
+function coverSrc(x){ return '/api/cover/' + x.id + '?v=' + encodeURIComponent(x.updated_at || ''); }
 function renderBooksTable(list, q){
   $('booksBody').innerHTML = list.length ? list.map(x => {
     const volCell = bookKind(x) === 'book'
       ? `<small class="muted">${esc([x.author, x.status].filter(Boolean).join(' · '))}</small>`
       : x.volumes;
-    return `<tr><td>${fzHighlight(x.title, q)}</td><td>${volCell}</td><td><a href="${esc(x.link)}" target="_blank">link</a></td>
+    return `<tr><td><a href="#" class="note-open" onclick="openNoteModal(${x.id});return false" title="View / edit note">${fzHighlight(x.title, q)}</a></td><td>${volCell}</td><td><a href="${esc(x.link)}" target="_blank">link</a></td>
      <td class="nowrap"><small>${esc(fmtTime(x.last_checked_at))}</small></td>
      <td><button class="btn ghost" title="${esc(UNTRACK_TIP)}" onclick="untrack(${x.id}, this)">Untrack</button></td></tr>`;
   }).join('')
@@ -1171,7 +1385,7 @@ function renderBooksTable(list, q){
 function renderBooksGrid(list, q){
   $('booksGrid').innerHTML = list.length ? list.map(x => {
     const img = x.cover
-      ? `<img class="cover-img" src="/api/cover/${x.id}" alt="" loading="lazy" onerror="this.closest('.cover-card').classList.add('nocover');this.remove();">`
+      ? `<img class="cover-img" src="${coverSrc(x)}" alt="" loading="lazy" onerror="this.closest('.cover-card').classList.add('nocover');this.remove();">`
       : '';
     const isBook = bookKind(x) === 'book';
     const vol = (!isBook && x.volumes) ? `<span class="cover-vol" title="${x.volumes} volume${x.volumes===1?'':'s'}">${x.volumes}</span>` : '';
@@ -1179,7 +1393,7 @@ function renderBooksGrid(list, q){
       ? `<div class="cover-title" style="padding-top:0"><small class="muted">${esc([x.author, x.status].filter(Boolean).join(' · '))}</small></div>`
       : '';
     return `<div class="cover-card${x.cover ? '' : ' nocover'}">
-      <a class="cover-link" href="${esc(x.link)}" target="_blank" title="${esc(x.title)}">
+      <a class="cover-link" href="#" onclick="openNoteModal(${x.id});return false" title="View / edit note">
         ${img}<span class="cover-title">${fzHighlight(x.title, q)}</span>${meta}</a>
       ${vol}
       <button class="cover-x" title="${esc(UNTRACK_TIP)}" aria-label="Untrack" onclick="untrack(${x.id}, this)">&times;</button>
@@ -1216,7 +1430,7 @@ function renderRandomizeGrid(){
   const list = randomizePicks;
   $('randomizeGrid').innerHTML = list.length ? list.map(x => {
     const img = x.cover
-      ? `<img class="cover-img" src="/api/cover/${x.id}" alt="" loading="lazy" onerror="this.closest('.cover-card').classList.add('nocover');this.remove();">`
+      ? `<img class="cover-img" src="${coverSrc(x)}" alt="" loading="lazy" onerror="this.closest('.cover-card').classList.add('nocover');this.remove();">`
       : '';
     const isBook = bookKind(x) === 'book';
     const vol = (!isBook && x.volumes) ? `<span class="cover-vol" title="${x.volumes} volume${x.volumes===1?'':'s'}">${x.volumes}</span>` : '';
@@ -1224,7 +1438,7 @@ function renderRandomizeGrid(){
       ? `<div class="cover-title" style="padding-top:0"><small class="muted">${esc([x.author, x.status].filter(Boolean).join(' · '))}</small></div>`
       : '';
     return `<div class="cover-card${x.cover ? '' : ' nocover'}">
-      <a class="cover-link" href="${esc(x.link)}" target="_blank" title="${esc(x.title)}">
+      <a class="cover-link" href="#" onclick="openNoteModal(${x.id});return false" title="View / edit note">
         ${img}<span class="cover-title">${esc(x.title)}</span>${meta}</a>
       ${vol}
     </div>`;

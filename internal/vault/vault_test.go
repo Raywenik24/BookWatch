@@ -283,6 +283,146 @@ func TestScan_picksUpBookNote(t *testing.T) {
 	}
 }
 
+func TestReadNote_lnAndBook(t *testing.T) {
+	// LN: description body + volumes + tags.
+	p := writeTemp(t, sample)
+	n, err := ReadNote(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n.Kind != "ln" {
+		t.Errorf("kind: %q", n.Kind)
+	}
+	if n.Volumes != 2 || !n.HasReadVolumes || n.ReadVolumes != 2 {
+		t.Errorf("volumes=%d read=%d has=%v", n.Volumes, n.ReadVolumes, n.HasReadVolumes)
+	}
+	if n.Description != "body text" {
+		t.Errorf("description: %q", n.Description)
+	}
+	if len(n.Tags) != 1 || n.Tags[0] != "LightNovel" {
+		t.Errorf("tags: %+v", n.Tags)
+	}
+
+	// Book: author, work id, released, status list, cover, tags — no description.
+	bp := writeTemp(t, bookSample)
+	b, err := ReadNote(bp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.Kind != "book" {
+		t.Errorf("kind: %q", b.Kind)
+	}
+	if b.Author != "Robert T. Kiyosaki" || b.WorkID != "OL20749838W" || b.ReleasedEN != "1997" {
+		t.Errorf("book fields: %+v", b)
+	}
+	if b.Status != "Backlog" {
+		t.Errorf("status: %q", b.Status)
+	}
+	if b.Cover != "cover_RichDadPoorDad.jpg" {
+		t.Errorf("cover: %q", b.Cover)
+	}
+	if len(b.Tags) != 1 || b.Tags[0] != "Book" {
+		t.Errorf("tags: %+v", b.Tags)
+	}
+	if b.Description != "" {
+		t.Errorf("expected empty description, got %q", b.Description)
+	}
+}
+
+func TestUpdateReleasedEN(t *testing.T) {
+	p := writeTemp(t, bookSample)
+	if err := UpdateReleasedEN(p, "2001"); err != nil {
+		t.Fatal(err)
+	}
+	n, _ := ReadNote(p)
+	if n.ReleasedEN != "2001" {
+		t.Errorf("released en: %q", n.ReleasedEN)
+	}
+	// Inserts when absent.
+	p2 := writeTemp(t, sample)
+	if err := UpdateReleasedEN(p2, "1999"); err != nil {
+		t.Fatal(err)
+	}
+	n2, _ := ReadNote(p2)
+	if n2.ReleasedEN != "1999" {
+		t.Errorf("released en inserted: %q", n2.ReleasedEN)
+	}
+}
+
+func TestUpdateTags(t *testing.T) {
+	p := writeTemp(t, bookSample)
+	if err := UpdateTags(p, []string{"Book", "Finance", "#Favorite"}); err != nil {
+		t.Fatal(err)
+	}
+	n, _ := ReadNote(p)
+	if len(n.Tags) != 3 || n.Tags[0] != "Book" || n.Tags[1] != "Finance" || n.Tags[2] != "Favorite" {
+		t.Errorf("tags: %+v", n.Tags)
+	}
+	// Untouched neighbours.
+	got, _ := os.ReadFile(p)
+	for _, must := range []string{"Template_used: BookTemplate", `Cover: "[[cover_RichDadPoorDad.jpg]]"`, "### Rich Dad Poor Dad"} {
+		if !strings.Contains(string(got), must) {
+			t.Errorf("clobbered %q:\n%s", must, got)
+		}
+	}
+}
+
+func TestUpdateDescription_preservesStructure(t *testing.T) {
+	// LN body has a title heading, cover embed, and the [[Light Novel]] link.
+	content := strings.Replace(sample, "### Test Novel\nbody text\n",
+		"### Test Novel\n\n![[cover.jpg]]\n\n[[Light Novel]]\n\nold blurb\n", 1)
+	p := writeTemp(t, content)
+	if err := UpdateDescription(p, "new blurb line 1\nnew blurb line 2"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(p)
+	out := string(got)
+	for _, must := range []string{"### Test Novel", "![[cover.jpg]]", "[[Light Novel]]", "new blurb line 1", "new blurb line 2"} {
+		if !strings.Contains(out, must) {
+			t.Errorf("missing %q:\n%s", must, out)
+		}
+	}
+	if strings.Contains(out, "old blurb") {
+		t.Errorf("old description not replaced:\n%s", out)
+	}
+	n, _ := ReadNote(p)
+	if n.Description != "new blurb line 1\nnew blurb line 2" {
+		t.Errorf("description round-trip: %q", n.Description)
+	}
+}
+
+func TestUpdateCover_fieldAndEmbed(t *testing.T) {
+	// Replace an existing embed + field.
+	content := strings.Replace(sample, "### Test Novel\nbody text\n",
+		"### Test Novel\n\n![[cover.jpg]]\n\nblurb\n", 1)
+	p := writeTemp(t, content)
+	if err := UpdateCover(p, "cover_new.png"); err != nil {
+		t.Fatal(err)
+	}
+	out, _ := os.ReadFile(p)
+	if !strings.Contains(string(out), `Cover: "[[cover_new.png]]"`) {
+		t.Errorf("cover field not updated:\n%s", out)
+	}
+	if !strings.Contains(string(out), "![[cover_new.png]]") || strings.Contains(string(out), "![[cover.jpg]]") {
+		t.Errorf("embed not updated:\n%s", out)
+	}
+	n, _ := ReadNote(p)
+	if n.Cover != "cover_new.png" {
+		t.Errorf("cover: %q", n.Cover)
+	}
+}
+
+func TestUpdateCover_insertsEmbedWhenMissing(t *testing.T) {
+	p := writeTemp(t, bookSample) // body has only the H3 title, no embed
+	if err := UpdateCover(p, "cover_x.jpg"); err != nil {
+		t.Fatal(err)
+	}
+	out, _ := os.ReadFile(p)
+	if !strings.Contains(string(out), "![[cover_x.jpg]]") {
+		t.Errorf("embed not inserted:\n%s", out)
+	}
+}
+
 func TestScan_tagAndLinkFilter(t *testing.T) {
 	dir := t.TempDir()
 	write := func(name, content string) {

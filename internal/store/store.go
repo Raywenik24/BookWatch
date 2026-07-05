@@ -549,6 +549,30 @@ func (s *Store) BookCover(id int64) (string, error) {
 	return cover, err
 }
 
+// BookRef locates a tracked note on disk: its .md path, kind, cover attachment
+// name, title, and link. Used by the note view/edit endpoints (#55) to resolve
+// a book id to the file to read/rewrite.
+type BookRef struct {
+	ID    int64
+	Title string
+	Link  string
+	Path  string
+	Cover string
+	Kind  string
+}
+
+// BookByID returns the note reference for a book id (ok=false if no row).
+func (s *Store) BookByID(id int64) (BookRef, bool, error) {
+	var b BookRef
+	err := s.db.QueryRow(
+		`SELECT id, title, link, path, cover, kind FROM books WHERE id=?`, id).
+		Scan(&b.ID, &b.Title, &b.Link, &b.Path, &b.Cover, &b.Kind)
+	if err == sql.ErrNoRows {
+		return BookRef{}, false, nil
+	}
+	return b, err == nil, err
+}
+
 // BookTitle returns a book's title (empty if no row). Used to name an untrack
 // event before the row is deleted.
 func (s *Store) BookTitle(id int64) (string, error) {
