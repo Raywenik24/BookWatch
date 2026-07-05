@@ -98,6 +98,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/releases/dismissed", s.handleDismissedReleases)
 
 	mux.HandleFunc("POST /api/check", s.auth(s.handleCheck))
+	mux.HandleFunc("POST /api/vault/refresh", s.auth(s.handleVaultRefresh))
 	mux.HandleFunc("POST /api/apply", s.auth(s.handleApply))
 	mux.HandleFunc("POST /api/releases/add", s.auth(s.handleAddReleases))
 	mux.HandleFunc("POST /api/releases/dismiss", s.auth(s.handleDismissReleases))
@@ -325,6 +326,25 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "started"})
+}
+
+// handleVaultRefresh reconciles the DB with what's on disk right now — no
+// scraping, no author polling — so books whose notes vanished between full
+// checks stop lingering in the UI (#57).
+func (s *Server) handleVaultRefresh(w http.ResponseWriter, r *http.Request) {
+	if s.sched.Busy() {
+		writeJSON(w, http.StatusConflict, errBody("a check is running — try again when it finishes"))
+		return
+	}
+	res, err := service.RefreshVault(s.st, ScanRoots(s.cfg, s.st))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if res.Added > 0 || res.Removed > 0 {
+		s.st.LogEvent("refresh", fmt.Sprintf("Refreshed vault info: +%d added, -%d removed", res.Added, res.Removed))
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 // handleApply writes the selected pending bumps to the vault (last check's

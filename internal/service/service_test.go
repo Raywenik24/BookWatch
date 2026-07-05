@@ -259,6 +259,42 @@ func TestRunCheck_prunesOnlyMissingNotes(t *testing.T) {
 	}
 }
 
+func TestRefreshVault_addsUpdatesPrunesWithoutNetwork(t *testing.T) {
+	vaultDir := t.TempDir()
+	// On disk, not yet tracked → should be added.
+	writeNote(t, vaultDir, "New", "https://nope/new", 3)
+	// On disk and already tracked, but the DB copy is stale → should be updated.
+	keptPath := writeNote(t, vaultDir, "Kept", "https://nope/kept", 5)
+
+	st := openStore(t)
+	st.UpsertBook("Kept", "https://nope/kept", keptPath, 2, "", "", nil, "ln", "")
+	// Tracked but its note is gone from disk → should be pruned.
+	st.UpsertBook("Stale", "https://nope/stale", filepath.Join(vaultDir, "gone.md"), 1, "", "", nil, "ln", "")
+
+	res, err := RefreshVault(st, []string{vaultDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Added != 1 || res.Updated != 1 || res.Removed != 1 {
+		t.Fatalf("result: %+v", res)
+	}
+
+	books, _ := st.ListBooks()
+	byLink := map[string]store.Book{}
+	for _, b := range books {
+		byLink[b.Link] = b
+	}
+	if _, ok := byLink["https://nope/stale"]; ok {
+		t.Error("stale book with a missing note should have been pruned")
+	}
+	if _, ok := byLink["https://nope/new"]; !ok {
+		t.Error("new on-disk note should have been added")
+	}
+	if b, ok := byLink["https://nope/kept"]; !ok || b.Volumes != 5 {
+		t.Errorf("kept book should have been refreshed to the note's volume count, got %+v", b)
+	}
+}
+
 // fakeProvider is a minimal provider.Provider stub for pollTrackers tests.
 type fakeProvider struct {
 	works   []provider.Work

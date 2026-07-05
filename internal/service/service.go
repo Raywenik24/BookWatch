@@ -197,6 +197,61 @@ func RunCheck(sc *scraper.Client, st *store.Store, ol provider.Provider, lc prov
 	return sum, nil
 }
 
+// RefreshResult is the outcome of a vault-only reconcile (see RefreshVault).
+type RefreshResult struct {
+	Added   int `json:"added"`
+	Updated int `json:"updated"`
+	Removed int `json:"removed"`
+}
+
+// RefreshVault scans scanRoots and reconciles the DB with what's on disk:
+// upserts every note found (new or changed), then prunes any tracked row
+// whose note is no longer in the scan. Unlike RunCheck, this does no network
+// scraping and no author/tracker polling — it's the fast, offline sync for
+// when the vault has drifted from the DB between full checks (#57).
+func RefreshVault(st *store.Store, scanRoots []string) (RefreshResult, error) {
+	entries, err := vault.ScanRoots(scanRoots)
+	if err != nil {
+		return RefreshResult{}, fmt.Errorf("scan: %w", err)
+	}
+
+	before, err := st.ListBooks()
+	if err != nil {
+		return RefreshResult{}, err
+	}
+	existed := make(map[string]bool, len(before))
+	for _, b := range before {
+		existed[b.Link] = true
+	}
+
+	var res RefreshResult
+	seen := make(map[string]bool, len(entries))
+	for _, e := range entries {
+		seen[e.Link] = true
+		if _, err := st.UpsertBook(e.Title, e.Link, e.Path, e.Volumes, e.Cover, e.Status, entryReadVolumes(e), e.Kind, e.Author); err != nil {
+			return res, err
+		}
+		if existed[e.Link] {
+			res.Updated++
+		} else {
+			res.Added++
+		}
+	}
+
+	for _, b := range before {
+		if seen[b.Link] {
+			continue
+		}
+		if err := st.DeleteBook(b.ID); err != nil {
+			return res, err
+		}
+		st.LogEvent("prune", fmt.Sprintf("Refreshed vault: pruned %q (not in scan)", b.Title))
+		res.Removed++
+	}
+
+	return res, nil
+}
+
 // pollTrackers polls AuthorWorks for every author tracker and normalizes the
 // results into `releases` rows: date-floored against the baseline, narrowed
 // to the catalog language, stripped of box-sets/bundles, and deduped against

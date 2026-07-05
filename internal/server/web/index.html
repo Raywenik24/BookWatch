@@ -329,7 +329,10 @@
           <div id="addConfirm"></div>
         </div>
       </div>
-      <h2>Tracked books</h2>
+      <div class="row" style="justify-content:space-between;align-items:center">
+        <h2 style="margin:0">Tracked books</h2>
+        <button class="btn ghost" id="refreshVaultBtn" onclick="refreshVault()">Refresh vault info</button>
+      </div>
       <div class="row">
         <div class="viewtoggle" id="kindToggle">
           <button class="btn ghost active" data-k="" tabindex="-1" onclick="setKindView('')">All</button>
@@ -1604,10 +1607,12 @@ function onStatus(s){
   renderProgress(s);
   if(s.busy){
     $('checkBtn').disabled = true;
+    $('refreshVaultBtn').disabled = true;
     loadUpdates(); // live — new bumps/releases land mid-check, not just at the end
     checkWasBusy = true;
   } else {
     $('checkBtn').disabled = false;
+    $('refreshVaultBtn').disabled = false;
     if(checkWasBusy){ // just finished — refresh everything the run may have touched
       checkWasBusy = false;
       if(checkToast){ checkToast.update('Check done.','success'); checkToast = null; }
@@ -1634,6 +1639,18 @@ async function runCheck(){
   if(r.status===409) return toast('A check is already running.','info');
   checkToast = toast('Check running…','busy'); $('checkBtn').disabled = true;
   connectStatusStream(); // ensure we're following the stream (re-arm if a prior 401 stopped it)
+}
+async function refreshVault(){
+  const btn = $('refreshVaultBtn'); btn.disabled = true; const h = toast('Refreshing vault info…','busy');
+  try {
+    const r = await send('POST','/api/vault/refresh'); if(need(r, h)) return;
+    if(r.status===409) return h.update('A check is running — try again when it finishes.','error');
+    if(!r.ok) return h.update('Error: ' + (r.data.error||r.status),'error');
+    h.update(`+${r.data.added||0} added, -${r.data.removed||0} removed`,'success');
+    loadBooks(); loadUpdates(); loadEvents();
+  } finally {
+    btn.disabled = false;
+  }
 }
 async function applyUpdates(){
   const updateIDs = [...updatesSelected].filter(k => k.startsWith('u:')).map(k => +k.slice(2));
