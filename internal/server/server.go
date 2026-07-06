@@ -1096,7 +1096,7 @@ func (s *Server) handleMarkCompleted(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	count, err := service.MarkCompleted(logPath, ref.Path, ref.Kind, ref.Title, body.Volume, body.Start, body.End, body.Unknown, body.Abandoned)
+	result, err := service.MarkCompleted(logPath, ref.Path, ref.Kind, ref.Title, body.Volume, body.Start, body.End, body.Unknown, body.Abandoned)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -1108,12 +1108,17 @@ func (s *Server) handleMarkCompleted(w http.ResponseWriter, r *http.Request) {
 		s.st.DeleteReadingItem(body.ReadingItemID)
 	}
 
-	// A #Book status flip changed the note on disk — resync the DB row so the
-	// Books feed reflects the new status without waiting for the next scan.
-	if ref.Kind == "book" {
-		if n, err := vault.ReadNote(ref.Path); err == nil {
-			s.resyncNote(ref.Link, ref.Path, n)
-		}
+	// The series continues — queue the next volume so the user doesn't have to
+	// go find it themselves (#67). Best-effort, same as the delete above.
+	if result.NextVolume != "" {
+		s.st.QueueReadingItem(ref.ID, result.NextVolume)
+	}
+
+	// The note on disk changed (Status and/or Read Volumes) — resync the DB row
+	// so the Books feed and randomizer reflect it without waiting for the next
+	// scan (#67).
+	if n, err := vault.ReadNote(ref.Path); err == nil {
+		s.resyncNote(ref.Link, ref.Path, n)
 	}
 	unit := ref.Title
 	if body.Volume != "" {
@@ -1124,7 +1129,7 @@ func (s *Server) handleMarkCompleted(w http.ResponseWriter, r *http.Request) {
 		verb, status = "Abandoned", "abandoned"
 	}
 	s.st.LogEvent("read", fmt.Sprintf("%s %q", verb, unit))
-	writeJSON(w, http.StatusOK, map[string]any{"status": status, "reread_count": count})
+	writeJSON(w, http.StatusOK, map[string]any{"status": status, "reread_count": result.RereadCount})
 }
 
 // maxCoverUploadBytes caps an uploaded cover image (matches notes' download cap).

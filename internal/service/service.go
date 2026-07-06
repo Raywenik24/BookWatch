@@ -499,39 +499,90 @@ func entryReadVolumes(e vault.Entry) *int {
 	return &v
 }
 
-// MarkCompleted logs one read to the unified reading log and — for a #Book only
-// — flips its note's Status (an LN volume leaves Status alone, since the series
-// is usually ongoing). A normal completion writes the finish date and sets
-// #Book Status to Completed; an abandoned read (abandoned=true) writes the
-// `----` marker in the end cell and sets #Book Status to Dropped instead. title
-// is the note basename (the [[wikilink]] target); volume is blank for a #Book.
-// The reading-log write is compact + atomic and leaves every existing row
-// untouched (see reading.AppendCompleted). It returns the resulting re-read
-// count for (title, volume) so the caller can refresh a `×N` badge without
-// re-reading.
-func MarkCompleted(logPath, notePath, kind, title, volume, start, end string, unknown, abandoned bool) (int, error) {
+// MarkCompletedResult is the outcome of a MarkCompleted call.
+type MarkCompletedResult struct {
+	RereadCount int    // times (title, volume) now appears in the reading log
+	NextVolume  string // non-empty: an LN volume completed and the series isn't done — queue this volume next (#67)
+}
+
+// MarkCompleted logs one read to the unified reading log and syncs its note.
+// A #Book completion flips Status to Completed; an abandoned #Book flips it to
+// Dropped. An LN volume completion instead bumps `Read Volumes` to
+// max(current, volume) — Status is only flipped to Completed when the total
+// `Volumes` is known and now fully read, since the series is usually ongoing
+// otherwise (#67). When the series continues, the result's NextVolume names
+// the following volume so the caller can queue it, making the series easy to
+// keep tracking. An abandoned LN sets Status to Dropped without touching Read
+// Volumes (the volume wasn't finished). abandoned writes the `----` marker in
+// the end cell instead of a finish date. title is the note basename (the
+// [[wikilink]] target); volume is blank for a #Book. The reading-log write is
+// compact + atomic and leaves every existing row untouched (see
+// reading.AppendCompleted).
+func MarkCompleted(logPath, notePath, kind, title, volume, start, end string, unknown, abandoned bool) (MarkCompletedResult, error) {
 	if logPath == "" {
-		return 0, fmt.Errorf("reading log note is not configured")
+		return MarkCompletedResult{}, fmt.Errorf("reading log note is not configured")
 	}
 	row := reading.NewCompletedRow(title, volume, start, end, unknown)
-	status := "Completed"
 	if abandoned {
 		row = reading.NewAbandonedRow(title, volume, start)
-		status = "Dropped"
 	}
 	if err := reading.AppendCompleted(logPath, row); err != nil {
-		return 0, fmt.Errorf("append reading log: %w", err)
+		return MarkCompletedResult{}, fmt.Errorf("append reading log: %w", err)
 	}
-	if kind == "book" && notePath != "" {
-		if err := vault.UpdateStatus(notePath, status); err != nil {
-			return 0, fmt.Errorf("set status: %w", err)
+	var nextVolume string
+	if notePath != "" {
+		seriesContinues, completedVol, err := syncNoteOnCompletion(notePath, kind, volume, abandoned)
+		if err != nil {
+			return MarkCompletedResult{}, err
+		}
+		if kind == "ln" && !abandoned && seriesContinues {
+			nextVolume = strconv.Itoa(completedVol + 1)
 		}
 	}
+	res := MarkCompletedResult{NextVolume: nextVolume}
 	reads, err := reading.ParseFile(logPath)
 	if err != nil {
-		return 0, nil // the write succeeded; a re-parse failure just costs the badge count
+		return res, nil // the write succeeded; a re-parse failure just costs the badge count
 	}
-	return reading.CountFor(reads, title, volume), nil
+	res.RereadCount = reading.CountFor(reads, title, volume)
+	return res, nil
+}
+
+// syncNoteOnCompletion applies the note-side effects of a MarkCompleted call:
+// Status for a #Book, and — for an LN — Read Volumes plus a conditional
+// Status flip (#67). It returns whether the series continues (false for a
+// #Book, or an LN whose Status is now Completed) and the volume number just
+// completed (0 for a #Book or a non-numeric LN volume).
+func syncNoteOnCompletion(notePath, kind, volume string, abandoned bool) (seriesContinues bool, completedVol int, err error) {
+	if abandoned {
+		return false, 0, vault.UpdateStatus(notePath, "Dropped")
+	}
+	if kind == "book" {
+		return false, 0, vault.UpdateStatus(notePath, "Completed")
+	}
+
+	completedVol, err = strconv.Atoi(strings.TrimSpace(volume))
+	if err != nil {
+		return false, 0, nil // no numeric volume (shouldn't happen for LN) — nothing to sync
+	}
+	n, err := vault.ReadNote(notePath)
+	if err != nil {
+		return false, completedVol, fmt.Errorf("read note: %w", err)
+	}
+	newReadVolumes := completedVol
+	if n.HasReadVolumes && n.ReadVolumes > newReadVolumes {
+		newReadVolumes = n.ReadVolumes
+	}
+	if err := vault.UpdateReadVolumes(notePath, newReadVolumes); err != nil {
+		return false, completedVol, fmt.Errorf("update read volumes: %w", err)
+	}
+	completed := n.Volumes > 0 && newReadVolumes >= n.Volumes
+	if completed && !strings.EqualFold(n.Status, "Completed") {
+		if err := vault.UpdateStatus(notePath, "Completed"); err != nil {
+			return false, completedVol, fmt.Errorf("set status: %w", err)
+		}
+	}
+	return !completed, completedVol, nil
 }
 
 // ApplyResult is the outcome of applying pending updates to the vault.

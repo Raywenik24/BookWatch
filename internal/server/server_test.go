@@ -522,12 +522,17 @@ func TestReadingQueueFlow(t *testing.T) {
 		t.Errorf("next-volume = %q, want 6", nv.Volume)
 	}
 
-	// Remove the remaining queued item.
+	// Completing v5 also auto-queued v6 (#67), alongside the still-untouched v4.
+	if state = readingState(t, h); len(state.Queue) != 2 {
+		t.Fatalf("after completion: queue=%d, want 2 (v4 + auto-queued v6)", len(state.Queue))
+	}
+
+	// Remove the original queued item; the auto-queued v6 remains.
 	if rec := do(h, "DELETE", fmt.Sprintf("/api/reading/%d", v4), "secret", ""); rec.Code != http.StatusOK {
 		t.Fatalf("delete: got %d: %s", rec.Code, rec.Body.String())
 	}
-	if state = readingState(t, h); len(state.Queue) != 0 {
-		t.Errorf("queue not empty after delete: %d", len(state.Queue))
+	if state = readingState(t, h); len(state.Queue) != 1 || state.Queue[0].Volume != "6" {
+		t.Fatalf("after delete: queue=%v, want just the auto-queued v6", state.Queue)
 	}
 }
 

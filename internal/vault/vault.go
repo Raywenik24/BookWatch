@@ -38,6 +38,7 @@ var (
 	coverPrefixRE    = regexp.MustCompile(`(?i)^Cover:\s*`)
 	releasedPrefixRE = regexp.MustCompile(`(?i)^Released EN:\s*`)
 	titlePrefixRE    = regexp.MustCompile(`(?i)^Title:\s*`)
+	readVolPrefixRE  = regexp.MustCompile(`(?i)^Read Volumes:\s*`)
 
 	// Body structural lines (below the frontmatter): the H3 title, the cover
 	// embed, and the LN "[[Light Novel]]" link. Used to separate the editable
@@ -352,6 +353,13 @@ func UpdateVolumes(path string, newVolume int, today string) error {
 	}
 
 	return AtomicWrite(path, []byte(strings.Join(lines, nl)), 0o644)
+}
+
+// UpdateReadVolumes rewrites the `Read Volumes:` frontmatter line, inserting it
+// before the closing fence if absent. It does not touch Volumes, Status, or
+// Last Update — callers decide those separately (#67).
+func UpdateReadVolumes(path string, newReadVolumes int) error {
+	return setFrontmatterScalar(path, readVolPrefixRE, "Read Volumes", strconv.Itoa(newReadVolumes))
 }
 
 // UpdateStatus rewrites the `Status:` field inside the note's frontmatter,

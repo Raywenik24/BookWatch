@@ -123,6 +123,36 @@ func TestUpdateVolumes_preservesCRLF(t *testing.T) {
 	}
 }
 
+func TestUpdateReadVolumes_bumps(t *testing.T) {
+	p := writeTemp(t, sample) // "Read Volumes: 2"
+
+	if err := UpdateReadVolumes(p, 3); err != nil {
+		t.Fatal(err)
+	}
+	out, _ := os.ReadFile(p)
+	if !strings.Contains(string(out), "Read Volumes: 3") {
+		t.Errorf("Read Volumes not bumped to 3:\n%s", out)
+	}
+	// Untouched fields, including Volumes (never conflated with Read Volumes).
+	for _, must := range []string{"Volumes: 2", "Status: reading", "### Test Novel"} {
+		if !strings.Contains(string(out), must) {
+			t.Errorf("clobbered %q:\n%s", must, out)
+		}
+	}
+}
+
+func TestUpdateReadVolumes_insertsWhenMissing(t *testing.T) {
+	p := writeTemp(t, strings.Replace(sample, "Read Volumes: 2\n", "", 1))
+
+	if err := UpdateReadVolumes(p, 1); err != nil {
+		t.Fatal(err)
+	}
+	out, _ := os.ReadFile(p)
+	if !strings.Contains(string(out), "Read Volumes: 1") {
+		t.Errorf("Read Volumes not inserted:\n%s", out)
+	}
+}
+
 func TestUpdateStatus_scalarToList(t *testing.T) {
 	// sample has "Status: reading" (scalar) → convert to list format
 	p := writeTemp(t, sample)

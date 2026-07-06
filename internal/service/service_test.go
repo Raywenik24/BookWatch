@@ -50,6 +50,126 @@ func openStore(t *testing.T) *store.Store {
 	return st
 }
 
+const sampleLog = `---
+modified: 2026-07-06
+---
+Currently read [[Light Novel]]s
+
+| 202509 | [[Placeholder]] |  1 |            |            |
+| ------ | --------------- | -: | ---------- | ---------- |
+`
+
+func writeLNNote(t *testing.T, dir, name string, volumes, readVolumes int, status string) string {
+	t.Helper()
+	content := fmt.Sprintf("---\nLink: https://example.com/%s\nVolumes: %d\nRead Volumes: %d\nStatus: %s\ntags:\n  - \"#LightNovel\"\nTemplate_used: LightNovelTemplate\n---\n### %s\n", name, volumes, readVolumes, status, name)
+	p := filepath.Join(dir, name+".md")
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// Completing the last LN volume flips Status to Completed (#67).
+func TestMarkCompleted_lnLastVolumeCompletes(t *testing.T) {
+	dir := t.TempDir()
+	notePath := writeLNNote(t, dir, "Series A", 3, 2, "reading")
+	logPath := filepath.Join(dir, "_Read.md")
+	os.WriteFile(logPath, []byte(sampleLog), 0o644)
+
+	res, err := MarkCompleted(logPath, notePath, "ln", "Series A", "3", "2026-07-01", "2026-07-02", false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := vault.ReadNote(notePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n.ReadVolumes != 3 {
+		t.Errorf("Read Volumes = %d, want 3", n.ReadVolumes)
+	}
+	if !strings.EqualFold(n.Status, "Completed") {
+		t.Errorf("Status = %q, want Completed", n.Status)
+	}
+	if res.NextVolume != "" {
+		t.Errorf("NextVolume = %q, want none — series is finished", res.NextVolume)
+	}
+}
+
+// Completing a middle LN volume bumps Read Volumes but leaves Status alone.
+func TestMarkCompleted_lnMiddleVolumeLeavesStatus(t *testing.T) {
+	dir := t.TempDir()
+	notePath := writeLNNote(t, dir, "Series B", 5, 2, "reading")
+	logPath := filepath.Join(dir, "_Read.md")
+	os.WriteFile(logPath, []byte(sampleLog), 0o644)
+
+	res, err := MarkCompleted(logPath, notePath, "ln", "Series B", "3", "2026-07-01", "2026-07-02", false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := vault.ReadNote(notePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n.ReadVolumes != 3 {
+		t.Errorf("Read Volumes = %d, want 3", n.ReadVolumes)
+	}
+	if strings.EqualFold(n.Status, "Completed") {
+		t.Errorf("Status flipped to Completed on a middle volume")
+	}
+	if res.NextVolume != "4" {
+		t.Errorf("NextVolume = %q, want %q so the series stays easy to keep reading", res.NextVolume, "4")
+	}
+}
+
+// Unknown total Volumes (0) never auto-completes, however many volumes are read.
+func TestMarkCompleted_lnUnknownVolumesNeverCompletes(t *testing.T) {
+	dir := t.TempDir()
+	notePath := writeLNNote(t, dir, "Series C", 0, 2, "reading")
+	logPath := filepath.Join(dir, "_Read.md")
+	os.WriteFile(logPath, []byte(sampleLog), 0o644)
+
+	res, err := MarkCompleted(logPath, notePath, "ln", "Series C", "3", "2026-07-01", "2026-07-02", false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := vault.ReadNote(notePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.EqualFold(n.Status, "Completed") {
+		t.Errorf("Status flipped to Completed with unknown total Volumes")
+	}
+	if res.NextVolume != "4" {
+		t.Errorf("NextVolume = %q, want %q — an unknown total never finishes the series", res.NextVolume, "4")
+	}
+}
+
+// Abandoning an LN sets Status to Dropped without bumping Read Volumes.
+func TestMarkCompleted_lnAbandonedSetsDroppedNoBump(t *testing.T) {
+	dir := t.TempDir()
+	notePath := writeLNNote(t, dir, "Series D", 5, 2, "reading")
+	logPath := filepath.Join(dir, "_Read.md")
+	os.WriteFile(logPath, []byte(sampleLog), 0o644)
+
+	res, err := MarkCompleted(logPath, notePath, "ln", "Series D", "3", "2026-07-01", "", false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := vault.ReadNote(notePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n.ReadVolumes != 2 {
+		t.Errorf("Read Volumes = %d, want unchanged 2", n.ReadVolumes)
+	}
+	if !strings.EqualFold(n.Status, "Dropped") {
+		t.Errorf("Status = %q, want Dropped", n.Status)
+	}
+	if res.NextVolume != "" {
+		t.Errorf("NextVolume = %q, want none — abandoning shouldn't queue anything", res.NextVolume)
+	}
+}
+
 func TestRunCheck_detectOnlyThenApply(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(novelHTML(3)))
