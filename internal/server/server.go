@@ -1823,6 +1823,15 @@ func (s *Server) handleUpdateBaseline(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
 }
 
+// pathSettingKeys are the settings whose value is a filesystem path — these
+// get their separators normalized to native (backslash on Windows) on save,
+// so the DB stops accumulating mixed slashes (issue #66).
+var pathSettingKeys = map[string]bool{
+	"vault_dir": true, "scan_root": true, "new_note_dir": true, "attachments_dir": true,
+	"book_scan_root": true, "book_new_note_dir": true, "book_attachments_dir": true,
+	"reading_log_path": true,
+}
+
 func (s *Server) handleSetSettings(w http.ResponseWriter, r *http.Request) {
 	var kv map[string]string
 	if err := json.NewDecoder(r.Body).Decode(&kv); err != nil {
@@ -1830,6 +1839,9 @@ func (s *Server) handleSetSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for k, v := range kv {
+		if pathSettingKeys[k] {
+			v = filepath.FromSlash(v)
+		}
 		if err := s.st.SetSetting(k, v); err != nil {
 			writeErr(w, err)
 			return
@@ -1868,14 +1880,14 @@ func (s *Server) handleVaultSetup(w http.ResponseWriter, r *http.Request) {
 	// Persist the chosen paths (blank sub-paths are allowed — they fall back to
 	// the Light Novel field / server defaults via the effective* lookups).
 	kv := map[string]string{
-		"vault_dir":            vaultDir,
-		"scan_root":            strings.TrimSpace(req.ScanRoot),
-		"new_note_dir":         strings.TrimSpace(req.NewNoteDir),
-		"attachments_dir":      strings.TrimSpace(req.AttachmentsDir),
-		"book_scan_root":       strings.TrimSpace(req.BookScanRoot),
-		"book_new_note_dir":    strings.TrimSpace(req.BookNewNoteDir),
-		"book_attachments_dir": strings.TrimSpace(req.BookAttachmentsDir),
-		"reading_log_path":     strings.TrimSpace(req.ReadingLogPath),
+		"vault_dir":            filepath.FromSlash(vaultDir),
+		"scan_root":            filepath.FromSlash(strings.TrimSpace(req.ScanRoot)),
+		"new_note_dir":         filepath.FromSlash(strings.TrimSpace(req.NewNoteDir)),
+		"attachments_dir":      filepath.FromSlash(strings.TrimSpace(req.AttachmentsDir)),
+		"book_scan_root":       filepath.FromSlash(strings.TrimSpace(req.BookScanRoot)),
+		"book_new_note_dir":    filepath.FromSlash(strings.TrimSpace(req.BookNewNoteDir)),
+		"book_attachments_dir": filepath.FromSlash(strings.TrimSpace(req.BookAttachmentsDir)),
+		"reading_log_path":     filepath.FromSlash(strings.TrimSpace(req.ReadingLogPath)),
 	}
 	for k, v := range kv {
 		if err := s.st.SetSetting(k, v); err != nil {
