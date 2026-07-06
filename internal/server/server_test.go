@@ -439,3 +439,33 @@ func TestCover_serveMissingAndTraversalGuard(t *testing.T) {
 		t.Error("path traversal escaped the vault — cover guard failed")
 	}
 }
+
+// TestLCSearchMissingQ: the Lubimyczytać fallback search validates its query,
+// same as the OL proxy (#60).
+func TestLCSearchMissingQ(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	if rec := do(h, "GET", "/api/lc/search", "", ""); rec.Code != http.StatusBadRequest {
+		t.Errorf("missing q: got %d, want 400", rec.Code)
+	}
+}
+
+// TestAddBookLCValidation: the LC add path requires title, work_id and the LC
+// link (ol_url) before any network work — a missing field is a 400 (#60).
+func TestAddBookLCValidation(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	body := `{"kind":"book","source":"lc","title":"Prawa i Powinności"}` // no work_id/ol_url
+	rec := do(h, "POST", "/api/books", "secret", body)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("incomplete LC add: got %d, want 400", rec.Code)
+	}
+}
+
+// TestCSPAllowsLCCovers: Lubimyczytać cover host must be in the img-src
+// whitelist, or the picker/preview can't render Polish covers (#60).
+func TestCSPAllowsLCCovers(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	csp := do(h, "GET", "/", "", "").Header().Get("Content-Security-Policy")
+	if !strings.Contains(csp, "lubimyczytac.pl") {
+		t.Errorf("CSP img-src missing lubimyczytac.pl: %q", csp)
+	}
+}

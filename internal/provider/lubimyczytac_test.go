@@ -72,6 +72,22 @@ func lcAuthorPage(cards ...string) string {
 	return `<!DOCTYPE html><html><body><section id="books-and-magazines">` + strings.Join(cards, "") + `</section></body></html>`
 }
 
+// lcBookPage builds a /ksiazka detail page as the live site serves it: the full
+// blurb sits in #book-description with <br> paragraph breaks, while the JSON-LD
+// Book record carries the date + cover but NO description (verified live on
+// book 4544). og:description is the shorter fallback.
+func lcBookPage(title, desc, cover, date string) string {
+	return fmt.Sprintf(`<!DOCTYPE html><html><head>
+<meta property="og:description" content="OG %[2]s" />
+<meta property="og:image" content="%[3]s" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"Book","name":"%[1]s","image":"%[3]s","datePublished":"%[4]s"}
+</script></head><body>
+<div class="book__description" id="book-description"> %[2]s<br />Druga linia.</div>
+<dl><dt>Data wydania:</dt><dd>%[4]s</dd></dl>
+</body></html>`, title, desc, cover, date)
+}
+
 // newLCTestServer stands up an offline Lubimyczytać mirroring the real shape: a
 // results page leads with unrelated promo tiles, then the genuine book-card
 // hits (one search request per lookup), plus an author page for the
@@ -113,6 +129,10 @@ func newLCTestServer(t *testing.T) (*LCClient, *httptest.Server) {
 				lcAuthorCard("5001456", "Pustynna Włócznia", "https://s.lubimyczytac.pl/upload/books/5001456/covC.jpg", "2022", "1594", "2"),
 				lcAuthorCard("700900", "Nowa Nowela", "https://s.lubimyczytac.pl/upload/books/700900/covN.jpg", "2024", "", ""),
 			)))
+		case strings.HasPrefix(r.URL.Path, "/ksiazka/"):
+			w.Write([]byte(lcBookPage( //nolint:errcheck
+				"Malowany człowiek", "Polski opis książki.",
+				"https://s.lubimyczytac.pl/upload/books/4983288/covB.jpg", "2021-10-29")))
 		default:
 			http.NotFound(w, r)
 		}
@@ -354,5 +374,154 @@ func TestLCFoldMatchesSlug(t *testing.T) {
 func TestLCSearchEscapesPhrase(t *testing.T) {
 	if q := url.QueryEscape("Malowany człowiek"); !strings.Contains(q, "cz") {
 		t.Errorf("unexpected escaping: %q", q)
+	}
+}
+
+func TestLCSearchCandidates(t *testing.T) {
+	c, srv := newLCTestServer(t)
+	defer srv.Close()
+
+	got := c.SearchCandidates("Malowany człowiek")
+	if len(got) != 1 {
+		t.Fatalf("want 1 candidate, got %d: %+v", len(got), got)
+	}
+	r := got[0]
+	// The bare book id (not the series-position key) is the note's Work ID, and
+	// the /ksiazka page URL is the Link/dedup key.
+	if r.BookID != "4983288" {
+		t.Errorf("book id %q, want 4983288 (bare id, not series key)", r.BookID)
+	}
+	if !strings.HasSuffix(r.URL, "/ksiazka/4983288/slug") {
+		t.Errorf("url %q, want absolute /ksiazka/4983288/slug", r.URL)
+	}
+	if r.Title != "Malowany człowiek" || r.Author != "Peter V. Brett" {
+		t.Errorf("title/author parsed wrong: %q / %q", r.Title, r.Author)
+	}
+	if !strings.Contains(r.CoverURL, "covB.jpg") {
+		t.Errorf("cover %q — should come from the search tile", r.CoverURL)
+	}
+}
+
+func TestLCSearchCandidatesKeepsWrongAuthorHits(t *testing.T) {
+	c, srv := newLCTestServer(t)
+	defer srv.Close()
+	// Unlike the clustering match (which guards on author), the picker fallback
+	// surfaces every hit and lets the user disambiguate.
+	got := c.SearchCandidates("Obca książka")
+	if len(got) != 1 || got[0].Author != "Jan Kowalski" {
+		t.Errorf("want the by-a-different-author hit surfaced, got %+v", got)
+	}
+}
+
+func TestLCSearchCandidatesEmptyTitle(t *testing.T) {
+	c, srv := newLCTestServer(t)
+	defer srv.Close()
+	if got := c.SearchCandidates("   "); got != nil {
+		t.Errorf("blank title should yield no candidates without a request, got %+v", got)
+	}
+}
+
+func TestLCBookDetail(t *testing.T) {
+	c, srv := newLCTestServer(t)
+	defer srv.Close()
+
+	// The detail fetch takes the book's full /ksiazka page URL (bare /ksiazka/<id>
+	// 404s on the live site), so pass the slugged URL the search result carries.
+	b, err := c.BookDetail(srv.URL + "/ksiazka/4983288/slug")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The full blurb comes from #book-description with its <br> preserved as a
+	// newline — not the shorter JSON-LD/OG text.
+	if b.Description != "Polski opis książki.\nDruga linia." {
+		t.Errorf("description %q — should be the full #book-description blurb", b.Description)
+	}
+	if b.ReleaseDate != "2021-10-29" {
+		t.Errorf("release date %q, want the Polish datePublished 2021-10-29", b.ReleaseDate)
+	}
+	if !strings.Contains(b.CoverURL, "covB.jpg") {
+		t.Errorf("cover %q", b.CoverURL)
+	}
+}
+
+func TestLCBookDetailEmptyURL(t *testing.T) {
+	c, srv := newLCTestServer(t)
+	defer srv.Close()
+	if _, err := c.BookDetail("  "); err == nil {
+		t.Error("an empty book url must error, not fetch")
+	}
+}
+
+func TestLCRelPath(t *testing.T) {
+	cases := map[string]string{
+		"https://lubimyczytac.pl/ksiazka/4544/prawa-i-powinnosci": "/ksiazka/4544/prawa-i-powinnosci",
+		"/ksiazka/4544/prawa-i-powinnosci":                        "/ksiazka/4544/prawa-i-powinnosci",
+		// A client-supplied foreign host is reduced to its path — fetch always
+		// targets the client's own baseURL, so this can't be pointed elsewhere.
+		"http://evil.example/ksiazka/1/x": "/ksiazka/1/x",
+		"":                                "",
+	}
+	for in, want := range cases {
+		if got := lcRelPath(in); got != want {
+			t.Errorf("lcRelPath(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestParseLCBookPrefersBookDescription(t *testing.T) {
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(
+		lcBookPage("Tytuł", "Pełny opis.", "https://s.lubimyczytac.pl/c.jpg", "2020")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := parseLCBook(doc)
+	if b.Description != "Pełny opis.\nDruga linia." || b.ReleaseDate != "2020" {
+		t.Errorf("#book-description + JSON-LD date expected: %+v", b)
+	}
+}
+
+func TestParseLCBookFallsBackToOG(t *testing.T) {
+	// No #book-description and no JSON-LD — the blurb, cover and date must come
+	// from OG meta + the "Data wydania" detail row instead.
+	page := `<!DOCTYPE html><html><head>
+<meta property="og:description" content="Blurb z Open Graph." />
+<meta property="og:image" content="https://s.lubimyczytac.pl/og.jpg" />
+</head><body><dl><dt>Data wydania:</dt><dd>2019-05-01</dd></dl></body></html>`
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(page))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := parseLCBook(doc)
+	if b.Description != "Blurb z Open Graph." {
+		t.Errorf("description fallback %q", b.Description)
+	}
+	if b.CoverURL != "https://s.lubimyczytac.pl/og.jpg" {
+		t.Errorf("cover fallback %q", b.CoverURL)
+	}
+	if b.ReleaseDate != "2019-05-01" {
+		t.Errorf("date fallback %q", b.ReleaseDate)
+	}
+}
+
+func TestParseLCJSONLDImageVariants(t *testing.T) {
+	cases := map[string]string{
+		`{"@type":"Book","image":"a.jpg"}`:                     "a.jpg",
+		`{"@type":"Book","image":["b.jpg","c.jpg"]}`:           "b.jpg",
+		`{"@type":"Book","image":{"url":"d.jpg"}}`:             "d.jpg",
+		`{"@type":["Product","Book"],"image":{"url":"e.jpg"}}`: "e.jpg",
+	}
+	for raw, want := range cases {
+		ld, ok := parseLCJSONLD(raw)
+		if !ok {
+			t.Errorf("%s: not recognized as a Book", raw)
+			continue
+		}
+		if got := ld.imageURL(); got != want {
+			t.Errorf("%s: image %q, want %q", raw, got, want)
+		}
+	}
+	// An @graph-wrapped Book must be found too.
+	if _, ok := parseLCJSONLD(`{"@graph":[{"@type":"WebPage"},{"@type":"Book","description":"x"}]}`); !ok {
+		t.Error("@graph-wrapped Book not found")
 	}
 }

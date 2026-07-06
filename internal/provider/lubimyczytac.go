@@ -1,7 +1,9 @@
 package provider
 
 import (
+	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"log"
 	"net/http"
@@ -52,6 +54,11 @@ const (
 // 1.1", "tom 1.2") while the combined edition just shows "tom 1"; the book
 // page's actual position field is "1" for both, so lcSeriesKey keeps only the
 // leading integer ("1.1" -> "1") to recover it without the extra fetch.
+//
+// Beyond clustering, the same search+book-page plumbing backs the add-a-book
+// Polish fallback (#60): SearchCandidates surfaces every hit for the picker when
+// OpenLibrary has nothing, and BookDetail lazy-fetches the picked book's
+// /ksiazka page for its blurb + Polish publication date.
 //
 // Every request is rate-limited (~700ms), sent through the SSRF-guarded shared
 // client, and memoized per normalized title. A miss or outage degrades to the
@@ -151,6 +158,280 @@ func (c *LCClient) resolveByTitle(title, author string) Match {
 		return Match{WorkID: hit.WorkID, Title: hit.Title, CoverURL: hit.CoverURL, Author: hit.Author, Found: true}
 	}
 	return Match{}
+}
+
+// --- add-a-book fallback: multi-candidate search + book-page detail (#60) ---
+
+// LCSearchResult is one Lubimyczytać search hit surfaced to the add-a-book
+// picker as a pickable candidate when OpenLibrary has nothing (issue #60). It
+// mirrors provider.Candidate's fields the picker renders, but carries LC
+// identity — the bare book id (the note's Work ID) and the /ksiazka page URL
+// (the note's Link and duplicate-detection key) — rather than the series-
+// position dedup key resolveByTitle returns for edition clustering.
+type LCSearchResult struct {
+	BookID   string `json:"book_id"`
+	URL      string `json:"url"`
+	Title    string `json:"title"`
+	Author   string `json:"author"`
+	CoverURL string `json:"cover_url"`
+}
+
+// lcMaxSearchResults caps how many ranked hits the picker is shown — the whole
+// results page was already fetched in one request, so this only bounds how long
+// a candidate list gets for a noisy title.
+const lcMaxSearchResults = 20
+
+// SearchCandidates runs one search request and returns every book-card hit as a
+// pickable candidate, ranked by title-token overlap (best first). It is the
+// multi-candidate counterpart to resolveByTitle, which returns only the single
+// best author-matched hit for edition clustering; the add-a-book fallback shows
+// them all so the user picks (issue #60). No author guard is applied — the user
+// disambiguates. Never errors: a failure or outage yields no candidates.
+func (c *LCClient) SearchCandidates(title string) []LCSearchResult {
+	if strings.TrimSpace(title) == "" {
+		return nil
+	}
+	doc, err := c.fetch("/szukaj/ksiazki?phrase=" + url.QueryEscape(title))
+	if err != nil {
+		c.warn(err)
+		return nil
+	}
+	hits := lcSearchHits(doc, title)
+	out := make([]LCSearchResult, 0, len(hits))
+	for i, h := range hits {
+		if i >= lcMaxSearchResults {
+			break
+		}
+		if h.BookID == "" {
+			continue
+		}
+		out = append(out, LCSearchResult{
+			BookID:   h.BookID,
+			URL:      c.absURL(h.Href, h.BookID),
+			Title:    h.Title,
+			Author:   h.Author,
+			CoverURL: h.CoverURL,
+		})
+	}
+	return out
+}
+
+// absURL turns a book-card's (relative) /ksiazka href into the canonical page
+// URL used as the note's Link. A blank href degrades to /ksiazka/<id>, which the
+// site redirects to the slugged URL.
+func (c *LCClient) absURL(href, id string) string {
+	if href == "" {
+		href = "/ksiazka/" + id
+	}
+	if strings.HasPrefix(href, "http://") || strings.HasPrefix(href, "https://") {
+		return href
+	}
+	return c.baseURL + href
+}
+
+// LCBook is a Lubimyczytać /ksiazka page's detail — the blurb, Polish
+// publication date and cover the search tile doesn't carry, fetched lazily when
+// a candidate is picked to add (issue #60). Any field may be empty; the add
+// path treats a miss as "no description / no date".
+type LCBook struct {
+	Description string
+	ReleaseDate string
+	CoverURL    string
+}
+
+// BookDetail fetches a book's /ksiazka page (one request, mirroring the OL
+// work-detail path) and reads its blurb + Polish publication date + cover.
+// pageURL is the book's own /ksiazka URL from the search result — the bare
+// /ksiazka/<id> without the slug 404s, so the full slugged path is required.
+// Only its path is used (host is always the client's own baseURL), so a
+// client-supplied URL can't be pointed at another host.
+func (c *LCClient) BookDetail(pageURL string) (LCBook, error) {
+	path := lcRelPath(pageURL)
+	if path == "" {
+		return LCBook{}, fmt.Errorf("lubimyczytac: empty book url")
+	}
+	doc, err := c.fetch(path)
+	if err != nil {
+		return LCBook{}, err
+	}
+	return parseLCBook(doc), nil
+}
+
+// lcRelPath reduces a book URL to the path (+query) fetch() prepends baseURL to.
+// A path is returned unchanged; an absolute URL is stripped to its path, so the
+// fetch always targets the client's own baseURL host regardless of the input.
+func lcRelPath(pageURL string) string {
+	pageURL = strings.TrimSpace(pageURL)
+	if pageURL == "" {
+		return ""
+	}
+	if strings.HasPrefix(pageURL, "/") {
+		return pageURL
+	}
+	u, err := url.Parse(pageURL)
+	if err != nil || u.Path == "" {
+		return ""
+	}
+	if u.RawQuery != "" {
+		return u.Path + "?" + u.RawQuery
+	}
+	return u.Path
+}
+
+// parseLCBook reads a /ksiazka page's detail. The blurb comes from the
+// #book-description element (the full text — the page's JSON-LD Book record
+// carries no description); the Polish publication date + cover come from that
+// JSON-LD record. Each has a fallback (Open Graph meta, the "Data wydania" row)
+// so a layout change on one path still yields usable data.
+func parseLCBook(doc *goquery.Document) LCBook {
+	var b LCBook
+	doc.Find(`script[type="application/ld+json"]`).EachWithBreak(func(_ int, s *goquery.Selection) bool {
+		ld, ok := parseLCJSONLD(s.Text())
+		if !ok {
+			return true // not the Book node — keep scanning
+		}
+		b.Description = strings.TrimSpace(ld.Description)
+		b.ReleaseDate = strings.TrimSpace(ld.DatePublished)
+		b.CoverURL = strings.TrimSpace(ld.imageURL())
+		return false
+	})
+	if d := lcDescription(doc); d != "" {
+		b.Description = d // the full blurb — beats JSON-LD, which carries none
+	}
+	if b.Description == "" {
+		if og, ok := doc.Find(`meta[property="og:description"]`).Attr("content"); ok {
+			b.Description = strings.TrimSpace(og)
+		}
+	}
+	if b.CoverURL == "" {
+		if og, ok := doc.Find(`meta[property="og:image"]`).Attr("content"); ok {
+			b.CoverURL = strings.TrimSpace(og)
+		}
+	}
+	if b.ReleaseDate == "" {
+		b.ReleaseDate = lcDetailDate(doc)
+	}
+	return b
+}
+
+var (
+	lcBrRE  = regexp.MustCompile(`(?i)<br\s*/?>`)
+	lcTagRE = regexp.MustCompile(`<[^>]+>`)
+)
+
+// lcDescription reads the full book blurb from the #book-description element,
+// preserving its <br>-separated paragraph breaks as newlines and stripping any
+// other inline markup. Returns "" when the element is absent.
+func lcDescription(doc *goquery.Document) string {
+	sel := doc.Find("#book-description").First()
+	if sel.Length() == 0 {
+		return ""
+	}
+	h, err := sel.Html()
+	if err != nil {
+		return strings.TrimSpace(sel.Text())
+	}
+	h = lcBrRE.ReplaceAllString(h, "\n")
+	h = lcTagRE.ReplaceAllString(h, "")
+	return strings.TrimSpace(html.UnescapeString(h))
+}
+
+// lcLD is the subset of a JSON-LD node parseLCBook reads. @type and image are
+// raw because the site emits them as either a scalar or a list.
+type lcLD struct {
+	Type          json.RawMessage `json:"@type"`
+	Description   string          `json:"description"`
+	DatePublished string          `json:"datePublished"`
+	Image         json.RawMessage `json:"image"`
+	Graph         []lcLD          `json:"@graph"`
+}
+
+func (n lcLD) isBook() bool {
+	return strings.Contains(strings.ToLower(string(n.Type)), "book")
+}
+
+// imageURL pulls a cover URL out of a JSON-LD image field, which may be a bare
+// string, an ImageObject ({"url":…}), or a list of either.
+func (n lcLD) imageURL() string {
+	if len(n.Image) == 0 || string(n.Image) == "null" {
+		return ""
+	}
+	var str string
+	if json.Unmarshal(n.Image, &str) == nil && str != "" {
+		return str
+	}
+	var strs []string
+	if json.Unmarshal(n.Image, &strs) == nil {
+		for _, s := range strs {
+			if s != "" {
+				return s
+			}
+		}
+	}
+	var obj struct {
+		URL string `json:"url"`
+	}
+	if json.Unmarshal(n.Image, &obj) == nil && obj.URL != "" {
+		return obj.URL
+	}
+	var objs []struct {
+		URL string `json:"url"`
+	}
+	if json.Unmarshal(n.Image, &objs) == nil {
+		for _, o := range objs {
+			if o.URL != "" {
+				return o.URL
+			}
+		}
+	}
+	return ""
+}
+
+// parseLCJSONLD finds the Book node in one <script type="application/ld+json">
+// block, which may hold a single object, an array of objects, or an object with
+// an @graph list.
+func parseLCJSONLD(raw string) (lcLD, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return lcLD{}, false
+	}
+	var arr []lcLD
+	if json.Unmarshal([]byte(raw), &arr) == nil {
+		for _, n := range arr {
+			if n.isBook() {
+				return n, true
+			}
+		}
+		return lcLD{}, false
+	}
+	var one lcLD
+	if json.Unmarshal([]byte(raw), &one) != nil {
+		return lcLD{}, false
+	}
+	if one.isBook() {
+		return one, true
+	}
+	for _, n := range one.Graph {
+		if n.isBook() {
+			return n, true
+		}
+	}
+	return lcLD{}, false
+}
+
+// lcDetailDate reads the "Data wydania" (publication date) value from the
+// detail-list markup — the DOM fallback for when JSON-LD carries no
+// datePublished.
+func lcDetailDate(doc *goquery.Document) string {
+	date := ""
+	doc.Find("dt").EachWithBreak(func(_ int, dt *goquery.Selection) bool {
+		if strings.Contains(strings.ToLower(dt.Text()), "data wydania") {
+			date = strings.TrimSpace(dt.Next().Text())
+			return false
+		}
+		return true
+	})
+	return date
 }
 
 // --- author bibliography (Polish release detection, #43) ---
@@ -259,9 +540,14 @@ func lcSeriesKey(card *goquery.Selection) string {
 
 // lcSearchHit is one book-card search-result tile, as-parsed: work id (series
 // position if the card names one, else the bare book id), title, cover and
-// author — everything a match needs with no further fetch.
+// author — everything a match needs with no further fetch. BookID and Href are
+// the bare book id and /ksiazka page path the add-a-book fallback needs as the
+// note's Work ID + Link (issue #60); the clustering path ignores them and keys
+// on WorkID (the series-position dedup key) instead.
 type lcSearchHit struct {
 	WorkID   string
+	BookID   string
+	Href     string
 	Title    string
 	CoverURL string
 	Author   string
@@ -283,7 +569,8 @@ func lcSearchHits(doc *goquery.Document, title string) []lcSearchHit {
 	doc.Find("div.book-card[data-book-id]").Each(func(_ int, card *goquery.Selection) {
 		id, _ := card.Attr("data-book-id")
 		id = strings.TrimSpace(id)
-		t := strings.TrimSpace(card.Find("a.book-card__title").First().Text())
+		titleLink := card.Find("a.book-card__title").First()
+		t := strings.TrimSpace(titleLink.Text())
 		if id == "" || t == "" {
 			return
 		}
@@ -300,7 +587,10 @@ func lcSearchHits(doc *goquery.Document, title string) []lcSearchHit {
 		if workID == "" {
 			workID = "lc:" + id
 		}
-		hit := lcSearchHit{WorkID: workID, Title: t}
+		hit := lcSearchHit{WorkID: workID, BookID: id, Title: t}
+		if href, ok := titleLink.Attr("href"); ok {
+			hit.Href = strings.TrimSpace(href)
+		}
 		if src, ok := card.Find("img.book-card__cover-image").First().Attr("src"); ok {
 			hit.CoverURL = strings.TrimSpace(src)
 		}

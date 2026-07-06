@@ -90,6 +90,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/ol/authors", s.handleOLAuthors)
 	mux.HandleFunc("GET /api/ol/authors/{id}/works", s.handleOLAuthorWorks)
 	mux.HandleFunc("GET /api/ol/search", s.handleOLSearch)
+	mux.HandleFunc("GET /api/lc/search", s.handleLCSearch)
+	mux.HandleFunc("GET /api/lc/book/detail", s.handleLCBookDetail)
 	mux.HandleFunc("GET /api/ol/work/{id}", s.handleOLWork)
 	mux.HandleFunc("GET /api/ol/work/{id}/detail", s.handleOLWorkDetail)
 	mux.HandleFunc("GET /api/ol/works/{id}/editions", s.handleOLWorkEditions)
@@ -160,11 +162,13 @@ func secure(next http.Handler) http.Handler {
 	// data node (iaNNN.us.archive.org), so all three hosts must be allowed or
 	// the browser blocks the redirected image. Google Books is the first cover
 	// fallback; Goodreads supplies the clustered-cover backfill (#40), and serves
-	// its covers from the Amazon media CDN (m.media-amazon.com).
+	// its covers from the Amazon media CDN (m.media-amazon.com). Lubimyczytać
+	// covers (Polish clustering + the add-a-book Polish fallback, #60) come from
+	// its static host (s.lubimyczytac.pl).
 	const csp = "default-src 'self'; img-src 'self' data: " +
 		"https://covers.openlibrary.org https://archive.org https://*.us.archive.org " +
 		"https://books.google.com https://lh3.googleusercontent.com " +
-		"https://*.media-amazon.com; " +
+		"https://*.media-amazon.com https://*.lubimyczytac.pl; " +
 		"style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; " +
 		"base-uri 'none'; form-action 'self'"
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -487,12 +491,14 @@ func (s *Server) handleUndismissReleases(w http.ResponseWriter, r *http.Request)
 type addBookBody struct {
 	URL string `json:"url"`
 
-	Kind                   string `json:"kind"` // "" (default: LN scrape) | "book"
+	Kind                   string `json:"kind"`   // "" (default: LN scrape) | "book"
+	Source                 string `json:"source"` // "" (OpenLibrary) | "lc" (Lubimyczytać, #60)
 	Title                  string `json:"title"`
 	Author                 string `json:"author"`
 	AuthorOLKey            string `json:"author_ol_key"`
 	WorkID                 string `json:"work_id"`
 	OLURL                  string `json:"ol_url"`
+	CoverURL               string `json:"cover_url"`
 	Year                   int    `json:"year"`
 	Status                 string `json:"status"`
 	WatchAuthor            bool   `json:"watch_author"`
@@ -507,6 +513,10 @@ func (s *Server) handleAddBook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if body.Kind == "book" {
+		if body.Source == "lc" {
+			s.addBookFromLC(w, body)
+			return
+		}
 		s.addBookFromCatalog(w, body)
 		return
 	}
@@ -646,6 +656,61 @@ func (s *Server) addBookFromCatalog(w http.ResponseWriter, body addBookBody) {
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"title": res.Title, "path": res.Path, "watched": watched,
+	})
+}
+
+// addBookFromLC creates a #Book note from a Lubimyczytać candidate the user
+// picked when OpenLibrary had no match (issue #60). Unlike the OL catalog path
+// there's no work id / author-watch: LC books have no OpenLibrary identity, so
+// the note keys on LC's own ids — Link = the /ksiazka page URL (the dedup key,
+// carried in OLURL), Work ID = the LC book id (WorkID). The /ksiazka page is
+// fetched once for the blurb + Polish publication date (→ Released EN); the
+// cover the user saw in the picker is downloaded as usual, falling back to the
+// detail page's own cover.
+func (s *Server) addBookFromLC(w http.ResponseWriter, body addBookBody) {
+	if body.Title == "" || body.WorkID == "" || body.OLURL == "" {
+		writeJSON(w, http.StatusBadRequest, errBody("title, work_id, ol_url required"))
+		return
+	}
+	if s.lc == nil {
+		writeJSON(w, http.StatusServiceUnavailable, errBody("Lubimyczytać source unavailable"))
+		return
+	}
+	status := body.Status
+	if status == "" {
+		status = "Completed"
+	}
+
+	coverURL, description, releasedEN := body.CoverURL, "", ""
+	if book, err := s.lc.BookDetail(body.OLURL); err == nil {
+		description = book.Description
+		releasedEN = book.ReleaseDate
+		if coverURL == "" {
+			coverURL = book.CoverURL
+		}
+	}
+
+	opts := notes.Options{
+		VaultDir:       s.effective("vault_dir", s.cfg.VaultDir),
+		NewNoteDir:     s.effectiveBookNewNoteDir(),
+		AttachmentsDir: s.effectiveBookAttachmentsDir(),
+	}
+	res, err := notes.CreateBook(opts, s.st, body.Title, body.Author, body.OLURL, body.WorkID, coverURL, status, releasedEN, description)
+	if err != nil {
+		code := http.StatusBadRequest
+		if errors.Is(err, notes.ErrDuplicate) || errors.Is(err, notes.ErrNoteExists) {
+			code = http.StatusConflict
+		}
+		writeJSON(w, code, errBody(err.Error()))
+		return
+	}
+	if _, err := s.st.UpsertBook(res.Title, body.OLURL, res.Path, 0, res.Cover, status, nil, "book", body.Author); err != nil {
+		writeErr(w, err)
+		return
+	}
+	s.st.LogEvent("add", fmt.Sprintf("Added %q (%s)", res.Title, body.OLURL))
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"title": res.Title, "path": res.Path, "watched": false,
 	})
 }
 
@@ -1198,6 +1263,52 @@ func (s *Server) handleOLSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	results, err := s.ol.SearchByTitle(q)
 	respond(w, results, err)
+}
+
+// ── Lubimyczytać proxy (open — the add-a-book Polish fallback, #60) ───
+
+// handleLCSearch surfaces Lubimyczytać search hits as add-a-book candidates when
+// OpenLibrary has nothing (issue #60). Open like the OL search proxy. A nil LC
+// client (Polish source disabled) returns an empty list, so the UI just reports
+// no matches.
+func (s *Server) handleLCSearch(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query().Get("q")
+	if q == "" {
+		writeJSON(w, http.StatusBadRequest, errBody("missing q"))
+		return
+	}
+	if s.lc == nil {
+		respond(w, []provider.LCSearchResult{}, nil)
+		return
+	}
+	respond(w, s.lc.SearchCandidates(q), nil)
+}
+
+// handleLCBookDetail returns a Lubimyczytać book's blurb + Polish publication
+// date for the add-a-book preview, fetched lazily when the user picks an LC
+// candidate — the counterpart to handleOLWorkDetail. The ?url= is the picked
+// candidate's own /ksiazka page URL (only its path is used server-side).
+// "released" carries the Polish publication date string (mapped to the note's
+// Released EN field).
+func (s *Server) handleLCBookDetail(w http.ResponseWriter, r *http.Request) {
+	pageURL := r.URL.Query().Get("url")
+	if pageURL == "" {
+		writeJSON(w, http.StatusBadRequest, errBody("missing url"))
+		return
+	}
+	if s.lc == nil {
+		respond(w, map[string]any{"description": "", "released": ""}, nil)
+		return
+	}
+	book, err := s.lc.BookDetail(pageURL)
+	if err != nil {
+		respond(w, nil, err)
+		return
+	}
+	respond(w, map[string]any{
+		"description": book.Description,
+		"released":    book.ReleaseDate,
+	}, nil)
 }
 
 // handleOLWork resolves a single work by ID — the pasted-URL path in the
