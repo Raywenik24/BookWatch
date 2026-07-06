@@ -277,7 +277,7 @@ func TestDetermineStatusCorrection(t *testing.T) {
 		want   string
 	}{
 		{"dropped ignored", vault.Entry{Status: "Dropped", Volumes: 5, ReadVolumes: 3, HasReadVolumes: true}, false, ""},
-		{"hasNew completed -> backlog", vault.Entry{Status: "Completed", Volumes: 5, ReadVolumes: 5, HasReadVolumes: true}, true, "Backlog"},
+		{"hasNew alone no change until vault volumes updated", vault.Entry{Status: "Completed", Volumes: 5, ReadVolumes: 5, HasReadVolumes: true}, true, ""},
 		{"readVols < vols completed -> backlog", vault.Entry{Status: "Completed", Volumes: 5, ReadVolumes: 3, HasReadVolumes: true}, false, "Backlog"},
 		{"readVols == vols backlog -> completed", vault.Entry{Status: "Backlog", Volumes: 5, ReadVolumes: 5, HasReadVolumes: true}, false, "Completed"},
 		{"readVols > vols no change", vault.Entry{Status: "Completed", Volumes: 3, ReadVolumes: 5, HasReadVolumes: true}, false, ""},
@@ -305,7 +305,8 @@ func TestRunCheck_statusAutoCorrection(t *testing.T) {
 	sc := scraper.New("t", 5*time.Second)
 	st := openStore(t)
 
-	// HasNew + Completed → Backlog
+	// HasNew alone (vault Volumes still matches ReadVolumes) → no change until
+	// the user updates the vault's own Volumes count.
 	pathHasNew := writeNoteWithStatus(t, vaultDir, "HasNewCompleted", srv.URL+"/a", 1, 1, "Completed")
 	// !HasNew, ReadVols(1) < Vols(2), Completed → Backlog
 	pathLowRead := writeNoteWithStatus(t, vaultDir, "LowRead", srv.URL+"/b", 2, 1, "Completed")
@@ -325,8 +326,15 @@ func TestRunCheck_statusAutoCorrection(t *testing.T) {
 			t.Errorf("%s: expected %q in:\n%s", filepath.Base(path), want, raw)
 		}
 	}
+	checkNotContains := func(path, notWant string) {
+		t.Helper()
+		raw, _ := os.ReadFile(path)
+		if strings.Contains(string(raw), notWant) {
+			t.Errorf("%s: expected %q NOT in:\n%s", filepath.Base(path), notWant, raw)
+		}
+	}
 
-	checkContains(pathHasNew, "  - Backlog")
+	checkNotContains(pathHasNew, "  - Backlog")
 	checkContains(pathLowRead, "  - Backlog")
 	checkContains(pathBacklogDone, "  - Completed")
 	// Dropped note should not have been rewritten to list format (no correction applied)
@@ -339,8 +347,51 @@ func TestRunCheck_statusAutoCorrection(t *testing.T) {
 			fixCount++
 		}
 	}
-	if fixCount != 3 {
-		t.Errorf("expected 3 status-fix events, got %d: %+v", fixCount, evs)
+	if fixCount != 2 {
+		t.Errorf("expected 2 status-fix events, got %d: %+v", fixCount, evs)
+	}
+}
+
+// TestApplyPending_statusCorrectionFiresImmediately covers the "Update
+// Obsidian" flow: a Completed note whose vault Volumes now trails
+// ReadVolumes (because the user just applied a detected bump) must flip to
+// Backlog right away, without waiting for the next RunCheck pass.
+func TestApplyPending_statusCorrectionFiresImmediately(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(novelHTML(7)))
+	}))
+	defer srv.Close()
+
+	vaultDir := t.TempDir()
+	notePath := writeNoteWithStatus(t, vaultDir, "HeroFriend", srv.URL+"/a", 6, 6, "Completed")
+	st := openStore(t)
+	sc := scraper.New("t", 5*time.Second)
+
+	if _, err := RunCheck(sc, st, nil, nil, []string{vaultDir}, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	// Detect-only: status must not have flipped yet.
+	if raw, _ := os.ReadFile(notePath); strings.Contains(string(raw), "  - Backlog") {
+		t.Fatalf("status should not change before Update Obsidian is clicked:\n%s", raw)
+	}
+
+	pending, err := st.ListPending()
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("ListPending: %v %+v", err, pending)
+	}
+	if _, err := ApplyPending(st, vault.Today(), []int64{pending[0].ID}); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := vault.ReadNote(notePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n.Volumes != 7 {
+		t.Errorf("Volumes = %d, want 7", n.Volumes)
+	}
+	if !strings.EqualFold(n.Status, "Backlog") {
+		t.Errorf("Status = %q, want Backlog immediately after apply", n.Status)
 	}
 }
 

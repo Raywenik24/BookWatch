@@ -457,14 +457,14 @@ func hasCatalogEdition(w provider.Work, lang string) bool {
 
 // determineStatusCorrection returns the corrected status for an entry given
 // the check result, or "" if no correction is needed. Dropped is never touched.
+// A newly-found volume alone doesn't flip Completed → Backlog; that only
+// happens once the vault's own Volumes count has been updated (by the user
+// or a write run) and no longer matches ReadVolumes.
 func determineStatusCorrection(e vault.Entry, hasNew bool) string {
 	if strings.EqualFold(e.Status, "Dropped") {
 		return ""
 	}
 	readVols := e.ReadVolumes // 0 when !HasReadVolumes
-	if hasNew && strings.EqualFold(e.Status, "Completed") {
-		return "Backlog"
-	}
 	if readVols < e.Volumes && strings.EqualFold(e.Status, "Completed") {
 		return "Backlog"
 	}
@@ -489,6 +489,35 @@ func applyStatusCorrection(r *checker.Result, st *store.Store) {
 		st.LogEvent("status-fix", fmt.Sprintf("%q: Status %s → %s", r.Entry.Title, r.Entry.Status, newStatus))
 	}
 	r.Entry.Status = newStatus
+}
+
+// applyStatusCorrectionAfterWrite re-reads a note just after its Volumes
+// field was written (by ApplyPending) and re-evaluates the Completed →
+// Backlog rule against the now-current Volumes count. This is what makes
+// the correction fire immediately on "Update Obsidian" instead of waiting
+// for the next periodic RunCheck pass.
+func applyStatusCorrectionAfterWrite(path string, st *store.Store) {
+	n, err := vault.ReadNote(path)
+	if err != nil {
+		return
+	}
+	e := vault.Entry{
+		Path:           path,
+		Status:         n.Status,
+		Volumes:        n.Volumes,
+		ReadVolumes:    n.ReadVolumes,
+		HasReadVolumes: n.HasReadVolumes,
+	}
+	newStatus := determineStatusCorrection(e, false)
+	if newStatus == "" || newStatus == e.Status {
+		return
+	}
+	if err := vault.UpdateStatus(path, newStatus); err != nil {
+		return
+	}
+	if st != nil {
+		st.LogEvent("status-fix", fmt.Sprintf("%q: Status %s → %s", n.Title, e.Status, newStatus))
+	}
 }
 
 func entryReadVolumes(e vault.Entry) *int {
@@ -615,6 +644,7 @@ func ApplyPending(st *store.Store, today string, ids []int64) (ApplyResult, erro
 			res.Failed++
 			continue
 		}
+		applyStatusCorrectionAfterWrite(p.Path, st)
 		if e := st.MarkApplied(p.ID, p.BookID, p.NewVolumes); e != nil {
 			return res, e
 		}
