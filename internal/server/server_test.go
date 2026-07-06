@@ -536,6 +536,53 @@ func TestReadingQueueFlow(t *testing.T) {
 	}
 }
 
+// Next-volume suggestion (issue #68): a series read before the app existed
+// has Read Volumes set but no rows in _Read.md — the suggestion must fall
+// back to Read Volumes+1, not default to 1.
+func TestReadingNextVolume_seedsFromReadVolumes(t *testing.T) {
+	h, st, vaultDir := newTestServer(t)
+	logPath := filepath.Join(vaultDir, "_Read.md")
+	os.WriteFile(logPath, []byte("| --- | --- | ---: | --- | --- |\n"), 0o644)
+	st.SetSetting("reading_log_path", logPath)
+
+	notePath := filepath.Join(vaultDir, "Seirei Gensouki.md")
+	os.WriteFile(notePath, []byte("---\ntags:\n  - \"#LightNovel\"\nStatus:\n  - Backlog\n---\n"), 0o644)
+	rv := 22
+	id, _ := st.UpsertBook("Seirei Gensouki", "https://x/sg", notePath, 27, "", "Backlog", &rv, "ln", "")
+
+	rec := do(h, "GET", fmt.Sprintf("/api/reading/next-volume?book_id=%d", id), "", "")
+	var nv struct {
+		Volume string `json:"volume"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &nv)
+	if nv.Volume != "23" {
+		t.Errorf("next-volume = %q, want 23", nv.Volume)
+	}
+}
+
+// When both the log and Read Volumes have data, the suggestion takes
+// whichever is higher.
+func TestReadingNextVolume_maxOfLogAndReadVolumes(t *testing.T) {
+	h, st, vaultDir := newTestServer(t)
+	logPath := filepath.Join(vaultDir, "_Read.md")
+	os.WriteFile(logPath, []byte("| 202506 | [[Overlord]] | 5 |  |  |\n| --- | --- | ---: | --- | --- |\n"), 0o644)
+	st.SetSetting("reading_log_path", logPath)
+
+	notePath := filepath.Join(vaultDir, "Overlord.md")
+	os.WriteFile(notePath, []byte("---\ntags:\n  - \"#LightNovel\"\nStatus:\n  - Backlog\n---\n"), 0o644)
+	rv := 3
+	id, _ := st.UpsertBook("Overlord", "https://x/ol", notePath, 20, "", "Backlog", &rv, "ln", "")
+
+	rec := do(h, "GET", fmt.Sprintf("/api/reading/next-volume?book_id=%d", id), "", "")
+	var nv struct {
+		Volume string `json:"volume"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &nv)
+	if nv.Volume != "6" {
+		t.Errorf("next-volume = %q, want 6", nv.Volume)
+	}
+}
+
 type readingStatePayload struct {
 	Reading []store.ReadingItem `json:"reading"`
 	Queue   []store.ReadingItem `json:"queue"`

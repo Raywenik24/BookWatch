@@ -866,26 +866,39 @@ func (s *Server) handleReadingNextVolume(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusOK, map[string]string{"volume": ""})
 		return
 	}
-	capVol := s.bookVolumes(id)
+	capVol, readVol := s.bookVolumes(id)
 	reads, _ := reading.ParseFile(s.effectiveReadingLogPath())
+	logMax := reading.MaxVolume(reads, ref.Title)
+	start := readVol
+	if logMax > start {
+		start = logMax
+	}
+	n := start + 1
+	if capVol > 0 && n > capVol {
+		n = capVol
+	}
 	writeJSON(w, http.StatusOK, map[string]string{
-		"volume": strconv.Itoa(reading.NextVolume(reads, ref.Title, capVol)),
+		"volume": strconv.Itoa(n),
 	})
 }
 
-// bookVolumes returns a tracked book's total Volumes (0 if unknown) — the cap
-// for the next-volume suggestion.
-func (s *Server) bookVolumes(id int64) int {
+// bookVolumes returns a tracked book's total Volumes and its Read Volumes
+// (0 if unknown) — used to seed the next-volume suggestion (issue #68) with
+// volumes already read even when the reading log has no rows for it yet.
+func (s *Server) bookVolumes(id int64) (volumes, readVolumes int) {
 	books, err := s.st.ListBooks()
 	if err != nil {
-		return 0
+		return 0, 0
 	}
 	for _, b := range books {
 		if b.ID == id {
-			return b.Volumes
+			if b.ReadVolumes != nil {
+				readVolumes = *b.ReadVolumes
+			}
+			return b.Volumes, readVolumes
 		}
 	}
-	return 0
+	return 0, 0
 }
 
 // readingTarget decodes {book_id, volume, start_date} and resolves the book,
