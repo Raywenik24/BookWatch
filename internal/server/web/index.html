@@ -545,6 +545,11 @@
           <label>Attachments folder</label><input id="setBookAttachDir" placeholder="blank = Light Novel folder">
         </div>
         <p class="muted"><small>Each folder is either a full path or a path relative to the vault root above — both work. Folders/scan-roots override the server's env defaults. Blank Book fields fall back to the matching Light Novel field, so a single-folder setup keeps working unchanged.</small></p>
+        <h4>Reading</h4>
+        <div class="rule-grid" style="grid-template-columns:160px 1fr">
+          <label>Reading log note</label><input id="setReadingLog" placeholder="e.g. 01_Reading/00_Main/_Read.md">
+        </div>
+        <p class="muted"><small>The completed-reads log — full path or relative to the vault root. Marking a volume/book completed appends a row here; leave blank to disable reading tracking.</small></p>
       </div>
 
       <div class="card">
@@ -1638,6 +1643,7 @@ async function loadSettings(){
   $('setBookScanRoot').value = eff.book_scan_root || '';
   $('setBookNewNoteDir').value = eff.book_new_note_dir || '';
   $('setBookAttachDir').value = eff.book_attachments_dir || '';
+  $('setReadingLog').value = eff.reading_log_path || '';
   $('setUnsafeCover').checked = ov.unsafe_cover_match === '1';
   const theme = ov.theme || lsGet('pw_theme') || 'mocha';
   themePicker.setValue(theme); applyTheme(theme);
@@ -2176,7 +2182,8 @@ async function saveSettings(){
                  scan_root:$('setScanRoot').value.trim(), new_note_dir:$('setNewNoteDir').value.trim(),
                  attachments_dir:$('setAttachDir').value.trim(),
                  book_scan_root:$('setBookScanRoot').value.trim(), book_new_note_dir:$('setBookNewNoteDir').value.trim(),
-                 book_attachments_dir:$('setBookAttachDir').value.trim(), theme:themePicker.getValue(),
+                 book_attachments_dir:$('setBookAttachDir').value.trim(),
+                 reading_log_path:$('setReadingLog').value.trim(), theme:themePicker.getValue(),
                  timezone:tzPicker.getValue(), unsafe_cover_match:$('setUnsafeCover').checked ? '1' : '' };
   const r = await send('PUT','/api/settings',body); if(need(r)) return;
   if(r.ok){ TZ = tzPicker.getValue(); loadUpdates(); loadBooks(); loadLogs(); loadEvents(); }

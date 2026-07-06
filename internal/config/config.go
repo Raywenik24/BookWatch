@@ -27,6 +27,11 @@ type Config struct {
 	BookAttachmentsDir string
 	BookScanRoot       string
 
+	// ReadingLogPath points at the unified completed-reads note (`_Read.md`,
+	// issue #63). Vault-relative or absolute (via vault.ResolvePath). Blank by
+	// default — the reading engine is inert until a path is set in the UI.
+	ReadingLogPath string
+
 	Port      string // HTTP listen port
 	Password  string // shared password for write endpoints
 	CheckCron string // cron expr for the scheduled check
@@ -49,6 +54,8 @@ func Default() Config {
 		BookNewNoteDir:     env("BOOKWATCH_BOOK_NEW_NOTE_DIR", ""),
 		BookAttachmentsDir: env("BOOKWATCH_BOOK_ATTACHMENTS_DIR", ""),
 		BookScanRoot:       env("BOOKWATCH_BOOK_SCAN_ROOT", ""),
+
+		ReadingLogPath: env("BOOKWATCH_READING_LOG_PATH", ""),
 
 		Port:      env("BOOKWATCH_PORT", "8080"),
 		Password:  env("BOOKWATCH_PASSWORD", ""),

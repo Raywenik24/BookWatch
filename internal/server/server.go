@@ -24,6 +24,7 @@ import (
 	"bookwatch/internal/config"
 	"bookwatch/internal/notes"
 	"bookwatch/internal/provider"
+	"bookwatch/internal/reading"
 	"bookwatch/internal/scheduler"
 	"bookwatch/internal/scraper"
 	"bookwatch/internal/service"
@@ -98,6 +99,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/trackers", s.handleListTrackers)
 	mux.HandleFunc("GET /api/releases", s.handleReleases)
 	mux.HandleFunc("GET /api/releases/dismissed", s.handleDismissedReleases)
+	mux.HandleFunc("GET /api/reading/completed", s.handleReadingCompleted)
 
 	mux.HandleFunc("POST /api/check", s.auth(s.handleCheck))
 	mux.HandleFunc("POST /api/vault/refresh", s.auth(s.handleVaultRefresh))
@@ -106,6 +108,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/releases/dismiss", s.auth(s.handleDismissReleases))
 	mux.HandleFunc("POST /api/releases/undismiss", s.auth(s.handleUndismissReleases))
 	mux.HandleFunc("POST /api/books", s.auth(s.handleAddBook))
+	mux.HandleFunc("POST /api/books/{id}/complete", s.auth(s.handleMarkCompleted))
 	mux.HandleFunc("GET /api/books/{id}/note", s.handleReadNote)
 	mux.HandleFunc("PUT /api/books/{id}/note", s.auth(s.handleEditNote))
 	mux.HandleFunc("POST /api/books/{id}/cover", s.authLimited(s.handleSetCover, maxCoverUploadBytes))
@@ -285,6 +288,7 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 			"book_scan_root":       s.effectiveBookScanRoot(),
 			"book_new_note_dir":    s.effectiveBookNewNoteDir(),
 			"book_attachments_dir": s.effectiveBookAttachmentsDir(),
+			"reading_log_path":     s.effective("reading_log_path", s.cfg.ReadingLogPath),
 		},
 		"overrides": saved,
 	})
@@ -769,6 +773,87 @@ func (s *Server) handleDeleteBookHard(w http.ResponseWriter, r *http.Request) {
 	}
 	s.st.LogEvent("delete", fmt.Sprintf("Deleted %q (note + cover)", ref.Title))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// ── reading log (#63) ─────────────────────────────────────────
+
+// handleReadingCompleted serves the parsed completed-reads log plus the
+// per-(title, volume) re-read counts. Read-only and open like the other feeds;
+// powers the Reading tab's Completed view + `×N` badges (#64). An unconfigured
+// or missing log is not an error — it just yields an empty history.
+func (s *Server) handleReadingCompleted(w http.ResponseWriter, r *http.Request) {
+	logPath := s.effectiveReadingLogPath()
+	if logPath == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"configured": false, "reads": []reading.Read{}, "reread": []rereadCount{}})
+		return
+	}
+	reads, err := reading.ParseFile(logPath)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	var reread []rereadCount
+	for k, n := range reading.ReReadCounts(reads) {
+		if n >= 2 {
+			reread = append(reread, rereadCount{Title: k.Title, Volume: k.Volume, Count: n})
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"configured": true, "reads": reads, "reread": reread})
+}
+
+// rereadCount is one re-read (count ≥ 2) surfaced to the UI as a badge.
+type rereadCount struct {
+	Title  string `json:"title"`
+	Volume string `json:"volume"`
+	Count  int    `json:"count"`
+}
+
+// handleMarkCompleted logs a completed read for a tracked book. The body is
+// {volume, start, end, unknown}: volume names the LN volume (blank for a #Book),
+// start/end are the picker dates, and unknown ("I don't remember") blanks the
+// dates + YYYYMM. A #Book completion also flips its note Status to Completed.
+func (s *Server) handleMarkCompleted(w http.ResponseWriter, r *http.Request) {
+	ref, ok := s.lookupBook(w, r)
+	if !ok {
+		return
+	}
+	logPath := s.effectiveReadingLogPath()
+	if logPath == "" {
+		writeJSON(w, http.StatusBadRequest, errBody("reading log note is not configured — set it in Settings → Paths"))
+		return
+	}
+	var body struct {
+		Volume  string `json:"volume"`
+		Start   string `json:"start"`
+		End     string `json:"end"`
+		Unknown bool   `json:"unknown"`
+	}
+	if r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSON(w, http.StatusBadRequest, errBody("bad body"))
+			return
+		}
+	}
+
+	count, err := service.MarkCompleted(logPath, ref.Path, ref.Kind, ref.Title, body.Volume, body.Start, body.End, body.Unknown)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+
+	// A #Book status flip changed the note on disk — resync the DB row so the
+	// Books feed reflects Completed without waiting for the next scan.
+	if ref.Kind == "book" {
+		if n, err := vault.ReadNote(ref.Path); err == nil {
+			s.resyncNote(ref.Link, ref.Path, n)
+		}
+	}
+	unit := ref.Title
+	if body.Volume != "" {
+		unit += " vol " + body.Volume
+	}
+	s.st.LogEvent("read", fmt.Sprintf("Marked %q completed", unit))
+	writeJSON(w, http.StatusOK, map[string]any{"status": "completed", "reread_count": count})
 }
 
 // maxCoverUploadBytes caps an uploaded cover image (matches notes' download cap).
@@ -1571,6 +1656,17 @@ func (s *Server) effectiveBookAttachmentsDir() string {
 		return v
 	}
 	return s.effective("attachments_dir", s.cfg.AttachmentsDir)
+}
+
+// effectiveReadingLogPath returns the absolute path to the reading log note
+// (issue #63), resolved against the vault dir, or "" when no path is configured
+// (the reading engine stays inert until the user sets one).
+func (s *Server) effectiveReadingLogPath() string {
+	p := s.effective("reading_log_path", s.cfg.ReadingLogPath)
+	if p == "" {
+		return ""
+	}
+	return vault.ResolvePath(s.effective("vault_dir", s.cfg.VaultDir), p)
 }
 
 // ScanRoots returns the effective Light Novel + Book scan roots (Book falls

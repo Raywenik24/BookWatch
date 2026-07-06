@@ -10,6 +10,7 @@ import (
 
 	"bookwatch/internal/checker"
 	"bookwatch/internal/provider"
+	"bookwatch/internal/reading"
 	"bookwatch/internal/scraper"
 	"bookwatch/internal/sources"
 	"bookwatch/internal/store"
@@ -496,6 +497,33 @@ func entryReadVolumes(e vault.Entry) *int {
 	}
 	v := e.ReadVolumes
 	return &v
+}
+
+// MarkCompleted logs one completed read to the unified reading log and — for a
+// #Book only — flips its note's Status to Completed (an LN volume leaves Status
+// alone, since the series is usually ongoing). title is the note basename (the
+// [[wikilink]] target); volume is blank for a #Book. The reading-log write is
+// compact + atomic and leaves every existing row untouched (see
+// reading.AppendCompleted). It returns the resulting re-read count for
+// (title, volume) so the caller can refresh a `×N` badge without re-reading.
+func MarkCompleted(logPath, notePath, kind, title, volume, start, end string, unknown bool) (int, error) {
+	if logPath == "" {
+		return 0, fmt.Errorf("reading log note is not configured")
+	}
+	row := reading.NewCompletedRow(title, volume, start, end, unknown)
+	if err := reading.AppendCompleted(logPath, row); err != nil {
+		return 0, fmt.Errorf("append reading log: %w", err)
+	}
+	if kind == "book" && notePath != "" {
+		if err := vault.UpdateStatus(notePath, "Completed"); err != nil {
+			return 0, fmt.Errorf("set status: %w", err)
+		}
+	}
+	reads, err := reading.ParseFile(logPath)
+	if err != nil {
+		return 0, nil // the write succeeded; a re-parse failure just costs the badge count
+	}
+	return reading.CountFor(reads, title, volume), nil
 }
 
 // ApplyResult is the outcome of applying pending updates to the vault.

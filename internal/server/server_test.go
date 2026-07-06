@@ -322,6 +322,131 @@ func TestSetCover_multipartOverJSONCap(t *testing.T) {
 	}
 }
 
+// Reading log (#63): marking a #Book completed appends a row to the configured
+// log AND flips its note Status to Completed; the completed feed reports the
+// re-read count.
+func TestMarkCompleted_bookFlipsStatusAndLogs(t *testing.T) {
+	h, st, vaultDir := newTestServer(t)
+
+	logPath := filepath.Join(vaultDir, "_Read.md")
+	if err := os.WriteFile(logPath, []byte("---\nmodified: 2026-07-06\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetSetting("reading_log_path", logPath); err != nil {
+		t.Fatal(err)
+	}
+
+	title, link := "My Book", "https://openlibrary.org/works/OL9W"
+	notePath := filepath.Join(vaultDir, title+".md")
+	content := notes.BuildBookNote(title, "A", link, "OL9W", "", "Backlog", "", "", "2026-07-05")
+	if err := os.WriteFile(notePath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	id, _ := st.UpsertBook(title, link, notePath, 0, "", "Backlog", nil, "book", "A")
+
+	body := `{"start":"2026-07-01","end":"2026-07-06"}`
+	rec := do(h, "POST", fmt.Sprintf("/api/books/%d/complete", id), "secret", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("complete: got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// A compact row landed in the log with the note basename as the [[link]].
+	raw, _ := os.ReadFile(logPath)
+	if !strings.Contains(string(raw), "[[My Book]]") || !strings.Contains(string(raw), "202607") {
+		t.Fatalf("row not appended:\n%s", raw)
+	}
+	// #Book completion flipped Status to Completed on disk + in the DB.
+	if !strings.Contains(string(mustRead(t, notePath)), "Completed") {
+		t.Errorf("note Status not set to Completed:\n%s", mustRead(t, notePath))
+	}
+	books, _ := st.ListBooks()
+	if len(books) != 1 || books[0].Status != "Completed" {
+		t.Errorf("DB status not resynced: %+v", books)
+	}
+	evs, _ := st.ListEvents(10)
+	if len(evs) == 0 || evs[0].Kind != "read" {
+		t.Errorf("read event missing: %+v", evs)
+	}
+}
+
+// An LN volume completion logs the read but must NOT touch the note's Status.
+func TestMarkCompleted_lnLeavesStatusUntouched(t *testing.T) {
+	h, st, vaultDir := newTestServer(t)
+	logPath := filepath.Join(vaultDir, "_Read.md")
+	if err := os.WriteFile(logPath, []byte("| 202506 | [[Other]] | 1 |  |  |\n| --- | --- | ---: | --- | --- |\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st.SetSetting("reading_log_path", logPath)
+
+	title, link := "Hell Mode", "https://jnovels.com/hm"
+	notePath := filepath.Join(vaultDir, title+".md")
+	if err := os.WriteFile(notePath, []byte("---\ntags:\n  - \"#LightNovel\"\nStatus:\n  - Backlog\n---\n### Hell Mode\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	id, _ := st.UpsertBook(title, link, notePath, 10, "", "Backlog", nil, "ln", "")
+
+	// Complete the same volume twice → re-read count of 2.
+	for i := 0; i < 2; i++ {
+		body := `{"volume":"10","unknown":true}`
+		if rec := do(h, "POST", fmt.Sprintf("/api/books/%d/complete", id), "secret", body); rec.Code != http.StatusOK {
+			t.Fatalf("complete %d: got %d: %s", i, rec.Code, rec.Body.String())
+		}
+	}
+	// Status line untouched (still Backlog, never Completed).
+	if strings.Contains(string(mustRead(t, notePath)), "Completed") {
+		t.Errorf("LN completion wrongly touched Status:\n%s", mustRead(t, notePath))
+	}
+	// Unknown-date rows have blank date + YYYYMM cells.
+	if !strings.Contains(string(mustRead(t, logPath)), "|  | [[Hell Mode]] | 10 |  |  |") {
+		t.Errorf("unknown-date LN row wrong:\n%s", mustRead(t, logPath))
+	}
+
+	// Completed feed surfaces the re-read (count ≥ 2).
+	rec := do(h, "GET", "/api/reading/completed", "", "")
+	var feed struct {
+		Configured bool `json:"configured"`
+		Reread     []struct {
+			Title  string `json:"title"`
+			Volume string `json:"volume"`
+			Count  int    `json:"count"`
+		} `json:"reread"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &feed)
+	if !feed.Configured {
+		t.Fatal("feed not configured")
+	}
+	var found bool
+	for _, rr := range feed.Reread {
+		if rr.Title == "Hell Mode" && rr.Volume == "10" && rr.Count == 2 {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("re-read of Hell Mode ×10 not surfaced: %+v", feed.Reread)
+	}
+}
+
+// The complete endpoint refuses cleanly when no reading log is configured.
+func TestMarkCompleted_noLogConfigured(t *testing.T) {
+	h, st, vaultDir := newTestServer(t)
+	notePath := filepath.Join(vaultDir, "X.md")
+	os.WriteFile(notePath, []byte("---\ntags:\n  - \"#LightNovel\"\n---\n"), 0o644)
+	id, _ := st.UpsertBook("X", "https://x/1", notePath, 1, "", "", nil, "ln", "")
+	rec := do(h, "POST", fmt.Sprintf("/api/books/%d/complete", id), "secret", `{"volume":"1","unknown":true}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("got %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func mustRead(t *testing.T, path string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
 func TestDeleteBook_untracksAndLogsEvent(t *testing.T) {
 	h, st, _ := newTestServer(t)
 	id, _ := st.UpsertBook("A", "https://x/1", "", 2, "", "", nil, "ln", "")
