@@ -1778,7 +1778,8 @@ function renderRandomizeGrid(){
       ? `<img class="cover-img" src="${coverSrc(x)}" alt="" loading="lazy" onerror="this.closest('.cover-card').classList.add('nocover');this.remove();">`
       : '';
     const isBook = bookKind(x) === 'book';
-    const vol = (!isBook && x.volumes) ? `<span class="cover-vol" title="${x.volumes} volume${x.volumes===1?'':'s'}">${x.volumes}</span>` : '';
+    const read = x.read_volumes ?? 0;
+    const vol = (!isBook && x.volumes) ? `<span class="cover-vol" title="${read}/${x.volumes} volumes read">${read}/${x.volumes}</span>` : '';
     const meta = isBook
       ? `<div class="cover-title" style="padding-top:0"><small class="muted">${esc([x.author, x.status].filter(Boolean).join(' · '))}</small></div>`
       : '';

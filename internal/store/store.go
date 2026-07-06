@@ -280,7 +280,7 @@ func (s *Store) UpsertBook(title, link, path string, volumes int, cover, status 
 			volumes=excluded.volumes,
 			cover=CASE WHEN excluded.cover='' THEN books.cover ELSE excluded.cover END,
 			status=CASE WHEN excluded.status='' THEN books.status ELSE excluded.status END,
-			read_volumes=COALESCE(excluded.read_volumes, books.read_volumes),
+			read_volumes=excluded.read_volumes,
 			author=CASE WHEN excluded.author='' THEN books.author ELSE excluded.author END,
 			updated_at=excluded.updated_at,
 			last_checked_at=excluded.last_checked_at`,
