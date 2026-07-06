@@ -174,6 +174,52 @@
   .cover-card:hover .cover-x, .cover-x:focus { opacity: 1; }
   .cover-x:hover { background: var(--red); color: var(--crust); }
   .cover-x:disabled { opacity: .5; cursor: default; }
+  /* "add to reading" corner button on a cover card (#64), mirroring cover-x */
+  .cover-read { position: absolute; top: .3rem; left: .3rem; width: 1.5rem; height: 1.5rem; padding: 0;
+        border: 0; border-radius: 50%; cursor: pointer; font-size: 1rem; line-height: 1; opacity: 0;
+        background: color-mix(in srgb, var(--crust) 78%, transparent); color: var(--text); transition: opacity .15s; }
+  /* reading-tile corner actions (#64): ✓ Done / ▶ Start share the top-left
+     green affordance with Books' cover-read; Remove reuses cover-x. All are
+     hover-revealed, matching the Books grid. */
+  .cover-done, .cover-start { position: absolute; top: .3rem; left: .3rem; width: 1.5rem; height: 1.5rem; padding: 0;
+        border: 0; border-radius: 50%; cursor: pointer; font-size: .95rem; line-height: 1; opacity: 0;
+        display: inline-flex; align-items: center; justify-content: center;
+        background: color-mix(in srgb, var(--crust) 78%, transparent); color: var(--text); transition: opacity .15s; }
+  .cover-card:hover .cover-read, .cover-read:focus,
+  .cover-card:hover .cover-done, .cover-done:focus,
+  .cover-card:hover .cover-start, .cover-start:focus { opacity: 1; }
+  .cover-read:hover, .cover-done:hover, .cover-start:hover { background: var(--green); color: var(--crust); }
+  /* the ✓/▶ action shares the top-left corner with the volume badge, so fade the
+     badge out on hover (reading lists only — Books keeps its badge). */
+  #readingNowList .cover-vol, #readingQueueList .cover-vol { transition: opacity .15s; }
+  #readingNowList .cover-card:hover .cover-vol, #readingQueueList .cover-card:hover .cover-vol { opacity: 0; }
+  .cover-card[draggable="true"] { cursor: grab; }
+  .cover-card.dragging { opacity: .45; }
+  .cover-card.dragover { border-color: var(--mauve); border-style: dashed; }
+  /* themed date picker (#64): native <input type=date> can't be themed, set to
+     Monday-first, or forced to yyyy-mm-dd, so this replaces it. */
+  .dp { position: relative; display: block; }
+  .dp-input { width: 100%; background: var(--mantle); color: var(--text); border: 1px solid var(--surface0);
+        border-radius: 6px; padding: .4rem .5rem; font: inherit; cursor: pointer; }
+  .dp-input:disabled { opacity: .5; cursor: default; }
+  .dp-cal { position: fixed; z-index: 1001; width: 248px; background: var(--mantle); color: var(--text);
+        border: 1px solid var(--surface1); border-radius: 8px; padding: .5rem; box-shadow: 0 8px 28px rgba(0,0,0,.5); }
+  .dp-cal[hidden] { display: none; }
+  .dp-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: .4rem; }
+  .dp-title { font-weight: 600; font-size: .85rem; }
+  .dp-nav { width: 1.6rem; height: 1.6rem; border: 0; border-radius: 6px; cursor: pointer; font-size: 1rem;
+        line-height: 1; background: var(--surface0); color: var(--text); }
+  .dp-nav:hover { background: var(--mauve); color: var(--crust); }
+  .dp-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+  .dp-dow { text-align: center; font-size: .68rem; color: var(--subtext); padding: .2rem 0; }
+  .dp-day { text-align: center; padding: .32rem 0; border-radius: 5px; cursor: pointer; font-size: .82rem; }
+  .dp-day:hover { background: var(--surface0); }
+  .dp-day.other { color: var(--subtext); opacity: .45; }
+  .dp-day.today { border: 1px solid var(--mauve); }
+  .dp-day.sel { background: var(--mauve); color: var(--crust); font-weight: 600; }
+  .dp-foot { display: flex; justify-content: flex-end; margin-top: .4rem; }
+  .dp-clear { background: transparent; border: 0; color: var(--subtext); cursor: pointer; font-size: .78rem; }
+  .dp-clear:hover { color: var(--red); }
   /* check progress bar */
   #progress { margin: .4rem 0; }
   #progress[hidden] { display: none; }
@@ -262,6 +308,39 @@
   .cover-picker-controls { display: flex; flex-direction: column; gap: .4rem; flex: 1; min-width: 0; }
   .cover-picker-controls input[type="url"] { width: 100%; background: var(--mantle); color: var(--text);
         border: 1px solid var(--surface0); border-radius: 6px; padding: .4rem .5rem; font: inherit; }
+  /* reading tab (#64): currently-reading / queue / completed row lists */
+  .rd-list { display: flex; flex-direction: column; gap: .4rem; margin: .4rem 0; }
+  .rd-item { display: flex; align-items: center; gap: .6rem; background: var(--mantle);
+        border: 1px solid var(--surface0); border-radius: 8px; padding: .4rem .6rem; transition: border-color .15s; }
+  .rd-item:hover { border-color: var(--mauve); }
+  .rd-item.dragging { opacity: .45; }
+  .rd-item.dragover { border-color: var(--mauve); border-style: dashed; }
+  .rd-handle { cursor: grab; color: var(--subtext); flex: 0 0 auto; user-select: none; font-size: 1.1rem; line-height: 1; }
+  .rd-cover { width: 40px; height: 60px; object-fit: cover; border-radius: 4px; flex: 0 0 auto; background: var(--surface0); }
+  .rd-main { flex: 1; min-width: 0; }
+  .rd-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rd-title a { color: var(--text); }
+  .rd-sub { color: var(--subtext); font-size: .8rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rd-actions { display: flex; gap: .3rem; flex: 0 0 auto; align-items: center; }
+  .rd-vol { font-size: .75rem; padding: .1rem .4rem; border-radius: 4px;
+        background: color-mix(in srgb, var(--mauve) 22%, var(--surface0)); color: var(--mauve); flex: 0 0 auto; }
+  .rd-reread { font-size: .75rem; padding: .1rem .4rem; border-radius: 4px;
+        background: color-mix(in srgb, var(--peach) 25%, var(--surface0)); color: var(--peach); flex: 0 0 auto; }
+  .rd-abandoned { font-size: .72rem; padding: .1rem .4rem; border-radius: 4px; flex: 0 0 auto;
+        background: color-mix(in srgb, var(--red) 20%, var(--surface0)); color: var(--red); }
+  .rd-author { color: var(--blue); }
+  .rd-author:hover { text-decoration: underline; }
+  /* per-row edit/delete controls (#64): hidden until edit mode is on AND the row
+     is hovered, mirroring the cover-card's corner-X affordance. */
+  .rd-editctl { display: none; gap: .25rem; align-items: center; flex: 0 0 auto; }
+  .rd-editing .rd-item:hover .rd-editctl { display: inline-flex; }
+  .rd-edit-btn, .rd-del-x { width: 1.6rem; height: 1.6rem; padding: 0; border: 0; border-radius: 50%; cursor: pointer;
+        line-height: 1; display: inline-flex; align-items: center; justify-content: center;
+        background: color-mix(in srgb, var(--crust) 78%, transparent); color: var(--text); transition: background .15s, color .15s; }
+  .rd-edit-btn { font-size: .9rem; }
+  .rd-edit-btn:hover { background: var(--mauve); color: var(--crust); }
+  .rd-del-x { font-size: 1.15rem; }
+  .rd-del-x:hover { background: var(--red); color: var(--crust); }
 </style>
 </head>
 <body>
@@ -270,6 +349,7 @@
     <nav id="nav">
       <button data-s="updates" class="active">Updates</button>
       <button data-s="books">Books</button>
+      <button data-s="reading">Reading</button>
       <button data-s="randomize">Randomizer</button>
       <button data-s="sources">Sources</button>
       <button data-s="settings">Settings</button>
@@ -385,6 +465,33 @@
         </div>
       </div>
       <div id="randomizeGrid" class="cover-grid"></div>
+    </section>
+
+    <!-- READING (#64) — currently-reading, queue, recently-completed -->
+    <section id="reading">
+      <div id="readingNoLog" class="card" hidden>
+        <p class="muted" style="margin:0">Reading tracking is off — set a <b>Reading log note</b> in
+          <a href="#" onclick="gotoTab('settings');return false">Settings</a> to log completed reads and see your history here.
+          You can still queue and start books below.</p>
+      </div>
+
+      <h2 style="margin-bottom:.3rem">Currently reading</h2>
+      <div id="readingNowList" class="cover-grid"><div class="empty-state">loading…</div></div>
+
+      <div class="row" style="justify-content:space-between;align-items:center;margin:.8rem 0 .3rem">
+        <h2 style="margin:0">Queue</h2>
+        <small class="muted" id="queueHint" hidden>Drag to reorder</small>
+      </div>
+      <div id="readingQueueList"><div class="empty-state">loading…</div></div>
+
+      <div class="row" style="justify-content:space-between;align-items:center;margin:.9rem 0 .3rem">
+        <h2 style="margin:0">Recently completed</h2>
+        <div class="row" style="margin:0;align-items:center;gap:.5rem">
+          <small class="muted" id="completedEditHint" hidden>Hover a row to edit ✎ or delete ×</small>
+          <button class="btn ghost" id="completedEditToggle" onclick="toggleCompletedEdit()" hidden>Edit</button>
+        </div>
+      </div>
+      <div id="readingCompletedList"><div class="empty-state">loading…</div></div>
     </section>
 
     <!-- SOURCES -->
@@ -606,6 +713,13 @@
       <div id="deleteModalBody"></div>
     </div>
   </div>
+  <!-- reading: start / queue + completion date form (#64) -->
+  <div id="readingModalBackdrop" class="modal-backdrop" hidden onclick="if(event.target===this)closeReadingModal()">
+    <div class="modal">
+      <button class="modal-close" onclick="closeReadingModal()" aria-label="Close">&times;</button>
+      <div id="readingModalBody"></div>
+    </div>
+  </div>
   </div>
 
 <script>
@@ -757,6 +871,96 @@ function fuzzySelect(mount, opts){
   };
 }
 
+/* ── themed date picker (#64) ─────────────────────────────────────────────
+   A drop-in replacement for <input type="date">, which the browser renders in
+   its own (light, locale-driven) chrome — no theming, no forced yyyy-mm-dd, no
+   Monday-first week. This one is styled with the app's CSS variables, always
+   formats as yyyy-mm-dd, and starts the week on Monday. One shared calendar
+   popover (appended to <body>, like #themeTip) is bound to whichever field is
+   active, so nothing leaks when a modal's innerHTML is replaced.
+   datePicker(mount, {value, placeholder, onChange}) → {getValue, setValue, setDisabled}. */
+const DP_MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+const DP_DOW = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+let _dpCal = null, _dpActive = null;
+function dpPad(n){ return String(n).padStart(2, '0'); }
+function dpFmt(d){ return d.getFullYear() + '-' + dpPad(d.getMonth()+1) + '-' + dpPad(d.getDate()); }
+function dpParse(s){ const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s||''); return m ? new Date(+m[1], +m[2]-1, +m[3]) : null; }
+function dpCalEl(){
+  if(_dpCal) return _dpCal;
+  _dpCal = document.createElement('div');
+  _dpCal.className = 'dp-cal'; _dpCal.hidden = true;
+  document.body.appendChild(_dpCal);
+  document.addEventListener('mousedown', e => {
+    if(_dpCal.hidden) return;
+    if(_dpCal.contains(e.target)) return;
+    if(_dpActive && _dpActive.input === e.target) return;
+    hideDpCal();
+  }, true);
+  window.addEventListener('resize', hideDpCal);
+  document.addEventListener('scroll', hideDpCal, true);
+  return _dpCal;
+}
+function hideDpCal(){ if(_dpCal){ _dpCal.hidden = true; } _dpActive = null; }
+function openDpCal(input, state){
+  const cal = dpCalEl();
+  const sel = dpParse(state.value);
+  _dpActive = { input, state, cur: sel ? new Date(sel.getFullYear(), sel.getMonth(), 1) : new Date() };
+  renderDpCal();
+  cal.hidden = false;
+  const r = input.getBoundingClientRect();
+  // Prefer below the field; flip above if it would overflow the viewport.
+  let top = r.bottom + 4;
+  if(top + cal.offsetHeight > window.innerHeight - 8) top = Math.max(8, r.top - cal.offsetHeight - 4);
+  let left = Math.min(r.left, window.innerWidth - cal.offsetWidth - 8);
+  cal.style.top = top + 'px'; cal.style.left = Math.max(8, left) + 'px';
+}
+function dpShift(delta){ const c = _dpActive.cur; _dpActive.cur = new Date(c.getFullYear(), c.getMonth()+delta, 1); renderDpCal(); }
+function dpPick(ymd){
+  const st = _dpActive.state, input = _dpActive.input;
+  st.value = ymd; input.value = ymd;
+  hideDpCal();
+  st.onChange(ymd);
+}
+function renderDpCal(){
+  const cal = _dpCal, cur = _dpActive.cur, sel = _dpActive.state.value, todayStr = dpFmt(new Date());
+  const y = cur.getFullYear(), m = cur.getMonth();
+  const offset = (new Date(y, m, 1).getDay() + 6) % 7; // Monday-first leading days
+  const start = new Date(y, m, 1 - offset);
+  const cells = Math.ceil((offset + new Date(y, m+1, 0).getDate()) / 7) * 7;
+  let days = '';
+  for(let i = 0; i < cells; i++){
+    const d = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i);
+    const ymd = dpFmt(d);
+    const cls = ['dp-day'];
+    if(d.getMonth() !== m) cls.push('other');
+    if(ymd === todayStr) cls.push('today');
+    if(ymd === sel) cls.push('sel');
+    days += `<div class="${cls.join(' ')}" onclick="dpPick('${ymd}')">${d.getDate()}</div>`;
+  }
+  cal.innerHTML = `<div class="dp-head">
+      <button type="button" class="dp-nav" onclick="dpShift(-1)" aria-label="Previous month">‹</button>
+      <span class="dp-title">${DP_MONTHS[m]} ${y}</span>
+      <button type="button" class="dp-nav" onclick="dpShift(1)" aria-label="Next month">›</button>
+    </div>
+    <div class="dp-grid">${DP_DOW.map(d => `<div class="dp-dow">${d}</div>`).join('')}${days}</div>
+    <div class="dp-foot"><button type="button" class="dp-clear" onclick="dpPick('')">Clear</button></div>`;
+}
+function datePicker(mount, opts){
+  opts = opts || {};
+  const el = typeof mount === 'string' ? $(mount) : mount;
+  el.classList.add('dp');
+  el.innerHTML = `<input type="text" class="dp-input" readonly placeholder="${esc(opts.placeholder || 'yyyy-mm-dd')}">`;
+  const input = el.querySelector('input');
+  const state = { value: opts.value || '', onChange: opts.onChange || (()=>{}) };
+  input.value = state.value;
+  input.addEventListener('click', () => { if(!input.disabled) openDpCal(input, state); });
+  return {
+    getValue: () => state.value,
+    setValue: v => { state.value = v || ''; input.value = state.value; },
+    setDisabled: on => { input.disabled = !!on; if(on && _dpActive && _dpActive.input === input) hideDpCal(); },
+  };
+}
+
 /* time: stored UTC (RFC3339), shown in chosen IANA zone as YYYY-MM-DD HH:MM */
 const browserTz = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch(e){ return 'UTC'; } };
 let TZ = browserTz();
@@ -844,7 +1048,7 @@ function sseConnect(url, { headers = {}, onEvent, onOpen, onFatal } = {}){
    non-API path, so the client reads location on load + popstate and activates
    the matching tab. The section ids match the data-s values; only Randomizer's
    path differs (section id "randomize" ↔ path "randomizer"). */
-const TAB_TO_PATH = { updates:'updates', books:'books', randomize:'randomizer',
+const TAB_TO_PATH = { updates:'updates', books:'books', reading:'reading', randomize:'randomizer',
   sources:'sources', settings:'settings', logs:'logs', about:'about' };
 const PATH_TO_TAB = Object.fromEntries(Object.entries(TAB_TO_PATH).map(([t,p]) => [p,t]));
 
@@ -855,8 +1059,13 @@ function showTab(tab){
   document.querySelectorAll('#nav button').forEach(x => x.classList.toggle('active', x.dataset.s===tab));
   document.querySelectorAll('section').forEach(s => s.classList.toggle('active', s.id===tab));
   if(tab === 'randomize') rerollRandomize();
+  if(tab === 'reading') loadReading();
   return tab;
 }
+
+// gotoTab activates a tab AND pushes its history entry (an in-app link, unlike a
+// nav click which the delegated listener already handles).
+function gotoTab(tab){ const t = showTab(tab); history.pushState({tab:t}, '', navPath(t)); }
 
 // navPath is the URL for a tab, carrying the current kind filter as ?kind= on
 // Books/Updates so back/forward and a copied link stay pre-filtered.
@@ -1190,7 +1399,8 @@ function noteCoverSrc(){
 
 function renderNoteView(){
   const n = _noteModal.note, isBook = _noteModal.kind === 'book';
-  const headerActions = `<button class="btn ghost" onclick="startNoteEdit()">Edit</button>`;
+  const headerActions = `<button class="btn ghost" onclick="readFromNoteModal(${_noteModal.id})" title="Start reading / add to queue">＋ Read</button>
+    <button class="btn ghost" onclick="startNoteEdit()">Edit</button>`;
   $('previewModalBody').innerHTML = bookPreviewModal(
     { cover: noteCoverSrc(), title: n.title, author: n.author,
       released: isBook ? n.released_en : '', link: n.link, workId: n.work_id,
@@ -1198,6 +1408,9 @@ function renderNoteView(){
     { mode:'read-only', linkLabel: isBook ? 'open on OL ↗' : 'open source ↗', headerActions });
 }
 
+// readFromNoteModal closes the note modal and opens the start/queue form for the
+// same book, so the two modals don't stack.
+function readFromNoteModal(id){ closeRelPreview(); openReadingAdd(id); }
 function startNoteEdit(){ _coverPending = null; renderNoteEdit(); }
 function cancelNoteEdit(){ _coverPending = null; renderNoteView(); }
 
@@ -1498,7 +1711,8 @@ function renderBooksTable(list, q){
       : x.volumes;
     return `<tr><td><a href="#" class="note-open" tabindex="-1" onclick="openNoteModal(${x.id});return false" title="View / edit note">${fzHighlight(x.title, q)}</a></td><td>${volCell}</td><td><a href="${esc(x.link)}" target="_blank" tabindex="-1">link</a></td>
      <td class="nowrap"><small>${esc(fmtTime(x.last_checked_at))}</small></td>
-     <td><button class="btn ghost" title="${esc(UNTRACK_TIP)}" tabindex="-1" onclick="openDeleteModal(${x.id})">Untrack</button></td></tr>`;
+     <td class="nowrap"><button class="btn ghost" title="Start reading / add to queue" tabindex="-1" onclick="openReadingAdd(${x.id})">＋ Read</button>
+     <button class="btn ghost" title="${esc(UNTRACK_TIP)}" tabindex="-1" onclick="openDeleteModal(${x.id})">Untrack</button></td></tr>`;
   }).join('')
     : `<tr><td colspan="5" class="empty-state">${booksEmptyMessage(q)}</td></tr>`;
 }
@@ -1516,6 +1730,7 @@ function renderBooksGrid(list, q){
       <a class="cover-link" href="#" tabindex="-1" onclick="openNoteModal(${x.id});return false" title="View / edit note">
         ${img}<span class="cover-title">${fzHighlight(x.title, q)}</span>${meta}</a>
       ${vol}
+      <button class="cover-read" title="Start reading / add to queue" aria-label="Start reading / add to queue" tabindex="-1" onclick="openReadingAdd(${x.id})">＋</button>
       <button class="cover-x" title="${esc(UNTRACK_TIP)}" aria-label="Untrack" tabindex="-1" onclick="openDeleteModal(${x.id})">&times;</button>
     </div>`;
   }).join('') : `<div class="empty-state">${booksEmptyMessage(q)}</div>`;
@@ -1564,6 +1779,423 @@ function renderRandomizeGrid(){
     </div>`;
   }).join('') : `<div class="empty-state">${randomizeEmptyMessage()}</div>`;
 }
+
+/* ── Reading tab (#64): currently-reading, queue, recently-completed ──────
+   State lives server-side: the reading_items table (queue + in-progress) and
+   the _Read.md log (completed, via #63). This module loads all three lists,
+   wires HTML5 drag-reorder on the queue, and drives the start/queue entry-point
+   modal and the completion date form. */
+let _readingState = { reading: [], queue: [] };
+let _readingReads = [];        // parsed _Read.md rows (Completed list + ×N badges)
+let _readingConfigured = false;
+
+async function loadReading(){
+  const [state, completed] = await Promise.all([
+    getJSON('/api/reading/queue').catch(() => ({ reading:[], queue:[] })),
+    getJSON('/api/reading/completed').catch(() => ({ configured:false, reads:[] })),
+  ]);
+  _readingState = { reading: state.reading || [], queue: state.queue || [] };
+  _readingReads = completed.reads || [];
+  _readingConfigured = !!completed.configured;
+  $('readingNoLog').hidden = _readingConfigured;
+  renderReadingNow();
+  renderReadingQueue();
+  renderReadingCompleted();
+}
+
+// rereadCount reports how many times (title, volume) appears in the log — the
+// ×N badge shows at 2+.
+function rereadCount(title, volume){
+  const t = (title||'').trim(), v = (volume||'').trim();
+  let n = 0;
+  for(const r of _readingReads){ if((r.title||'').trim() === t && (r.volume||'').trim() === v) n++; }
+  return n;
+}
+// authorLinkHTML renders an author name as a link that jumps to the Books tab
+// filtered by that author. Uses a data-attr + delegated handler (below) so names
+// with quotes/apostrophes can't break an inline onclick.
+function authorLinkHTML(name){
+  return name ? `<a href="#" class="rd-author" data-author="${esc(name)}">${esc(name)}</a>` : '';
+}
+// completedAuthor looks up the author of a completed-log title from the tracked
+// books (the log itself carries no author).
+function completedAuthor(title){
+  const b = booksData.find(x => x.title === title);
+  return b ? b.author : '';
+}
+function readingUnitSub(it){ return authorLinkHTML(it.author); }
+
+// filterBooksByAuthor jumps to the Books tab filtered by an author (from an
+// author link in the Reading tab). Clears any conflicting content filters so the
+// author's books actually show, whatever kind view is active.
+function filterBooksByAuthor(name){
+  gotoTab('books');
+  if($('bookFilter')) $('bookFilter').value = '';
+  if($('authorQueryInput')) $('authorQueryInput').value = '';
+  authorQuery = '';
+  setKindView(''); // an author may span kinds; show all so nothing's hidden
+  authorFilter = name;
+  updateAuthorOptions();
+  if(authorPicker) authorPicker.setValue(name);
+  renderBooks('');
+}
+// Delegated: any .rd-author link (reading tiles, completed list) filters Books.
+document.addEventListener('click', e => {
+  const a = e.target.closest('.rd-author');
+  if(!a) return;
+  e.preventDefault();
+  filterBooksByAuthor(a.dataset.author);
+});
+function rdVolBadge(it){ return it.volume ? `<span class="cover-vol" title="Volume ${esc(it.volume)}">Vol ${esc(it.volume)}</span>` : ''; }
+// rdTileInner is the shared cover-link + badges of a reading tile. extraSub is an
+// optional pre-escaped snippet appended to the sub line (e.g. "since <date>").
+function rdTileInner(it, extraSub){
+  const img = it.cover
+    ? `<img class="cover-img" src="/api/cover/${it.book_id}" alt="" draggable="false" loading="lazy" onerror="this.closest('.cover-card').classList.add('nocover');this.remove();">`
+    : '';
+  const sub = [readingUnitSub(it), extraSub].filter(Boolean).join(' · ');
+  return `<a class="cover-link" href="#" tabindex="-1" onclick="openNoteModal(${it.book_id});return false" title="View / edit note">
+      ${img}<span class="cover-title">${esc(it.title)}</span>
+      ${sub ? `<div class="cover-title" style="padding-top:0"><small class="muted">${sub}</small></div>` : ''}
+    </a>${rdVolBadge(it)}`;
+}
+
+function renderReadingNow(){
+  const list = _readingState.reading;
+  $('readingNowList').className = 'cover-grid';
+  $('readingNowList').innerHTML = list.length ? list.map(it => {
+    const since = it.start_date ? 'since ' + esc(it.start_date) : '';
+    return `<div class="cover-card${it.cover ? '' : ' nocover'}">
+      ${rdTileInner(it, since)}
+      <button class="cover-done" title="Mark completed" aria-label="Mark completed" tabindex="-1" onclick="openCompletionForm(${it.id})">✓</button>
+      <button class="cover-x" title="Remove from currently reading" aria-label="Remove" tabindex="-1" onclick="removeReadingItem(${it.id})">&times;</button>
+    </div>`;
+  }).join('') : `<div class="empty-state">Nothing in progress — start a book from the Books tab or your queue below.</div>`;
+}
+
+function renderReadingQueue(){
+  const list = _readingState.queue;
+  $('queueHint').hidden = list.length < 2;
+  $('readingQueueList').className = 'cover-grid';
+  $('readingQueueList').innerHTML = list.length ? list.map(it =>
+    `<div class="cover-card${it.cover ? '' : ' nocover'}" draggable="true" data-id="${it.id}"
+         ondragstart="queueDragStart(event,${it.id})" ondragend="queueDragEnd(event)"
+         ondragover="queueDragOver(event)" ondragleave="event.currentTarget.classList.remove('dragover')"
+         ondrop="queueDrop(event,${it.id})">
+      ${rdTileInner(it)}
+      <button class="cover-start" title="Start reading" aria-label="Start reading" tabindex="-1" onclick="startQueuedItem(${it.id})">▶</button>
+      <button class="cover-x" title="Remove from queue" aria-label="Remove" tabindex="-1" onclick="removeReadingItem(${it.id})">&times;</button>
+    </div>`
+  ).join('') : `<div class="empty-state">Queue is empty — add books to read next from the Books tab.</div>`;
+}
+
+// _completedEditMode gates the per-row edit/delete controls in the Recently-
+// completed list: off by default (a clean history view), flipped on by the Edit
+// toggle so the controls appear on hover.
+let _completedEditMode = false;
+function toggleCompletedEdit(){ _completedEditMode = !_completedEditMode; renderReadingCompleted(); }
+function updateCompletedEditToggle(){
+  const b = $('completedEditToggle');
+  if(b){ b.textContent = _completedEditMode ? 'Done' : 'Edit'; b.classList.toggle('active', _completedEditMode); }
+  const hint = $('completedEditHint');
+  if(hint) hint.hidden = !_completedEditMode || $('completedEditToggle').hidden;
+}
+function renderReadingCompleted(){
+  const el = $('readingCompletedList');
+  if(!_readingConfigured){
+    el.className = 'cover-grid';
+    el.innerHTML = `<div class="empty-state">No reading log configured yet.</div>`;
+    return;
+  }
+  // The log is append-order oldest→newest; keep each row's file-order index (for
+  // edit/delete) while showing newest first.
+  const list = _readingReads.map((r, i) => ({ r, i })).reverse();
+  $('completedEditToggle').hidden = !list.length;
+  if(!list.length) _completedEditMode = false;
+  updateCompletedEditToggle();
+  // Per-row edit controls only render in edit mode (revealed on hover via CSS);
+  // the list picks up the .rd-editing class to gate the hover reveal.
+  el.className = (list.length ? 'rd-list' : 'cover-grid') + (_completedEditMode ? ' rd-editing' : '');
+  el.innerHTML = list.length ? list.map(({ r, i }) => {
+    const n = rereadCount(r.title, r.volume);
+    const badge = n >= 2 ? `<span class="rd-reread" title="Read ${n} times">×${n}</span>` : '';
+    const abandoned = r.abandoned ? `<span class="rd-abandoned" title="Started but not finished">abandoned</span>` : '';
+    const dates = r.abandoned
+      ? (r.start ? 'from ' + esc(r.start) : (r.year_month ? esc(r.year_month) : '—'))
+      : ([r.start, r.end].filter(Boolean).join(' → ') || (r.year_month ? esc(r.year_month) : '—'));
+    const author = completedAuthor(r.title);
+    const meta = [r.volume ? 'Vol ' + esc(r.volume) : '', author ? authorLinkHTML(author) : '', dates].filter(Boolean).join(' · ');
+    const controls = _completedEditMode ? `<div class="rd-editctl">
+        <button class="rd-edit-btn" title="Edit this entry" aria-label="Edit" onclick="openCompletedEdit(${i})">✎</button>
+        <button class="rd-del-x" title="Delete this entry" aria-label="Delete" onclick="openCompletedDelete(${i})">&times;</button>
+      </div>` : '';
+    return `<div class="rd-item">
+      <div class="rd-main">
+        <div class="rd-title">${esc(r.title)}</div>
+        <div class="rd-sub">${meta}</div>
+      </div>
+      <div class="rd-actions">
+        ${r.volume ? `<span class="rd-vol">Vol ${esc(r.volume)}</span>` : ''}${abandoned}${badge}${controls}
+      </div>
+    </div>`;
+  }).join('') : `<div class="empty-state">No completed reads logged yet.</div>`;
+}
+
+/* queue drag-reorder — HTML5 native. Reorders _readingState.queue locally for an
+   instant repaint, then persists the new id order. */
+let _queueDragId = null;
+function queueDragStart(e, id){ _queueDragId = id; e.currentTarget.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move'; }
+function queueDragEnd(e){ e.currentTarget.classList.remove('dragging'); document.querySelectorAll('#readingQueueList .cover-card').forEach(x => x.classList.remove('dragover')); _queueDragId = null; }
+function queueDragOver(e){ e.preventDefault(); e.dataTransfer.dropEffect = 'move'; e.currentTarget.classList.add('dragover'); }
+function queueDrop(e, targetId){
+  e.preventDefault();
+  e.currentTarget.classList.remove('dragover');
+  if(_queueDragId == null || _queueDragId === targetId) return;
+  const q = _readingState.queue;
+  const from = q.findIndex(x => x.id === _queueDragId);
+  const to = q.findIndex(x => x.id === targetId);
+  if(from < 0 || to < 0) return;
+  const [moved] = q.splice(from, 1);
+  q.splice(to, 0, moved);
+  renderReadingQueue();
+  send('PUT', '/api/reading/queue', { ids: q.map(x => x.id) }).then(r => { if(!r.ok) loadReading(); });
+}
+
+async function startQueuedItem(id){
+  const r = await send('POST', '/api/reading/' + id + '/start');
+  if(need(r)) return;
+  if(!r.ok) return toast('Error: ' + (r.data.error || r.status), 'error');
+  toast('Started reading.', 'success');
+  loadReading();
+}
+async function removeReadingItem(id){
+  const r = await send('DELETE', '/api/reading/' + id);
+  if(need(r)) return;
+  if(!r.ok) return toast('Error: ' + (r.data.error || r.status), 'error');
+  loadReading();
+}
+
+/* ── start / queue entry-point modal ──────────────────────────────────────
+   Opened from a book row/card/note-modal. For an LN it offers a volume field
+   pre-filled with the suggested next volume (server-computed from the log). */
+function closeReadingModal(){ hideDpCal(); $('readingModalBackdrop').hidden = true; $('readingModalBody').innerHTML = '';
+  _rdStartPicker = _cmpStartPicker = _cmpEndPicker = _editStartPicker = _editEndPicker = null; _editIndex = null; }
+
+async function openReadingAdd(bookId){
+  const book = booksData.find(b => b.id === bookId);
+  if(!book) return toast('Book not found — refresh and try again.', 'error');
+  const isBook = bookKind(book) === 'book';
+  let suggested = '';
+  if(!isBook){
+    try { const nv = await getJSON('/api/reading/next-volume?book_id=' + bookId); suggested = (nv && nv.volume) || ''; }
+    catch(e){ suggested = ''; }
+  }
+  const volRow = isBook ? '' : `<div class="row" style="align-items:center;gap:.5rem;margin-top:.6rem">
+      <label style="color:var(--subtext);white-space:nowrap;width:90px">Volume</label>
+      <input id="rdVolInput" type="number" min="1" ${book.volumes ? 'max="'+book.volumes+'"' : ''} value="${esc(suggested)}" style="width:90px">
+      ${book.volumes ? `<small class="muted">of ${book.volumes}</small>` : ''}
+    </div>`;
+  $('readingModalBody').innerHTML = `<div class="card">
+    <h3 style="margin-top:0">${esc(book.title)}</h3>
+    <p class="muted" style="margin:.2rem 0">${isBook ? 'Add this book to your reading queue, or start it now.' : 'Pick a volume, then queue it or start reading now.'}</p>
+    ${volRow}
+    <div class="row" style="align-items:center;gap:.5rem;margin-top:.6rem">
+      <label style="color:var(--subtext);white-space:nowrap;width:90px">Start date</label>
+      <div id="rdStartMount" style="width:170px"></div>
+      <small class="muted">optional — for Start reading</small>
+    </div>
+    <div class="row" style="margin-top:1rem;justify-content:flex-end;gap:.5rem">
+      <button class="btn ghost" onclick="closeReadingModal()">Cancel</button>
+      <button class="btn ghost" onclick="submitReadingAdd(${bookId},'queue')">Add to queue</button>
+      <button class="btn" onclick="submitReadingAdd(${bookId},'start')">Start reading</button>
+    </div>
+  </div>`;
+  _rdStartPicker = datePicker('rdStartMount', { value: '', placeholder: 'defaults to today' });
+  $('readingModalBackdrop').hidden = false;
+}
+let _rdStartPicker = null;
+async function submitReadingAdd(bookId, action){
+  const volEl = $('rdVolInput');
+  const volume = volEl ? volEl.value.trim() : '';
+  const url = action === 'start' ? '/api/reading/start' : '/api/reading/queue';
+  const body = { book_id: bookId, volume };
+  if(action === 'start' && _rdStartPicker) body.start_date = _rdStartPicker.getValue();
+  const r = await send('POST', url, body);
+  if(need(r)) return;
+  if(!r.ok) return toast('Error: ' + (r.data.error || r.status), 'error');
+  closeReadingModal();
+  toast(action === 'start' ? 'Started reading.' : 'Added to queue.', 'success');
+  if($('reading').classList.contains('active')) loadReading();
+}
+
+/* ── completion date form (#63/#64) ───────────────────────────────────────
+   ✓ Done on a currently-reading item. Collects start/end dates (start
+   pre-filled from when the read began) or an "I don't remember" toggle, then
+   POSTs the completion — which appends the log row and clears the item. */
+let _cmpStartPicker = null, _cmpEndPicker = null;
+function openCompletionForm(itemId){
+  const it = _readingState.reading.find(x => x.id === itemId);
+  if(!it) return;
+  const today = new Date().toISOString().slice(0, 10);
+  $('readingModalBody').innerHTML = `<div class="card">
+    <h3 style="margin-top:0">Mark completed</h3>
+    <div class="rd-sub" style="margin-bottom:.6rem">${esc(it.title)}${it.volume ? ' · Vol ' + esc(it.volume) : ''}</div>
+    <div class="ne-grid">
+      <label>Started</label>
+      <div id="cmpStartMount"></div>
+      <label>Finished</label>
+      <div id="cmpEndMount"></div>
+    </div>
+    <label style="display:flex;align-items:center;gap:.5rem;margin-top:.6rem;color:var(--subtext)">
+      <input id="cmpUnknown" type="checkbox" onchange="cmpToggleUnknown(this.checked)"> I don’t remember the dates
+    </label>
+    <div class="row" style="margin-top:1rem;justify-content:space-between;gap:.5rem">
+      <button class="btn ghost danger" id="cmpAbandonBtn" onclick="submitAbandon(${itemId})" title="Log as started but not finished (----)">Abandon</button>
+      <div class="row" style="gap:.5rem;margin:0">
+        <button class="btn ghost" onclick="closeReadingModal()">Cancel</button>
+        <button class="btn" id="cmpSaveBtn" onclick="submitCompletion(${itemId})">Log completed</button>
+      </div>
+    </div>
+  </div>`;
+  _cmpStartPicker = datePicker('cmpStartMount', { value: it.start_date || '' });
+  _cmpEndPicker = datePicker('cmpEndMount', { value: today });
+  $('readingModalBackdrop').hidden = false;
+}
+function cmpToggleUnknown(on){
+  if(_cmpStartPicker) _cmpStartPicker.setDisabled(on);
+  if(_cmpEndPicker) _cmpEndPicker.setDisabled(on);
+}
+async function submitCompletion(itemId){
+  const it = _readingState.reading.find(x => x.id === itemId);
+  if(!it) return;
+  if(!_readingConfigured){ return toast('Set a reading log note in Settings first.', 'error'); }
+  const unknown = $('cmpUnknown').checked;
+  const btn = $('cmpSaveBtn'); if(btn) btn.disabled = true;
+  const body = { volume: it.volume, reading_item_id: it.id, unknown };
+  if(!unknown){ body.start = _cmpStartPicker.getValue(); body.end = _cmpEndPicker.getValue(); }
+  const r = await send('POST', '/api/books/' + it.book_id + '/complete', body);
+  if(need(r)){ if(btn) btn.disabled = false; return; }
+  if(!r.ok){ if(btn) btn.disabled = false; return toast('Error: ' + (r.data.error || r.status), 'error'); }
+  closeReadingModal();
+  toast('Logged as completed.', 'success');
+  loadReading();
+  loadBooks(); // a #Book flip to Completed changes the Books feed
+  loadEvents();
+}
+// submitAbandon logs the read as started-but-not-finished (a `----` end marker),
+// keeping the Started date; a #Book is set to Dropped. Uses the same form, so the
+// user can adjust or blank ("I don't remember") the start date first.
+async function submitAbandon(itemId){
+  const it = _readingState.reading.find(x => x.id === itemId);
+  if(!it) return;
+  if(!_readingConfigured){ return toast('Set a reading log note in Settings first.', 'error'); }
+  const unknown = $('cmpUnknown').checked;
+  const btn = $('cmpAbandonBtn'); if(btn) btn.disabled = true;
+  const body = { volume: it.volume, reading_item_id: it.id, abandoned: true };
+  if(!unknown) body.start = _cmpStartPicker.getValue();
+  const r = await send('POST', '/api/books/' + it.book_id + '/complete', body);
+  if(need(r)){ if(btn) btn.disabled = false; return; }
+  if(!r.ok){ if(btn) btn.disabled = false; return toast('Error: ' + (r.data.error || r.status), 'error'); }
+  closeReadingModal();
+  toast('Marked as abandoned.', 'success');
+  loadReading();
+  loadBooks(); // a #Book flip to Dropped changes the Books feed
+  loadEvents();
+}
+
+/* ── edit / delete a completed-log entry (#64) ────────────────────────────
+   The reading log is normally append-only; these two paths rewrite or drop a
+   single row (server-side, by file-order index + a title guard against a stale
+   index). Dates round-trip through the log's yyyy.mm.dd form and the picker's
+   yyyy-mm-dd form. */
+let _editStartPicker = null, _editEndPicker = null, _editIndex = null;
+// dotsToDash / normalizes a log date (2026.07.06) to the picker's yyyy-mm-dd.
+function dotsToDash(s){ return (s || '').replace(/\./g, '-'); }
+function openCompletedEdit(index){
+  const r = _readingReads[index];
+  if(!r) return;
+  _editIndex = index;
+  $('readingModalBody').innerHTML = `<div class="card">
+    <h3 style="margin-top:0">Edit entry</h3>
+    <div class="rd-sub" style="margin-bottom:.6rem">${esc(r.title)}</div>
+    <div class="ne-grid">
+      <label>Volume</label>
+      <input id="editVol" type="text" value="${esc(r.volume || '')}" placeholder="blank for a whole book" style="width:120px">
+      <label>Started</label>
+      <div id="editStartMount"></div>
+      <label>Finished</label>
+      <div id="editEndMount"></div>
+    </div>
+    <label style="display:flex;align-items:center;gap:.5rem;margin-top:.6rem;color:var(--subtext)">
+      <input id="editUnknown" type="checkbox" onchange="editToggle()"> I don’t remember the dates
+    </label>
+    <label style="display:flex;align-items:center;gap:.5rem;margin-top:.3rem;color:var(--subtext)">
+      <input id="editAbandoned" type="checkbox" ${r.abandoned ? 'checked' : ''} onchange="editToggle()"> Abandoned (started, not finished)
+    </label>
+    <div class="row" style="margin-top:1rem;justify-content:flex-end;gap:.5rem">
+      <button class="btn ghost" onclick="closeReadingModal()">Cancel</button>
+      <button class="btn" id="editSaveBtn" onclick="submitCompletedEdit()">Save</button>
+    </div>
+  </div>`;
+  _editStartPicker = datePicker('editStartMount', { value: dotsToDash(r.start) });
+  _editEndPicker = datePicker('editEndMount', { value: dotsToDash(r.end) });
+  editToggle();
+  $('readingModalBackdrop').hidden = false;
+}
+// editToggle disables the date fields that don't apply: unknown blanks both,
+// abandoned blanks only the finish date (it becomes the ---- marker).
+function editToggle(){
+  const unknown = $('editUnknown').checked, abandoned = $('editAbandoned').checked;
+  if(_editStartPicker) _editStartPicker.setDisabled(unknown);
+  if(_editEndPicker) _editEndPicker.setDisabled(unknown || abandoned);
+}
+async function submitCompletedEdit(){
+  if(_editIndex == null) return;
+  const r = _readingReads[_editIndex];
+  const unknown = $('editUnknown').checked, abandoned = $('editAbandoned').checked;
+  const btn = $('editSaveBtn'); if(btn) btn.disabled = true;
+  const body = { index: _editIndex, title: r.title, volume: $('editVol').value.trim(), unknown, abandoned };
+  if(!unknown){ body.start = _editStartPicker.getValue(); if(!abandoned) body.end = _editEndPicker.getValue(); }
+  const res = await send('PUT', '/api/reading/completed', body);
+  if(need(res)){ if(btn) btn.disabled = false; return; }
+  if(res.status === 409){ if(btn) btn.disabled = false; return toast(res.data.error || 'The log changed — refreshed; try again.', 'error'), loadReading(); }
+  if(!res.ok){ if(btn) btn.disabled = false; return toast('Error: ' + (res.data.error || res.status), 'error'); }
+  closeReadingModal();
+  toast('Entry updated.', 'success');
+  loadReading();
+  loadEvents();
+}
+function openCompletedDelete(index){
+  const r = _readingReads[index];
+  if(!r) return;
+  _editIndex = index;
+  const bits = [r.volume ? 'Vol ' + esc(r.volume) : '', r.start ? esc(r.start) : '', r.abandoned ? 'abandoned' : ''].filter(Boolean).join(' · ');
+  $('readingModalBody').innerHTML = `<div class="card">
+    <h3 style="margin-top:0">Delete entry?</h3>
+    <p class="muted" style="margin:.3rem 0"><b>${esc(r.title)}</b>${bits ? ' — ' + bits : ''}</p>
+    <p class="muted" style="margin:.3rem 0">This removes the row from your reading log. It doesn’t touch the book’s note.</p>
+    <div class="row" style="margin-top:1rem;justify-content:flex-end;gap:.5rem">
+      <button class="btn ghost" onclick="closeReadingModal()">Cancel</button>
+      <button class="btn ghost danger" id="delEntryBtn" onclick="submitCompletedDelete()">Delete</button>
+    </div>
+  </div>`;
+  $('readingModalBackdrop').hidden = false;
+}
+async function submitCompletedDelete(){
+  if(_editIndex == null) return;
+  const r = _readingReads[_editIndex];
+  const btn = $('delEntryBtn'); if(btn) btn.disabled = true;
+  const url = '/api/reading/completed?index=' + _editIndex + '&title=' + encodeURIComponent(r.title);
+  const res = await send('DELETE', url);
+  if(need(res)){ if(btn) btn.disabled = false; return; }
+  if(res.status === 409){ if(btn) btn.disabled = false; toast(res.data.error || 'The log changed — refreshed.', 'error'); return loadReading(); }
+  if(!res.ok){ if(btn) btn.disabled = false; return toast('Error: ' + (res.data.error || res.status), 'error'); }
+  closeReadingModal();
+  toast('Entry deleted.', 'success');
+  loadReading();
+  loadEvents();
+}
+
 /* untrack-vs-delete modal (#58) */
 let _deleteModal = null; // { id, title }
 function openDeleteModal(id){
@@ -1847,7 +2479,10 @@ function resetAddPanels(){
 }
 document.addEventListener('keydown', e => {
   if(e.key !== 'Escape') return;
+  if(_dpCal && !_dpCal.hidden) return hideDpCal(); // close the date calendar before its modal
+  if(!$('readingModalBackdrop').hidden) return closeReadingModal();
   if(!$('previewModalBackdrop').hidden) return closeRelPreview();
+  if(!$('deleteModalBackdrop').hidden) return closeDeleteModal();
   if(!$('addModalBackdrop').hidden) closeAddModal();
 });
 async function startAdd(){

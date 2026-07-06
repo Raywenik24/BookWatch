@@ -162,6 +162,24 @@ var migrations = []string{
 	// normal one so the UI can label it.
 	`ALTER TABLE trackers ADD COLUMN watch_pl_translation INTEGER NOT NULL DEFAULT 0;
 	 ALTER TABLE releases ADD COLUMN kind TEXT NOT NULL DEFAULT '';`,
+	// v8: reading queue + currently-reading state (issue #64). One row per unit a
+	// tracked note can be in — a whole #Book (volume '') or one LN volume — held
+	// in exactly one state at a time: 'queue' (ordered by queue_pos) or 'reading'
+	// (in progress, start_date stamped when the read began). Completion doesn't
+	// live here — that's the `_Read.md` log (#63); finishing an item just deletes
+	// its row. ON DELETE CASCADE ties it to the book, so untracking a note clears
+	// its reading state too. UNIQUE(book_id, volume) keeps a unit from being
+	// queued and started at once.
+	`CREATE TABLE reading_items (
+		id         INTEGER PRIMARY KEY,
+		book_id    INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+		volume     TEXT NOT NULL DEFAULT '',
+		state      TEXT NOT NULL,
+		queue_pos  INTEGER NOT NULL DEFAULT 0,
+		start_date TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL,
+		UNIQUE(book_id, volume)
+	);`,
 }
 
 func (s *Store) migrate() error {
@@ -937,4 +955,150 @@ func (s *Store) UndismissRelease(id int64) error {
 func (s *Store) MarkReleaseCreated(id int64) error {
 	_, err := s.db.Exec(`UPDATE releases SET created=1, created_at=? WHERE id=?`, now(), id)
 	return err
+}
+
+// ── reading items: queue + currently-reading (#64) ────────────
+
+// ReadingItem is one queued or in-progress reading unit, joined to its book's
+// note so the Reading tab can render a card without a second lookup. Volume is
+// blank for a whole #Book, set for an LN volume.
+type ReadingItem struct {
+	ID        int64  `json:"id"`
+	BookID    int64  `json:"book_id"`
+	Volume    string `json:"volume"`
+	State     string `json:"state"` // "queue" | "reading"
+	QueuePos  int    `json:"queue_pos"`
+	StartDate string `json:"start_date"`
+	CreatedAt string `json:"created_at"`
+	// Joined from books, for the UI.
+	Title   string `json:"title"`
+	Cover   string `json:"cover"`
+	Kind    string `json:"kind"`
+	Author  string `json:"author"`
+	Volumes int    `json:"volumes"`
+	Link    string `json:"link"`
+	Path    string `json:"path"`
+	Status  string `json:"status"`
+}
+
+// StartReadingItem puts (bookID, volume) into the 'reading' state, stamping
+// startDate, and returns the row id. A unit already queued or being read is
+// moved/refreshed in place (UNIQUE(book_id, volume)); its queue_pos is cleared
+// since it's no longer queued.
+func (s *Store) StartReadingItem(bookID int64, volume, startDate string) (int64, error) {
+	_, err := s.db.Exec(`
+		INSERT INTO reading_items(book_id, volume, state, queue_pos, start_date, created_at)
+		VALUES(?,?,'reading',0,?,?)
+		ON CONFLICT(book_id, volume) DO UPDATE SET
+			state='reading', queue_pos=0, start_date=excluded.start_date`,
+		bookID, volume, startDate, now())
+	if err != nil {
+		return 0, err
+	}
+	return s.readingItemID(bookID, volume)
+}
+
+// QueueReadingItem appends (bookID, volume) to the end of the queue and returns
+// the row id. A unit already present (queued or being read) is left in place —
+// re-queuing shouldn't yank a book out of currently-reading or reshuffle it.
+func (s *Store) QueueReadingItem(bookID int64, volume string) (int64, error) {
+	var maxPos int
+	if err := s.db.QueryRow(`SELECT COALESCE(MAX(queue_pos), 0) FROM reading_items WHERE state='queue'`).Scan(&maxPos); err != nil {
+		return 0, err
+	}
+	_, err := s.db.Exec(`
+		INSERT INTO reading_items(book_id, volume, state, queue_pos, start_date, created_at)
+		VALUES(?,?,'queue',?,'',?)
+		ON CONFLICT(book_id, volume) DO NOTHING`,
+		bookID, volume, maxPos+1, now())
+	if err != nil {
+		return 0, err
+	}
+	return s.readingItemID(bookID, volume)
+}
+
+func (s *Store) readingItemID(bookID int64, volume string) (int64, error) {
+	var id int64
+	err := s.db.QueryRow(`SELECT id FROM reading_items WHERE book_id=? AND volume=?`, bookID, volume).Scan(&id)
+	return id, err
+}
+
+// StartQueuedItem moves an existing queued row into currently-reading, stamping
+// startDate.
+func (s *Store) StartQueuedItem(id int64, startDate string) error {
+	_, err := s.db.Exec(`UPDATE reading_items SET state='reading', queue_pos=0, start_date=? WHERE id=?`, startDate, id)
+	return err
+}
+
+// DeleteReadingItem removes a queued/in-progress row (used to drop it, or after
+// a completion moves it into the `_Read.md` log).
+func (s *Store) DeleteReadingItem(id int64) error {
+	_, err := s.db.Exec(`DELETE FROM reading_items WHERE id=?`, id)
+	return err
+}
+
+// GetReadingItem fetches one row joined to its book (ok=false if no row).
+func (s *Store) GetReadingItem(id int64) (ReadingItem, bool, error) {
+	items, err := s.queryReadingItems(`WHERE ri.id=?`, "", id)
+	if err != nil {
+		return ReadingItem{}, false, err
+	}
+	if len(items) == 0 {
+		return ReadingItem{}, false, nil
+	}
+	return items[0], true, nil
+}
+
+// ListReadingItems returns rows in the given state ("queue" or "reading"),
+// joined to their book note. Queue rows come back in queue_pos order;
+// currently-reading rows newest-start first.
+func (s *Store) ListReadingItems(state string) ([]ReadingItem, error) {
+	order := `ri.start_date DESC, ri.id DESC`
+	if state == "queue" {
+		order = `ri.queue_pos, ri.id`
+	}
+	return s.queryReadingItems(`WHERE ri.state=?`, order, state)
+}
+
+func (s *Store) queryReadingItems(where, order string, args ...any) ([]ReadingItem, error) {
+	q := `SELECT ri.id, ri.book_id, ri.volume, ri.state, ri.queue_pos, ri.start_date, ri.created_at,
+	             b.title, b.cover, b.kind, b.author, b.volumes, b.link, b.path, b.status
+	      FROM reading_items ri JOIN books b ON b.id = ri.book_id ` + where
+	if order != "" {
+		q += ` ORDER BY ` + order
+	}
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ReadingItem
+	for rows.Next() {
+		var it ReadingItem
+		if err := rows.Scan(&it.ID, &it.BookID, &it.Volume, &it.State, &it.QueuePos, &it.StartDate, &it.CreatedAt,
+			&it.Title, &it.Cover, &it.Kind, &it.Author, &it.Volumes, &it.Link, &it.Path, &it.Status); err != nil {
+			return nil, err
+		}
+		out = append(out, it)
+	}
+	return out, rows.Err()
+}
+
+// ReorderQueue rewrites the queue order to match ids (positions 1..n). Ids not
+// in the queue are ignored; queued rows absent from ids keep their old position
+// (pushed after the reordered ones on the next read since they weren't renumbered
+// — callers pass the full set). Runs in one transaction so a partial reorder
+// can't leave a half-renumbered queue.
+func (s *Store) ReorderQueue(ids []int64) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for i, id := range ids {
+		if _, err := tx.Exec(`UPDATE reading_items SET queue_pos=? WHERE id=? AND state='queue'`, i+1, id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }

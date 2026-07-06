@@ -447,6 +447,238 @@ func mustRead(t *testing.T, path string) []byte {
 	return b
 }
 
+// Reading tab (#64): queue an LN volume, start another, reorder the queue,
+// promote a queued item to reading, and complete a reading item — which must
+// append the log row AND clear the item out of currently-reading.
+func TestReadingQueueFlow(t *testing.T) {
+	h, st, vaultDir := newTestServer(t)
+	logPath := filepath.Join(vaultDir, "_Read.md")
+	os.WriteFile(logPath, []byte("| 202506 | [[Seed]] | 1 |  |  |\n| --- | --- | ---: | --- | --- |\n"), 0o644)
+	st.SetSetting("reading_log_path", logPath)
+
+	notePath := filepath.Join(vaultDir, "Hell Mode.md")
+	os.WriteFile(notePath, []byte("---\ntags:\n  - \"#LightNovel\"\nStatus:\n  - Backlog\n---\n"), 0o644)
+	id, _ := st.UpsertBook("Hell Mode", "https://x/hm", notePath, 12, "", "Backlog", nil, "ln", "")
+
+	// Queue volume 4, then queue volume 5.
+	if rec := do(h, "POST", "/api/reading/queue", "secret", fmt.Sprintf(`{"book_id":%d,"volume":"4"}`, id)); rec.Code != http.StatusOK {
+		t.Fatalf("queue v4: got %d: %s", rec.Code, rec.Body.String())
+	}
+	if rec := do(h, "POST", "/api/reading/queue", "secret", fmt.Sprintf(`{"book_id":%d,"volume":"5"}`, id)); rec.Code != http.StatusOK {
+		t.Fatalf("queue v5: got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// State shows two queued, nothing reading.
+	state := readingState(t, h)
+	if len(state.Queue) != 2 || len(state.Reading) != 0 {
+		t.Fatalf("after queueing: reading=%d queue=%d", len(state.Reading), len(state.Queue))
+	}
+	v4, v5 := state.Queue[0].ID, state.Queue[1].ID
+	if state.Queue[0].Volume != "4" || state.Queue[1].Volume != "5" {
+		t.Fatalf("queue order: %q, %q", state.Queue[0].Volume, state.Queue[1].Volume)
+	}
+
+	// Reorder: v5 first.
+	if rec := do(h, "PUT", "/api/reading/queue", "secret", fmt.Sprintf(`{"ids":[%d,%d]}`, v5, v4)); rec.Code != http.StatusOK {
+		t.Fatalf("reorder: got %d: %s", rec.Code, rec.Body.String())
+	}
+	if state = readingState(t, h); state.Queue[0].ID != v5 {
+		t.Errorf("reorder not persisted: front is %d, want %d", state.Queue[0].ID, v5)
+	}
+
+	// Promote the (now-front) v5 into currently-reading.
+	if rec := do(h, "POST", fmt.Sprintf("/api/reading/%d/start", v5), "secret", ""); rec.Code != http.StatusOK {
+		t.Fatalf("start queued: got %d: %s", rec.Code, rec.Body.String())
+	}
+	state = readingState(t, h)
+	if len(state.Reading) != 1 || len(state.Queue) != 1 {
+		t.Fatalf("after promote: reading=%d queue=%d", len(state.Reading), len(state.Queue))
+	}
+	readingItem := state.Reading[0]
+	if readingItem.StartDate == "" {
+		t.Error("start date not stamped on promote")
+	}
+
+	// ✓ Done on the reading item: logs the read and clears the item.
+	body := fmt.Sprintf(`{"volume":%q,"reading_item_id":%d,"unknown":true}`, readingItem.Volume, readingItem.ID)
+	if rec := do(h, "POST", fmt.Sprintf("/api/books/%d/complete", id), "secret", body); rec.Code != http.StatusOK {
+		t.Fatalf("complete: got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(string(mustRead(t, logPath)), "[[Hell Mode]] | 5 |") {
+		t.Errorf("completed row not logged:\n%s", mustRead(t, logPath))
+	}
+	state = readingState(t, h)
+	if len(state.Reading) != 0 {
+		t.Errorf("reading item not cleared after completion: %d left", len(state.Reading))
+	}
+
+	// Next-volume suggestion: v5 is now logged (plus the seed v1), so next is 6.
+	rec := do(h, "GET", fmt.Sprintf("/api/reading/next-volume?book_id=%d", id), "", "")
+	var nv struct {
+		Volume string `json:"volume"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &nv)
+	if nv.Volume != "6" {
+		t.Errorf("next-volume = %q, want 6", nv.Volume)
+	}
+
+	// Remove the remaining queued item.
+	if rec := do(h, "DELETE", fmt.Sprintf("/api/reading/%d", v4), "secret", ""); rec.Code != http.StatusOK {
+		t.Fatalf("delete: got %d: %s", rec.Code, rec.Body.String())
+	}
+	if state = readingState(t, h); len(state.Queue) != 0 {
+		t.Errorf("queue not empty after delete: %d", len(state.Queue))
+	}
+}
+
+type readingStatePayload struct {
+	Reading []store.ReadingItem `json:"reading"`
+	Queue   []store.ReadingItem `json:"queue"`
+}
+
+func readingState(t *testing.T, h http.Handler) readingStatePayload {
+	t.Helper()
+	rec := do(h, "GET", "/api/reading/queue", "", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("reading state: got %d: %s", rec.Code, rec.Body.String())
+	}
+	var p readingStatePayload
+	if err := json.Unmarshal(rec.Body.Bytes(), &p); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// Starting a read accepts an optional earlier start date (the user may have
+// begun before opening the app); a blank one defaults to today.
+func TestReadingStart_optionalStartDate(t *testing.T) {
+	h, st, vaultDir := newTestServer(t)
+	notePath := filepath.Join(vaultDir, "Hell Mode.md")
+	os.WriteFile(notePath, []byte("---\ntags:\n  - \"#LightNovel\"\n---\n"), 0o644)
+	id, _ := st.UpsertBook("Hell Mode", "https://x/hm", notePath, 12, "", "Backlog", nil, "ln", "")
+
+	if rec := do(h, "POST", "/api/reading/start", "secret", fmt.Sprintf(`{"book_id":%d,"volume":"2","start_date":"2026-06-01"}`, id)); rec.Code != http.StatusOK {
+		t.Fatalf("start: got %d: %s", rec.Code, rec.Body.String())
+	}
+	state := readingState(t, h)
+	if len(state.Reading) != 1 || state.Reading[0].StartDate != "2026-06-01" {
+		t.Errorf("supplied start date not honored: %+v", state.Reading)
+	}
+}
+
+// Abandoning a currently-reading item (#64): logs a `----` end marker with the
+// start date kept, clears the item, and — for a #Book — sets Status to Dropped.
+func TestReadingAbandon(t *testing.T) {
+	h, st, vaultDir := newTestServer(t)
+	logPath := filepath.Join(vaultDir, "_Read.md")
+	os.WriteFile(logPath, []byte("| 202506 | [[Seed]] | 1 |  |  |\n| --- | --- | ---: | --- | --- |\n"), 0o644)
+	st.SetSetting("reading_log_path", logPath)
+
+	title, link := "Dropped Book", "https://openlibrary.org/works/OL8W"
+	notePath := filepath.Join(vaultDir, title+".md")
+	os.WriteFile(notePath, []byte(notes.BuildBookNote(title, "Auth", link, "OL8W", "", "Backlog", "", "", "2026-07-05")), 0o644)
+	id, _ := st.UpsertBook(title, link, notePath, 0, "", "Backlog", nil, "book", "Auth")
+
+	// Start it, then abandon with a kept start date.
+	rec := do(h, "POST", "/api/reading/start", "secret", fmt.Sprintf(`{"book_id":%d}`, id))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("start: got %d: %s", rec.Code, rec.Body.String())
+	}
+	itemID := readingState(t, h).Reading[0].ID
+	body := fmt.Sprintf(`{"abandoned":true,"start":"2026-06-15","reading_item_id":%d}`, itemID)
+	if rec := do(h, "POST", fmt.Sprintf("/api/books/%d/complete", id), "secret", body); rec.Code != http.StatusOK {
+		t.Fatalf("abandon: got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// The log row carries the `----` end marker and the start date.
+	raw := string(mustRead(t, logPath))
+	if !strings.Contains(raw, "[[Dropped Book]] |  | 2026.06.15 | ---- |") {
+		t.Errorf("abandoned row not written as expected:\n%s", raw)
+	}
+	// Item cleared, #Book set to Dropped.
+	if len(readingState(t, h).Reading) != 0 {
+		t.Error("reading item not cleared after abandon")
+	}
+	books, _ := st.ListBooks()
+	if len(books) != 1 || books[0].Status != "Dropped" {
+		t.Errorf("book not set to Dropped: %+v", books)
+	}
+	// The completed feed reports it as abandoned.
+	var feed struct {
+		Reads []struct {
+			Title     string `json:"title"`
+			Abandoned bool   `json:"abandoned"`
+		} `json:"reads"`
+	}
+	json.Unmarshal(do(h, "GET", "/api/reading/completed", "", "").Body.Bytes(), &feed)
+	var found bool
+	for _, rd := range feed.Reads {
+		if rd.Title == "Dropped Book" && rd.Abandoned {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("abandoned read not surfaced in feed: %+v", feed.Reads)
+	}
+}
+
+// Editing and deleting a completed-log row over the API (#64).
+func TestReadingCompletedEditDelete(t *testing.T) {
+	h, st, vaultDir := newTestServer(t)
+	logPath := filepath.Join(vaultDir, "_Read.md")
+	os.WriteFile(logPath, []byte(
+		"| 202506 | [[Alpha]] | 1 | 2025.05.01 | 2025.05.10 |\n"+
+			"| --- | --- | ---: | --- | --- |\n"+
+			"| 202507 | [[Beta]] | 2 | 2025.07.01 | 2025.07.05 |\n"), 0o644)
+	st.SetSetting("reading_log_path", logPath)
+
+	// Edit row 1 (Beta) → volume 9, abandoned.
+	edit := `{"index":1,"title":"Beta","volume":"9","abandoned":true,"start":"2025-07-01"}`
+	if rec := do(h, "PUT", "/api/reading/completed", "secret", edit); rec.Code != http.StatusOK {
+		t.Fatalf("edit: got %d: %s", rec.Code, rec.Body.String())
+	}
+	raw := string(mustRead(t, logPath))
+	if !strings.Contains(raw, "[[Beta]] | 9 | 2025.07.01 | ---- |") {
+		t.Errorf("edit not applied:\n%s", raw)
+	}
+
+	// A stale/mismatched title is a 409, not a wrong-row edit.
+	if rec := do(h, "PUT", "/api/reading/completed", "secret", `{"index":1,"title":"Ghost","volume":"1"}`); rec.Code != http.StatusConflict {
+		t.Errorf("title mismatch: got %d, want 409", rec.Code)
+	}
+
+	// Delete row 0 (Alpha).
+	if rec := do(h, "DELETE", "/api/reading/completed?index=0&title=Alpha", "secret", ""); rec.Code != http.StatusOK {
+		t.Fatalf("delete: got %d: %s", rec.Code, rec.Body.String())
+	}
+	feed := do(h, "GET", "/api/reading/completed", "", "")
+	var got struct {
+		Reads []struct {
+			Title string `json:"title"`
+		} `json:"reads"`
+	}
+	json.Unmarshal(feed.Body.Bytes(), &got)
+	if len(got.Reads) != 1 || got.Reads[0].Title != "Beta" {
+		t.Errorf("after delete, feed = %+v", got.Reads)
+	}
+}
+
+// A whole #Book is queued/started with no volume, whatever the client sends.
+func TestReadingStart_bookIgnoresVolume(t *testing.T) {
+	h, st, vaultDir := newTestServer(t)
+	notePath := filepath.Join(vaultDir, "A Novel.md")
+	os.WriteFile(notePath, []byte(notes.BuildBookNote("A Novel", "Auth", "https://openlibrary.org/works/OL5W", "OL5W", "", "Backlog", "", "", "2026-07-05")), 0o644)
+	id, _ := st.UpsertBook("A Novel", "https://openlibrary.org/works/OL5W", notePath, 0, "", "Backlog", nil, "book", "Auth")
+
+	if rec := do(h, "POST", "/api/reading/start", "secret", fmt.Sprintf(`{"book_id":%d,"volume":"7"}`, id)); rec.Code != http.StatusOK {
+		t.Fatalf("start book: got %d: %s", rec.Code, rec.Body.String())
+	}
+	state := readingState(t, h)
+	if len(state.Reading) != 1 || state.Reading[0].Volume != "" {
+		t.Errorf("book reading item should carry no volume: %+v", state.Reading)
+	}
+}
+
 func TestDeleteBook_untracksAndLogsEvent(t *testing.T) {
 	h, st, _ := newTestServer(t)
 	id, _ := st.UpsertBook("A", "https://x/1", "", 2, "", "", nil, "ln", "")

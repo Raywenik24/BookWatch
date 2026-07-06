@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,6 +27,7 @@ type Read struct {
 	Volume    string `json:"volume"`     // "10" for LN, "" for #Book
 	Start     string `json:"start"`      // "2026.07.06" or ""
 	End       string `json:"end"`        // "2026.07.06" or ""
+	Abandoned bool   `json:"abandoned"`  // end cell was a `----` marker: started, not finished
 }
 
 // titleRE pulls the note basename out of a `[[Title]]` cell. Non-greedy so a
@@ -82,6 +84,11 @@ func Parse(raw []byte) []Read {
 			r.Start = cleanDate(cells[3])
 		}
 		if len(cells) > 4 {
+			// A `----` placeholder in the END cell is the abandoned marker
+			// (started, never finished, not continued) — distinct from a blank
+			// cell meaning "date unknown". cleanDate collapses both to "", so the
+			// distinction is captured here before it's lost.
+			r.Abandoned = isDashPlaceholder(cells[4])
 			r.End = cleanDate(cells[4])
 		}
 		out = append(out, r)
@@ -129,6 +136,13 @@ func cleanDate(s string) string {
 	return s
 }
 
+// isDashPlaceholder reports whether a cell is a non-empty run of dashes (`----`),
+// the log's abandoned-read marker in the end column.
+func isDashPlaceholder(s string) bool {
+	s = strings.TrimSpace(s)
+	return s != "" && strings.Trim(s, "-") == ""
+}
+
 // Key identifies a distinct read unit for re-read counting: an LN volume is
 // (title, volume); a #Book is (title, ""). Every duplicate row for the same key
 // is one more read of that unit.
@@ -151,6 +165,37 @@ func ReReadCounts(reads []Read) map[Key]int {
 // a `×N` re-read badge shows (surfaced by the UI only at N ≥ 2).
 func CountFor(reads []Read, title, volume string) int {
 	return ReReadCounts(reads)[Key{strings.TrimSpace(title), strings.TrimSpace(volume)}]
+}
+
+// MaxVolume returns the highest numeric volume logged for title (case-sensitive
+// on the note basename), or 0 if the title has no numeric-volume rows yet. A
+// non-numeric volume cell (a whole #Book leaves it blank) doesn't count.
+func MaxVolume(reads []Read, title string) int {
+	title = strings.TrimSpace(title)
+	max := 0
+	for _, r := range reads {
+		if strings.TrimSpace(r.Title) != title {
+			continue
+		}
+		if v, err := strconv.Atoi(strings.TrimSpace(r.Volume)); err == nil && v > max {
+			max = v
+		}
+	}
+	return max
+}
+
+// NextVolume suggests the next volume to read for an LN title: one past the
+// highest volume already logged, clamped to [1, cap] when cap (the note's total
+// Volumes) is known. With no cap it just returns max+1.
+func NextVolume(reads []Read, title string, cap int) int {
+	n := MaxVolume(reads, title) + 1
+	if n < 1 {
+		n = 1
+	}
+	if cap > 0 && n > cap {
+		n = cap
+	}
+	return n
 }
 
 // CompletedRow is a resolved, ready-to-write completion. Build it with
@@ -182,6 +227,25 @@ func NewCompletedRow(title, volume, start, end string, unknown bool) CompletedRo
 		row.YearMonth = yearMonth(row.Start)
 	}
 	return row
+}
+
+// abandonedMarker is what an abandoned read writes in its end cell: started, not
+// finished, not continued. It renders literally (unlike a blank "unknown" cell)
+// so the log stays human-readable, and Parse reads it back as Abandoned.
+const abandonedMarker = "----"
+
+// NewAbandonedRow builds a row for a read the user gave up on. The start date is
+// kept (normalized, or blank if unknown) and the end cell carries the `----`
+// marker; YYYYMM is derived from the start date. Unlike a completion this never
+// implies the unit was finished.
+func NewAbandonedRow(title, volume, start string) CompletedRow {
+	return CompletedRow{
+		YearMonth: yearMonth(normalizeDate(start)),
+		Title:     strings.TrimSpace(title),
+		Volume:    strings.TrimSpace(volume),
+		Start:     normalizeDate(start),
+		End:       abandonedMarker,
+	}
 }
 
 // dateLayouts are the forms NormalizeDate accepts: the HTML date picker's
@@ -263,6 +327,164 @@ func AppendCompleted(path string, row CompletedRow) error {
 		out = append(out, lines[insert+1:]...)
 	}
 	return vault.AtomicWrite(path, []byte(strings.Join(out, nl)), 0o644)
+}
+
+// UpdateReadAt rewrites the index-th completed-read row (in file order, the same
+// order Parse returns) to row, leaving every other line untouched. expectTitle
+// guards against a stale index: if the row at index no longer names that title
+// (the log shifted since the caller read it), it errors instead of editing the
+// wrong entry. The write is atomic with OneDrive lock-retry.
+func UpdateReadAt(path string, index int, expectTitle string, row CompletedRow) error {
+	lines, nl, idx, err := editLoad(path)
+	if err != nil {
+		return err
+	}
+	if err := checkReadIndex(lines, idx, index, expectTitle); err != nil {
+		return err
+	}
+	lines[idx[index]] = row.render()
+	return vault.AtomicWrite(path, []byte(strings.Join(lines, nl)), 0o644)
+}
+
+// DeleteReadAt removes the index-th completed-read row. Deleting the first data
+// row (which, per the note's convention, doubles as the markdown header) would
+// leave the separator on top and break the table render, so the next data row is
+// promoted to header in that case. expectTitle guards a stale index as in
+// UpdateReadAt.
+func DeleteReadAt(path string, index int, expectTitle string) error {
+	lines, nl, idx, err := editLoad(path)
+	if err != nil {
+		return err
+	}
+	if err := checkReadIndex(lines, idx, index, expectTitle); err != nil {
+		return err
+	}
+	target := idx[index]
+	out := make([]string, 0, len(lines)-1)
+	out = append(out, lines[:target]...)
+	out = append(out, lines[target+1:]...)
+
+	// Header row removed → promote the next data row above the now-orphaned
+	// separator so the table keeps a header (writer output is contiguous, so the
+	// separator sits immediately after the removed header).
+	if index == 0 {
+		if s := firstTableLine(out, target); s >= 0 && isSeparatorLine(out[s]) {
+			if d := s + 1; d < len(out) && hasWikilinkRow(out[d]) {
+				out[s], out[d] = out[d], out[s]
+			}
+		}
+	}
+	// If that was the last data row, drop any leftover separator lines too, so the
+	// table is fully gone and a later AppendCompleted bootstraps a fresh header
+	// rather than inserting under a lone `| --- |`.
+	if len(matchedRowIndices(out)) == 0 {
+		out = dropSeparators(out)
+	}
+	return vault.AtomicWrite(path, []byte(strings.Join(out, nl)), 0o644)
+}
+
+// editLoad reads the log into lines (newline style preserved) plus the file-line
+// indices of every completed-read row, in the same order Parse yields them.
+func editLoad(path string) (lines []string, nl string, idx []int, err error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, "", nil, err
+	}
+	nl = "\n"
+	if bytes.Contains(raw, []byte("\r\n")) {
+		nl = "\r\n"
+	}
+	lines = strings.Split(strings.ReplaceAll(string(raw), "\r\n", "\n"), "\n")
+	return lines, nl, matchedRowIndices(lines), nil
+}
+
+// matchedRowIndices returns the file-line index of every row Parse would keep
+// (a `|`-row whose second cell holds a [[wikilink]]), skipping frontmatter — so
+// idx[i] is the physical line of Parse's i-th Read.
+func matchedRowIndices(lines []string) []int {
+	var idx []int
+	for i := frontmatterEnd(lines); i < len(lines); i++ {
+		if hasWikilinkRow(lines[i]) {
+			idx = append(idx, i)
+		}
+	}
+	return idx
+}
+
+// frontmatterEnd returns the index of the first body line after a leading
+// `---`…`---` YAML block (mirroring stripFrontmatter), or 0 when there's none.
+func frontmatterEnd(lines []string) int {
+	i := 0
+	for i < len(lines) && strings.TrimSpace(lines[i]) == "" {
+		i++
+	}
+	if i >= len(lines) || strings.TrimSpace(lines[i]) != "---" {
+		return 0
+	}
+	for j := i + 1; j < len(lines); j++ {
+		if strings.TrimSpace(lines[j]) == "---" {
+			return j + 1
+		}
+	}
+	return 0
+}
+
+// checkReadIndex bounds-checks index and, when expectTitle is set, verifies the
+// row still names it (so a shifted log doesn't get the wrong row edited/deleted).
+func checkReadIndex(lines []string, idx []int, index int, expectTitle string) error {
+	if index < 0 || index >= len(idx) {
+		return fmt.Errorf("reading-log row %d is out of range", index)
+	}
+	if expectTitle == "" {
+		return nil
+	}
+	cells := splitRow(strings.TrimSpace(lines[idx[index]]))
+	m := titleRE.FindStringSubmatch(cells[1])
+	if m == nil || strings.TrimSpace(m[1]) != strings.TrimSpace(expectTitle) {
+		return fmt.Errorf("reading-log row %d no longer matches %q — refresh and retry", index, expectTitle)
+	}
+	return nil
+}
+
+// hasWikilinkRow reports whether a line is a table row whose second cell carries
+// a [[wikilink]] — i.e. a real completed-read row (not the separator or a blank).
+func hasWikilinkRow(line string) bool {
+	t := strings.TrimSpace(line)
+	if !strings.HasPrefix(t, "|") {
+		return false
+	}
+	cells := splitRow(t)
+	return len(cells) >= 2 && titleRE.FindStringSubmatch(cells[1]) != nil
+}
+
+// firstTableLine returns the index of the first `|`-row at or after from, or -1.
+func firstTableLine(lines []string, from int) int {
+	for i := from; i < len(lines); i++ {
+		if strings.HasPrefix(strings.TrimSpace(lines[i]), "|") {
+			return i
+		}
+	}
+	return -1
+}
+
+// isSeparatorLine reports whether a line is a markdown table separator row
+// (`| --- | ... |`): a `|`-row with dashes and no wikilink.
+func isSeparatorLine(line string) bool {
+	t := strings.TrimSpace(line)
+	return strings.HasPrefix(t, "|") && !titleRE.MatchString(t) && strings.Contains(t, "-")
+}
+
+// dropSeparators removes any table separator lines — used after the last data
+// row is deleted so no orphaned `| --- |` is left to confuse the next append.
+func dropSeparators(lines []string) []string {
+	out := lines[:0:0]
+	for _, l := range lines {
+		if isSeparatorLine(l) {
+			continue
+		}
+		out = append(out, l)
+	}
+	return out
 }
 
 // isBlankRow reports whether a table row is an all-empty spare row (`|  |  |`).

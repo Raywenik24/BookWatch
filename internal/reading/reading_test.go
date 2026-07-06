@@ -214,3 +214,120 @@ func lastPopulatedRow(body string) string {
 	}
 	return last
 }
+
+// Next-volume suggestion (#64): one past the highest volume logged for a title,
+// clamped to [1, cap]. A #Book-style title with no numeric volumes suggests 1.
+func TestNextVolume(t *testing.T) {
+	reads := []Read{
+		{Title: "Hell Mode", Volume: "1"},
+		{Title: "Hell Mode", Volume: "3"},
+		{Title: "Hell Mode", Volume: "2"},
+		{Title: "Other", Volume: "10"},
+		{Title: "Hell Mode", Volume: ""}, // non-numeric cell doesn't count
+	}
+	if got := MaxVolume(reads, "Hell Mode"); got != 3 {
+		t.Errorf("MaxVolume = %d, want 3", got)
+	}
+	if got := NextVolume(reads, "Hell Mode", 0); got != 4 {
+		t.Errorf("NextVolume uncapped = %d, want 4", got)
+	}
+	// Cap clamps the suggestion to the note's total volumes.
+	if got := NextVolume(reads, "Hell Mode", 3); got != 3 {
+		t.Errorf("NextVolume capped = %d, want 3", got)
+	}
+	// A never-logged title starts at 1.
+	if got := NextVolume(reads, "Brand New", 12); got != 1 {
+		t.Errorf("NextVolume fresh = %d, want 1", got)
+	}
+}
+
+// Abandoned reads (#64): a `----` end marker parses as Abandoned (distinct from a
+// blank "unknown" end), and NewAbandonedRow writes that marker with the start
+// date kept and YYYYMM derived from it.
+func TestAbandonedRead(t *testing.T) {
+	body := []byte("| 202606 | [[Gave Up]] | 1 | 2026.06.15 | ---- |\n| --- | --- | ---: | --- | --- |\n| 202607 | [[Finished]] | 2 | 2026.07.01 | 2026.07.05 |\n")
+	reads := Parse(body)
+	if len(reads) != 2 {
+		t.Fatalf("got %d reads, want 2", len(reads))
+	}
+	if !reads[0].Abandoned {
+		t.Errorf("`----` end not flagged abandoned: %+v", reads[0])
+	}
+	if reads[0].End != "" {
+		t.Errorf("abandoned end should clean to empty, got %q", reads[0].End)
+	}
+	if reads[1].Abandoned {
+		t.Errorf("a real end date must not be abandoned: %+v", reads[1])
+	}
+
+	row := NewAbandonedRow("Gave Up", "3", "2026-06-15")
+	if row.End != "----" {
+		t.Errorf("abandoned end marker = %q, want ----", row.End)
+	}
+	if row.Start != "2026.06.15" || row.YearMonth != "202606" {
+		t.Errorf("abandoned start/ym = %q/%q", row.Start, row.YearMonth)
+	}
+}
+
+// Edit/delete a single log row (#64): only the target row changes; the header-
+// as-first-row quirk is preserved on delete by promoting the next data row.
+func TestEditAndDeleteReadAt(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "_Read.md")
+	body := "| 202506 | [[Alpha]] | 1 | 2025.05.01 | 2025.05.10 |\n" +
+		"| ------ | ------ | ---: | ---------- | ---------- |\n" +
+		"| 202506 | [[Beta]] | 2 | 2025.05.11 | 2025.05.20 |\n" +
+		"| 202507 | [[Gamma]] | 3 | 2025.07.01 | 2025.07.05 |\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Edit the middle row (index 1 = Beta) → volume + end date change.
+	if err := UpdateReadAt(path, 1, "Beta", NewCompletedRow("Beta", "5", "2025-05-11", "2025-05-25", false)); err != nil {
+		t.Fatal(err)
+	}
+	reads := mustParse(t, path)
+	if len(reads) != 3 || reads[1].Volume != "5" || reads[1].End != "2025.05.25" {
+		t.Fatalf("edit didn't take: %+v", reads[1])
+	}
+
+	// A stale title guard rejects the wrong row.
+	if err := UpdateReadAt(path, 1, "NotBeta", NewCompletedRow("NotBeta", "9", "", "", true)); err == nil {
+		t.Error("expected title-mismatch error, got nil")
+	}
+
+	// Delete the last row (Gamma).
+	if err := DeleteReadAt(path, 2, "Gamma"); err != nil {
+		t.Fatal(err)
+	}
+	if reads = mustParse(t, path); len(reads) != 2 {
+		t.Fatalf("delete last: got %d reads, want 2", len(reads))
+	}
+
+	// Delete the header row (index 0 = Alpha): Beta must survive AND the table
+	// must keep a header (the separator can't end up on top).
+	if err := DeleteReadAt(path, 0, "Alpha"); err != nil {
+		t.Fatal(err)
+	}
+	reads = mustParse(t, path)
+	if len(reads) != 1 || reads[0].Title != "Beta" {
+		t.Fatalf("delete header: %+v", reads)
+	}
+	raw, _ := os.ReadFile(path)
+	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+	if !strings.Contains(lines[0], "[[Beta]]") {
+		t.Errorf("next data row not promoted to header:\n%s", raw)
+	}
+	if !strings.Contains(string(raw), separatorRow[:6]) && !strings.Contains(string(raw), "---") {
+		t.Errorf("separator lost after header delete:\n%s", raw)
+	}
+}
+
+func mustParse(t *testing.T, path string) []Read {
+	t.Helper()
+	reads, err := ParseFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return reads
+}

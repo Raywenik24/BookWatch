@@ -499,23 +499,31 @@ func entryReadVolumes(e vault.Entry) *int {
 	return &v
 }
 
-// MarkCompleted logs one completed read to the unified reading log and — for a
-// #Book only — flips its note's Status to Completed (an LN volume leaves Status
-// alone, since the series is usually ongoing). title is the note basename (the
-// [[wikilink]] target); volume is blank for a #Book. The reading-log write is
-// compact + atomic and leaves every existing row untouched (see
-// reading.AppendCompleted). It returns the resulting re-read count for
-// (title, volume) so the caller can refresh a `×N` badge without re-reading.
-func MarkCompleted(logPath, notePath, kind, title, volume, start, end string, unknown bool) (int, error) {
+// MarkCompleted logs one read to the unified reading log and — for a #Book only
+// — flips its note's Status (an LN volume leaves Status alone, since the series
+// is usually ongoing). A normal completion writes the finish date and sets
+// #Book Status to Completed; an abandoned read (abandoned=true) writes the
+// `----` marker in the end cell and sets #Book Status to Dropped instead. title
+// is the note basename (the [[wikilink]] target); volume is blank for a #Book.
+// The reading-log write is compact + atomic and leaves every existing row
+// untouched (see reading.AppendCompleted). It returns the resulting re-read
+// count for (title, volume) so the caller can refresh a `×N` badge without
+// re-reading.
+func MarkCompleted(logPath, notePath, kind, title, volume, start, end string, unknown, abandoned bool) (int, error) {
 	if logPath == "" {
 		return 0, fmt.Errorf("reading log note is not configured")
 	}
 	row := reading.NewCompletedRow(title, volume, start, end, unknown)
+	status := "Completed"
+	if abandoned {
+		row = reading.NewAbandonedRow(title, volume, start)
+		status = "Dropped"
+	}
 	if err := reading.AppendCompleted(logPath, row); err != nil {
 		return 0, fmt.Errorf("append reading log: %w", err)
 	}
 	if kind == "book" && notePath != "" {
-		if err := vault.UpdateStatus(notePath, "Completed"); err != nil {
+		if err := vault.UpdateStatus(notePath, status); err != nil {
 			return 0, fmt.Errorf("set status: %w", err)
 		}
 	}

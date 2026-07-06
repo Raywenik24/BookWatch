@@ -100,6 +100,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/releases", s.handleReleases)
 	mux.HandleFunc("GET /api/releases/dismissed", s.handleDismissedReleases)
 	mux.HandleFunc("GET /api/reading/completed", s.handleReadingCompleted)
+	mux.HandleFunc("GET /api/reading/queue", s.handleReadingState)
+	mux.HandleFunc("GET /api/reading/next-volume", s.handleReadingNextVolume)
 
 	mux.HandleFunc("POST /api/check", s.auth(s.handleCheck))
 	mux.HandleFunc("POST /api/vault/refresh", s.auth(s.handleVaultRefresh))
@@ -109,6 +111,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/releases/undismiss", s.auth(s.handleUndismissReleases))
 	mux.HandleFunc("POST /api/books", s.auth(s.handleAddBook))
 	mux.HandleFunc("POST /api/books/{id}/complete", s.auth(s.handleMarkCompleted))
+	mux.HandleFunc("POST /api/reading/start", s.auth(s.handleReadingStart))
+	mux.HandleFunc("POST /api/reading/queue", s.auth(s.handleReadingQueueAdd))
+	mux.HandleFunc("POST /api/reading/{id}/start", s.auth(s.handleReadingItemStart))
+	mux.HandleFunc("PUT /api/reading/queue", s.auth(s.handleReadingReorder))
+	mux.HandleFunc("DELETE /api/reading/{id}", s.auth(s.handleReadingDelete))
+	mux.HandleFunc("PUT /api/reading/completed", s.auth(s.handleEditCompleted))
+	mux.HandleFunc("DELETE /api/reading/completed", s.auth(s.handleDeleteCompleted))
 	mux.HandleFunc("GET /api/books/{id}/note", s.handleReadNote)
 	mux.HandleFunc("PUT /api/books/{id}/note", s.auth(s.handleEditNote))
 	mux.HandleFunc("POST /api/books/{id}/cover", s.authLimited(s.handleSetCover, maxCoverUploadBytes))
@@ -808,6 +817,255 @@ type rereadCount struct {
 	Count  int    `json:"count"`
 }
 
+// ── reading queue + currently-reading (#64) ───────────────────
+
+// handleReadingState serves the Reading tab's two live lists: what's in progress
+// and what's queued (both joined to their book note). Read-only and open like
+// the other feeds; the Completed list comes from /api/reading/completed.
+func (s *Server) handleReadingState(w http.ResponseWriter, r *http.Request) {
+	reading, err := s.st.ListReadingItems("reading")
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	queue, err := s.st.ListReadingItems("queue")
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"reading": nonNilItems(reading),
+		"queue":   nonNilItems(queue),
+	})
+}
+
+func nonNilItems(v []store.ReadingItem) []store.ReadingItem {
+	if v == nil {
+		return []store.ReadingItem{}
+	}
+	return v
+}
+
+// handleReadingNextVolume suggests the next LN volume to read for a tracked book
+// (issue #64 point 4): one past the highest volume already in the reading log,
+// capped at the note's total Volumes. Open (read-only). A #Book or an
+// unconfigured log yields volume "" — there's nothing to suggest.
+func (s *Server) handleReadingNextVolume(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.URL.Query().Get("book_id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errBody("bad book_id"))
+		return
+	}
+	ref, ok, err := s.st.BookByID(id)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if !ok || ref.Kind == "book" {
+		writeJSON(w, http.StatusOK, map[string]string{"volume": ""})
+		return
+	}
+	capVol := s.bookVolumes(id)
+	reads, _ := reading.ParseFile(s.effectiveReadingLogPath())
+	writeJSON(w, http.StatusOK, map[string]string{
+		"volume": strconv.Itoa(reading.NextVolume(reads, ref.Title, capVol)),
+	})
+}
+
+// bookVolumes returns a tracked book's total Volumes (0 if unknown) — the cap
+// for the next-volume suggestion.
+func (s *Server) bookVolumes(id int64) int {
+	books, err := s.st.ListBooks()
+	if err != nil {
+		return 0
+	}
+	for _, b := range books {
+		if b.ID == id {
+			return b.Volumes
+		}
+	}
+	return 0
+}
+
+// readingTarget decodes {book_id, volume, start_date} and resolves the book,
+// guarding that only a tracked note can be queued/started (#64). start_date is
+// optional (only the start path uses it — the user may have begun before opening
+// the app). Writes the error response and returns ok=false on any failure.
+func (s *Server) readingTarget(w http.ResponseWriter, r *http.Request) (store.BookRef, string, string, bool) {
+	var body struct {
+		BookID    int64  `json:"book_id"`
+		Volume    string `json:"volume"`
+		StartDate string `json:"start_date"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, errBody("bad body"))
+		return store.BookRef{}, "", "", false
+	}
+	ref, ok, err := s.st.BookByID(body.BookID)
+	if err != nil {
+		writeErr(w, err)
+		return store.BookRef{}, "", "", false
+	}
+	if !ok {
+		writeJSON(w, http.StatusNotFound, errBody("no such tracked book"))
+		return store.BookRef{}, "", "", false
+	}
+	volume := strings.TrimSpace(body.Volume)
+	if ref.Kind == "book" {
+		volume = "" // a whole #Book has no volume, whatever the client sent
+	}
+	return ref, volume, strings.TrimSpace(body.StartDate), true
+}
+
+// handleReadingStart puts a tracked book/LN volume into currently-reading,
+// stamping the start date (#64 point 3). The date defaults to today but the
+// client may supply an earlier one when the read began before the app was opened.
+func (s *Server) handleReadingStart(w http.ResponseWriter, r *http.Request) {
+	ref, volume, startDate, ok := s.readingTarget(w, r)
+	if !ok {
+		return
+	}
+	if startDate == "" {
+		startDate = vault.Today()
+	}
+	id, err := s.st.StartReadingItem(ref.ID, volume, startDate)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	s.st.LogEvent("reading", fmt.Sprintf("Started reading %s", readingUnit(ref.Title, volume)))
+	writeJSON(w, http.StatusOK, map[string]any{"id": id, "status": "reading"})
+}
+
+// handleReadingQueueAdd appends a tracked book/LN volume to the read-next queue.
+func (s *Server) handleReadingQueueAdd(w http.ResponseWriter, r *http.Request) {
+	ref, volume, _, ok := s.readingTarget(w, r)
+	if !ok {
+		return
+	}
+	id, err := s.st.QueueReadingItem(ref.ID, volume)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": id, "status": "queued"})
+}
+
+// handleReadingItemStart moves a queued row into currently-reading, stamping
+// today as the start date.
+func (s *Server) handleReadingItemStart(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errBody("bad id"))
+		return
+	}
+	if err := s.st.StartQueuedItem(id, vault.Today()); err != nil {
+		writeErr(w, err)
+		return
+	}
+	if it, ok, _ := s.st.GetReadingItem(id); ok {
+		s.st.LogEvent("reading", fmt.Sprintf("Started reading %s", readingUnit(it.Title, it.Volume)))
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "reading"})
+}
+
+// handleReadingReorder persists a new queue order from a drag-and-drop reorder.
+func (s *Server) handleReadingReorder(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		IDs []int64 `json:"ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, errBody("bad body"))
+		return
+	}
+	if err := s.st.ReorderQueue(body.IDs); err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "reordered"})
+}
+
+// handleReadingDelete drops a queued or currently-reading row (without logging a
+// completion — that's the ✓ Done path).
+func (s *Server) handleReadingDelete(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errBody("bad id"))
+		return
+	}
+	if err := s.st.DeleteReadingItem(id); err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "removed"})
+}
+
+// handleEditCompleted rewrites one existing row in the reading log (#64). The
+// body is {index, title, volume, start, end, unknown, abandoned}: index is the
+// row's position in file order (as served by /api/reading/completed), title is
+// the expected [[wikilink]] target (a stale-index guard), and the rest rebuild
+// the row the same way a fresh completion would.
+func (s *Server) handleEditCompleted(w http.ResponseWriter, r *http.Request) {
+	logPath := s.effectiveReadingLogPath()
+	if logPath == "" {
+		writeJSON(w, http.StatusBadRequest, errBody("reading log note is not configured"))
+		return
+	}
+	var body struct {
+		Index     *int   `json:"index"`
+		Title     string `json:"title"`
+		Volume    string `json:"volume"`
+		Start     string `json:"start"`
+		End       string `json:"end"`
+		Unknown   bool   `json:"unknown"`
+		Abandoned bool   `json:"abandoned"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Index == nil || body.Title == "" {
+		writeJSON(w, http.StatusBadRequest, errBody("index and title required"))
+		return
+	}
+	row := reading.NewCompletedRow(body.Title, body.Volume, body.Start, body.End, body.Unknown)
+	if body.Abandoned {
+		row = reading.NewAbandonedRow(body.Title, body.Volume, body.Start)
+	}
+	if err := reading.UpdateReadAt(logPath, *body.Index, body.Title, row); err != nil {
+		writeJSON(w, http.StatusConflict, errBody(err.Error()))
+		return
+	}
+	s.st.LogEvent("read", fmt.Sprintf("Edited log entry %s", readingUnit(body.Title, body.Volume)))
+	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+}
+
+// handleDeleteCompleted removes one row from the reading log by its file-order
+// index (?index=), guarded by ?title= against a stale index.
+func (s *Server) handleDeleteCompleted(w http.ResponseWriter, r *http.Request) {
+	logPath := s.effectiveReadingLogPath()
+	if logPath == "" {
+		writeJSON(w, http.StatusBadRequest, errBody("reading log note is not configured"))
+		return
+	}
+	index, err := strconv.Atoi(r.URL.Query().Get("index"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errBody("bad index"))
+		return
+	}
+	title := r.URL.Query().Get("title")
+	if err := reading.DeleteReadAt(logPath, index, title); err != nil {
+		writeJSON(w, http.StatusConflict, errBody(err.Error()))
+		return
+	}
+	s.st.LogEvent("read", fmt.Sprintf("Deleted log entry %q", title))
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// readingUnit names a reading unit for an event message ("Title" or "Title vol N").
+func readingUnit(title, volume string) string {
+	if volume != "" {
+		return fmt.Sprintf("%q vol %s", title, volume)
+	}
+	return fmt.Sprintf("%q", title)
+}
+
 // handleMarkCompleted logs a completed read for a tracked book. The body is
 // {volume, start, end, unknown}: volume names the LN volume (blank for a #Book),
 // start/end are the picker dates, and unknown ("I don't remember") blanks the
@@ -823,10 +1081,12 @@ func (s *Server) handleMarkCompleted(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Volume  string `json:"volume"`
-		Start   string `json:"start"`
-		End     string `json:"end"`
-		Unknown bool   `json:"unknown"`
+		Volume        string `json:"volume"`
+		Start         string `json:"start"`
+		End           string `json:"end"`
+		Unknown       bool   `json:"unknown"`
+		Abandoned     bool   `json:"abandoned"`       // log a `----` end marker + Drop the #Book (#64)
+		ReadingItemID int64  `json:"reading_item_id"` // optional: the currently-reading row to clear (#64)
 	}
 	if r.ContentLength != 0 {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -835,14 +1095,20 @@ func (s *Server) handleMarkCompleted(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	count, err := service.MarkCompleted(logPath, ref.Path, ref.Kind, ref.Title, body.Volume, body.Start, body.End, body.Unknown)
+	count, err := service.MarkCompleted(logPath, ref.Path, ref.Kind, ref.Title, body.Volume, body.Start, body.End, body.Unknown, body.Abandoned)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
 
+	// ✓ Done / Abandon on a currently-reading item: the read is now in the log,
+	// so drop its queue/reading row (best-effort — the log write already succeeded).
+	if body.ReadingItemID != 0 {
+		s.st.DeleteReadingItem(body.ReadingItemID)
+	}
+
 	// A #Book status flip changed the note on disk — resync the DB row so the
-	// Books feed reflects Completed without waiting for the next scan.
+	// Books feed reflects the new status without waiting for the next scan.
 	if ref.Kind == "book" {
 		if n, err := vault.ReadNote(ref.Path); err == nil {
 			s.resyncNote(ref.Link, ref.Path, n)
@@ -852,8 +1118,12 @@ func (s *Server) handleMarkCompleted(w http.ResponseWriter, r *http.Request) {
 	if body.Volume != "" {
 		unit += " vol " + body.Volume
 	}
-	s.st.LogEvent("read", fmt.Sprintf("Marked %q completed", unit))
-	writeJSON(w, http.StatusOK, map[string]any{"status": "completed", "reread_count": count})
+	verb, status := "Marked", "completed"
+	if body.Abandoned {
+		verb, status = "Abandoned", "abandoned"
+	}
+	s.st.LogEvent("read", fmt.Sprintf("%s %q", verb, unit))
+	writeJSON(w, http.StatusOK, map[string]any{"status": status, "reread_count": count})
 }
 
 // maxCoverUploadBytes caps an uploaded cover image (matches notes' download cap).
