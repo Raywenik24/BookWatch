@@ -999,8 +999,10 @@ func (s *Store) StartReadingItem(bookID int64, volume, startDate string) (int64,
 }
 
 // QueueReadingItem appends (bookID, volume) to the end of the queue and returns
-// the row id. A unit already present (queued or being read) is left in place —
-// re-queuing shouldn't yank a book out of currently-reading or reshuffle it.
+// the row id. A unit already queued is left in place — re-queuing shouldn't
+// reshuffle it. A unit currently being read is moved to the queue (start_date
+// cleared) instead of no-op'ing — this is the "Add to queue" / drag-to-queue
+// move (#70).
 func (s *Store) QueueReadingItem(bookID int64, volume string) (int64, error) {
 	var maxPos int
 	if err := s.db.QueryRow(`SELECT COALESCE(MAX(queue_pos), 0) FROM reading_items WHERE state='queue'`).Scan(&maxPos); err != nil {
@@ -1009,7 +1011,9 @@ func (s *Store) QueueReadingItem(bookID int64, volume string) (int64, error) {
 	_, err := s.db.Exec(`
 		INSERT INTO reading_items(book_id, volume, state, queue_pos, start_date, created_at)
 		VALUES(?,?,'queue',?,'',?)
-		ON CONFLICT(book_id, volume) DO NOTHING`,
+		ON CONFLICT(book_id, volume) DO UPDATE SET
+			state='queue', queue_pos=excluded.queue_pos, start_date=''
+			WHERE reading_items.state='reading'`,
 		bookID, volume, maxPos+1, now())
 	if err != nil {
 		return 0, err

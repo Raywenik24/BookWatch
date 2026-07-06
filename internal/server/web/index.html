@@ -196,6 +196,7 @@
   .cover-card[draggable="true"] { cursor: grab; }
   .cover-card.dragging { opacity: .45; }
   .cover-card.dragover { border-color: var(--mauve); border-style: dashed; }
+  .cover-grid.dragover { outline: 2px dashed var(--mauve); outline-offset: 6px; border-radius: 10px; }
   /* themed date picker (#64): native <input type=date> can't be themed, set to
      Monday-first, or forced to yyyy-mm-dd, so this replaces it. */
   .dp { position: relative; display: block; }
@@ -357,6 +358,7 @@
       <button data-s="about">About</button>
     </nav>
     <span class="spacer"></span>
+    <button class="btn ghost" id="refreshVaultBtn" onclick="refreshVault()">Refresh vault info</button>
   </header>
 
   <div id="toasts"></div>
@@ -411,7 +413,6 @@
       </div>
       <div class="row" style="justify-content:space-between;align-items:center">
         <h2 style="margin:0">Tracked books</h2>
-        <button class="btn ghost" id="refreshVaultBtn" onclick="refreshVault()">Refresh vault info</button>
       </div>
       <div class="row">
         <div class="viewtoggle" id="kindToggle">
@@ -476,13 +477,13 @@
       </div>
 
       <h2 style="margin-bottom:.3rem">Currently reading</h2>
-      <div id="readingNowList" class="cover-grid"><div class="empty-state">loading…</div></div>
+      <div id="readingNowList" class="cover-grid" ondragover="rdListDragOver(event)" ondragleave="event.currentTarget.classList.remove('dragover')" ondrop="readingNowDrop(event)"><div class="empty-state">loading…</div></div>
 
-      <div class="row" style="justify-content:space-between;align-items:center;margin:.8rem 0 .3rem">
+      <div class="row" style="align-items:center;gap:.5rem;margin:.8rem 0 .3rem">
         <h2 style="margin:0">Queue</h2>
-        <small class="muted" id="queueHint" hidden>Drag to reorder</small>
+        <small class="muted" id="queueHint" hidden>— drag to reorder, or drag to/from Currently reading</small>
       </div>
-      <div id="readingQueueList"><div class="empty-state">loading…</div></div>
+      <div id="readingQueueList" ondragover="rdListDragOver(event)" ondragleave="event.currentTarget.classList.remove('dragover')" ondrop="queueListDrop(event)"><div class="empty-state">loading…</div></div>
 
       <div class="row" style="justify-content:space-between;align-items:center;margin:.9rem 0 .3rem">
         <h2 style="margin:0">Recently completed</h2>
@@ -1876,7 +1877,8 @@ function renderReadingNow(){
   $('readingNowList').className = 'cover-grid';
   $('readingNowList').innerHTML = list.length ? list.map(it => {
     const since = it.start_date ? 'since ' + esc(it.start_date) : '';
-    return `<div class="cover-card${it.cover ? '' : ' nocover'}">
+    return `<div class="cover-card${it.cover ? '' : ' nocover'}" draggable="true" data-id="${it.id}"
+         ondragstart="rdDragStart(event,${it.id},'reading')" ondragend="rdDragEnd(event)">
       ${rdTileInner(it, since)}
       <button class="cover-done" title="Mark completed" aria-label="Mark completed" tabindex="-1" onclick="openCompletionForm(${it.id})">✓</button>
       <button class="cover-x" title="Remove from currently reading" aria-label="Remove" tabindex="-1" onclick="removeReadingItem(${it.id})">&times;</button>
@@ -1886,18 +1888,18 @@ function renderReadingNow(){
 
 function renderReadingQueue(){
   const list = _readingState.queue;
-  $('queueHint').hidden = list.length < 2;
+  $('queueHint').hidden = list.length < 2 && !_readingState.reading.length;
   $('readingQueueList').className = 'cover-grid';
   $('readingQueueList').innerHTML = list.length ? list.map(it =>
     `<div class="cover-card${it.cover ? '' : ' nocover'}" draggable="true" data-id="${it.id}"
-         ondragstart="queueDragStart(event,${it.id})" ondragend="queueDragEnd(event)"
-         ondragover="queueDragOver(event)" ondragleave="event.currentTarget.classList.remove('dragover')"
+         ondragstart="rdDragStart(event,${it.id},'queue')" ondragend="rdDragEnd(event)"
+         ondragover="rdListDragOver(event)" ondragleave="event.currentTarget.classList.remove('dragover')"
          ondrop="queueDrop(event,${it.id})">
       ${rdTileInner(it)}
       <button class="cover-start" title="Start reading" aria-label="Start reading" tabindex="-1" onclick="startQueuedItem(${it.id})">▶</button>
       <button class="cover-x" title="Remove from queue" aria-label="Remove" tabindex="-1" onclick="removeReadingItem(${it.id})">&times;</button>
     </div>`
-  ).join('') : `<div class="empty-state">Queue is empty — add books to read next from the Books tab.</div>`;
+  ).join('') : `<div class="empty-state">Queue is empty — add books to read next from the Books tab, or drag one from Currently reading.</div>`;
 }
 
 // _completedEditMode gates the per-row edit/delete controls in the Recently-
@@ -1946,30 +1948,61 @@ function renderReadingCompleted(){
         <div class="rd-sub">${meta}</div>
       </div>
       <div class="rd-actions">
-        ${r.volume ? `<span class="rd-vol">Vol ${esc(r.volume)}</span>` : ''}${abandoned}${badge}${controls}
+        ${abandoned}${r.volume ? `<span class="rd-vol">Vol ${esc(r.volume)}</span>` : ''}${badge}${controls}
       </div>
     </div>`;
   }).join('') : `<div class="empty-state">No completed reads logged yet.</div>`;
 }
 
-/* queue drag-reorder — HTML5 native. Reorders _readingState.queue locally for an
-   instant repaint, then persists the new id order. */
-let _queueDragId = null;
-function queueDragStart(e, id){ _queueDragId = id; e.currentTarget.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move'; }
-function queueDragEnd(e){ e.currentTarget.classList.remove('dragging'); document.querySelectorAll('#readingQueueList .cover-card').forEach(x => x.classList.remove('dragover')); _queueDragId = null; }
-function queueDragOver(e){ e.preventDefault(); e.dataTransfer.dropEffect = 'move'; e.currentTarget.classList.add('dragover'); }
+/* reading drag-and-drop — HTML5 native (#70). Same-list drag on the Queue
+   reorders locally then persists the new id order. Cross-list drag mirrors the
+   ▶ / "Add to queue" buttons: Queue → Currently-reading starts the read,
+   Currently-reading → Queue moves it back (clearing its start date). */
+let _dragId = null, _dragFrom = null; // _dragFrom: 'queue' | 'reading'
+function rdDragStart(e, id, from){ _dragId = id; _dragFrom = from; e.currentTarget.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move'; }
+function rdDragEnd(e){
+  e.currentTarget.classList.remove('dragging');
+  document.querySelectorAll('.cover-card.dragover, .cover-grid.dragover').forEach(x => x.classList.remove('dragover'));
+  _dragId = null; _dragFrom = null;
+}
+function rdListDragOver(e){ e.preventDefault(); e.dataTransfer.dropEffect = 'move'; e.currentTarget.classList.add('dragover'); }
+
 function queueDrop(e, targetId){
   e.preventDefault();
+  e.stopPropagation();
   e.currentTarget.classList.remove('dragover');
-  if(_queueDragId == null || _queueDragId === targetId) return;
+  if(_dragId == null) return;
+  if(_dragFrom === 'reading') return moveReadingItemToQueue(_dragId);
+  if(_dragId === targetId) return;
   const q = _readingState.queue;
-  const from = q.findIndex(x => x.id === _queueDragId);
+  const from = q.findIndex(x => x.id === _dragId);
   const to = q.findIndex(x => x.id === targetId);
   if(from < 0 || to < 0) return;
   const [moved] = q.splice(from, 1);
   q.splice(to, 0, moved);
   renderReadingQueue();
   send('PUT', '/api/reading/queue', { ids: q.map(x => x.id) }).then(r => { if(!r.ok) loadReading(); });
+}
+function queueListDrop(e){
+  e.preventDefault();
+  e.currentTarget.classList.remove('dragover');
+  if(_dragId == null || _dragFrom !== 'reading') return;
+  moveReadingItemToQueue(_dragId);
+}
+function readingNowDrop(e){
+  e.preventDefault();
+  e.currentTarget.classList.remove('dragover');
+  if(_dragId == null || _dragFrom !== 'queue') return;
+  startQueuedItem(_dragId);
+}
+async function moveReadingItemToQueue(id){
+  const it = _readingState.reading.find(x => x.id === id);
+  if(!it) return;
+  const r = await send('POST', '/api/reading/queue', { book_id: it.book_id, volume: it.volume });
+  if(need(r)) return;
+  if(!r.ok) return toast('Error: ' + (r.data.error || r.status), 'error');
+  toast('Moved to queue.', 'success');
+  loadReading();
 }
 
 async function startQueuedItem(id){
