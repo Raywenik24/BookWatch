@@ -76,6 +76,25 @@ func TestAuth_writeRequiresToken(t *testing.T) {
 	}
 }
 
+// Client routes (#62) are served the SPA shell so a refresh/bookmark on
+// /books, /updates?kind=ln, etc. loads the app; only unmatched /api/ paths 404.
+func TestClientRoutesServeIndex(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	for _, p := range []string{"/", "/books", "/updates", "/randomizer", "/settings", "/books?kind=ln"} {
+		rec := do(h, "GET", p, "", "")
+		if rec.Code != http.StatusOK {
+			t.Errorf("GET %s: got %d, want 200", p, rec.Code)
+		}
+		if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+			t.Errorf("GET %s: content-type %q, want text/html", p, ct)
+		}
+	}
+	// Unmatched API paths are still genuine 404s, not the SPA shell.
+	if rec := do(h, "GET", "/api/nope", "", ""); rec.Code != http.StatusNotFound {
+		t.Errorf("GET /api/nope: got %d, want 404", rec.Code)
+	}
+}
+
 // The LN add-preview endpoint (#52) dry-runs the scrape and must inline the
 // cover as a data: URI (the source host isn't in the CSP img-src whitelist),
 // while writing no note. It's auth-gated like every other write route.

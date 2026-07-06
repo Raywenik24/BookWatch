@@ -191,7 +191,11 @@ func logging(next http.Handler) http.Handler {
 // ── read handlers ─────────────────────────────────────────────
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
+	// Serve the SPA shell for any non-API GET path so a refresh or bookmark on a
+	// client route (/books, /updates, …) lands on the app, which then reads
+	// location.pathname to activate the right tab (#62). Unmatched /api/ paths
+	// fall through to here too — those are genuine 404s.
+	if strings.HasPrefix(r.URL.Path, "/api/") {
 		http.NotFound(w, r)
 		return
 	}

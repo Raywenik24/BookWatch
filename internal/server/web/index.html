@@ -832,13 +832,55 @@ function sseConnect(url, { headers = {}, onEvent, onOpen, onFatal } = {}){
   return { close(){ closed = true; if(ctrl) ctrl.abort(); } };
 }
 
-/* nav */
+/* nav + History-API routes (#62): every tab is a real, bookmarkable path
+   (/updates, /books, /randomizer, …). Deep-link filters ride as a ?kind= query
+   param on the two tabs that support it (Books, Updates) and just drive the
+   existing setKindView/setUpdatesKind. The server serves the SPA shell for any
+   non-API path, so the client reads location on load + popstate and activates
+   the matching tab. The section ids match the data-s values; only Randomizer's
+   path differs (section id "randomize" ↔ path "randomizer"). */
+const TAB_TO_PATH = { updates:'updates', books:'books', randomize:'randomizer',
+  sources:'sources', settings:'settings', logs:'logs', about:'about' };
+const PATH_TO_TAB = Object.fromEntries(Object.entries(TAB_TO_PATH).map(([t,p]) => [p,t]));
+
+// showTab activates a tab's nav button + section, no history change. Unknown ids
+// fall back to Updates. Returns the tab actually shown.
+function showTab(tab){
+  if(!TAB_TO_PATH[tab]) tab = 'updates';
+  document.querySelectorAll('#nav button').forEach(x => x.classList.toggle('active', x.dataset.s===tab));
+  document.querySelectorAll('section').forEach(s => s.classList.toggle('active', s.id===tab));
+  if(tab === 'randomize') rerollRandomize();
+  return tab;
+}
+
+// navPath is the URL for a tab, carrying the current kind filter as ?kind= on
+// Books/Updates so back/forward and a copied link stay pre-filtered.
+function navPath(tab){
+  let p = '/' + TAB_TO_PATH[tab];
+  if(tab === 'books' && kindView) p += '?kind=' + kindView;
+  else if(tab === 'updates' && updatesKind !== 'all') p += '?kind=' + updatesKind;
+  return p;
+}
+
 $('nav').addEventListener('click', e => {
   const b = e.target.closest('button[data-s]'); if(!b) return;
-  document.querySelectorAll('#nav button').forEach(x => x.classList.toggle('active', x===b));
-  document.querySelectorAll('section').forEach(s => s.classList.toggle('active', s.id===b.dataset.s));
-  if(b.dataset.s === 'randomize') rerollRandomize();
+  const tab = showTab(b.dataset.s);
+  history.pushState({tab}, '', navPath(tab));
 });
+
+// applyRoute reads location (pathname + ?kind=) and activates the matching tab,
+// applying a deep-link filter through the existing filter functions. Runs on
+// first load and on back/forward.
+function applyRoute(){
+  const seg = location.pathname.replace(/^\/+|\/+$/g, '').split('/')[0];
+  const tab = showTab(PATH_TO_TAB[seg] || 'updates');
+  const kind = new URLSearchParams(location.search).get('kind');
+  if(kind){
+    if(tab === 'books' && (kind === 'ln' || kind === 'book')) setKindView(kind);
+    else if(tab === 'updates' && (kind === 'all' || kind === 'ln' || kind === 'book')) setUpdatesKind(kind);
+  }
+}
+window.addEventListener('popstate', applyRoute);
 
 /* theme */
 let themePicker = null;
@@ -1313,6 +1355,9 @@ async function loadBooks(){
   booksData = await getJSON('/api/books') || [];
   updateAuthorOptions();
   renderBooks($('bookFilter') ? $('bookFilter').value : '');
+  // A /randomizer deep-link (#62) can activate the tab before books arrive —
+  // re-roll once they do so it isn't stuck on the empty state.
+  if($('randomize').classList.contains('active')) rerollRandomize();
 }
 let logTab = lsGet('log_tab') || 'activity';
 function setLogTab(t){
@@ -2574,6 +2619,7 @@ document.querySelectorAll('#randomizeKindToggle button').forEach(b => b.classLis
 setLogTab(logTab);
 setSrcTab(srcTab);
 setUpdatesKind(updatesKind); // syncs the toggle buttons to the restored kind and loads
+applyRoute(); // activate the tab (+ any ?kind= deep-link filter) for the current URL (#62)
 loadBooks(); loadLogs(); loadEvents(); loadSources(); loadSettings(); loadVersion();
 // Seed the bar with current state (the stream only pushes on change, so an
 // in-flight check at page load needs one initial read), then follow via push.
