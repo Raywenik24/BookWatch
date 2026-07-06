@@ -204,7 +204,13 @@ func extractDescription(doc *goquery.Document, rl Rules) string {
 	// `<p><b>SYNOPSIS</b></p>` then the blurb `<p>`s, then an "Associated Names"
 	// heading or the volume <ol>). Not expressible as a stored CSS selector, so
 	// it lives here as a last resort after the configured selectors miss.
-	return synopsisAfterLabel(doc)
+	if s := synopsisAfterLabel(doc); s != "" {
+		return s
+	}
+	// Fallback for jnovels pages where the label sits inline as a bold/span
+	// prefix inside the same <p> as the blurb, e.g.
+	// `<p><span><b>Description</b></span><br/>Zagan is feared...</p>`.
+	return descriptionFromLabelPrefixParagraph(doc)
 }
 
 // synopsisAfterLabel finds a heading/paragraph whose text is just "SYNOPSIS"
@@ -230,6 +236,32 @@ func synopsisAfterLabel(doc *goquery.Document) string {
 		return false // found the label; stop scanning
 	})
 	return strings.Join(out, " ")
+}
+
+// descriptionFromLabelPrefixParagraph finds a <p> whose leading child is a
+// <b>/<span> reading "Description" or "Synopsis" and returns the rest of that
+// paragraph's text (the blurb sits as a loose text node after a <br/>, in the
+// same <p> as the label — no following-sibling <p>s to walk).
+func descriptionFromLabelPrefixParagraph(doc *goquery.Document) string {
+	var result string
+	doc.Find("p").EachWithBreak(func(_ int, p *goquery.Selection) bool {
+		label := p.Find("b, span").First()
+		if label.Length() == 0 {
+			return true
+		}
+		text := strings.ToUpper(strings.TrimSpace(label.Text()))
+		if text != "DESCRIPTION" && text != "SYNOPSIS" {
+			return true
+		}
+		clone := p.Clone()
+		clone.Find("b, span").First().Remove()
+		if remaining := strings.TrimSpace(clone.Text()); remaining != "" {
+			result = remaining
+			return false
+		}
+		return true
+	})
+	return result
 }
 
 func paragraphs(container *goquery.Selection) string {

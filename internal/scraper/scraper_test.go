@@ -110,6 +110,35 @@ func TestParseNovelHTML_synopsisLabelFallback(t *testing.T) {
 	}
 }
 
+// jnovels pages sometimes put the label inline as a bold/span prefix inside
+// the same <p> as the blurb (verified live on
+// maou-no-ore-ga-dorei-elf-wo-yome-ni-shitanda-ga-dou-medereba-), instead of
+// a standalone label <p> followed by blurb <p>s. Neither DescSels nor
+// synopsisAfterLabel match this shape.
+const novelPageInlineLabel = `<!doctype html><html><body>
+<h1 class="post-title entry-title">Maou no Ore ga Dorei Elf Epub</h1>
+<div class="post-content">
+  <div class="featured-media"><img src="/covers/m.jpg"></div>
+  <p><span style="color:#ff0000;"><b>Description</b></span><br />
+  Zagan is feared as an evil mage, but all he wants is a quiet life.</p>
+  <p><b>Associated Names</b><br />Maou no Ore ga Dorei Elf</p>
+  <ol>
+    <li>VOLUME 01 Epub</li>
+  </ol>
+</div>
+</body></html>`
+
+func TestParseNovelHTML_inlineLabelParagraphFallback(t *testing.T) {
+	nd, err := ParseNovelHTML(novelPageInlineLabel, DefaultRules())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "Zagan is feared as an evil mage, but all he wants is a quiet life."
+	if nd.Description != want {
+		t.Errorf("desc %q, want %q", nd.Description, want)
+	}
+}
+
 func TestParseNovelHTML_missingTitle(t *testing.T) {
 	if _, err := ParseNovelHTML(`<html><body><ol><li>VOLUME 1</li></ol></body></html>`, DefaultRules()); err == nil {
 		t.Error("expected error on missing title")
