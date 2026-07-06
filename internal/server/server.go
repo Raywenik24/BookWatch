@@ -128,6 +128,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/sources/test", s.auth(s.handleTest))
 	mux.HandleFunc("POST /api/scrape/preview", s.auth(s.handleScrapePreview))
 	mux.HandleFunc("PUT /api/settings", s.auth(s.handleSetSettings))
+	mux.HandleFunc("POST /api/vault/setup", s.auth(s.handleVaultSetup))
 	mux.HandleFunc("POST /api/trackers", s.auth(s.handleUpsertTracker))
 	mux.HandleFunc("DELETE /api/trackers/{id}", s.auth(s.handleDeleteTracker))
 	mux.HandleFunc("PUT /api/trackers/{id}/baseline", s.auth(s.handleUpdateBaseline))
@@ -1835,6 +1836,82 @@ func (s *Server) handleSetSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "saved"})
+}
+
+// handleVaultSetup is the final confirm of the vault setup wizard (issue #65).
+// It persists every chosen path to the settings table, then does all the disk
+// writes at once: MkdirAll on each configured folder, the reading-log note
+// (create-if-missing, with a table header), and a `.obsidian/` marker dir so
+// Obsidian recognizes the folder as a vault. Every disk write is create-if-
+// missing — existing files and folders are never clobbered.
+func (s *Server) handleVaultSetup(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		VaultDir           string `json:"vault_dir"`
+		ScanRoot           string `json:"scan_root"`
+		NewNoteDir         string `json:"new_note_dir"`
+		AttachmentsDir     string `json:"attachments_dir"`
+		BookScanRoot       string `json:"book_scan_root"`
+		BookNewNoteDir     string `json:"book_new_note_dir"`
+		BookAttachmentsDir string `json:"book_attachments_dir"`
+		ReadingLogPath     string `json:"reading_log_path"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errBody("bad body"))
+		return
+	}
+	vaultDir := strings.TrimSpace(req.VaultDir)
+	if vaultDir == "" {
+		writeJSON(w, http.StatusBadRequest, errBody("vault root is required"))
+		return
+	}
+
+	// Persist the chosen paths (blank sub-paths are allowed — they fall back to
+	// the Light Novel field / server defaults via the effective* lookups).
+	kv := map[string]string{
+		"vault_dir":            vaultDir,
+		"scan_root":            strings.TrimSpace(req.ScanRoot),
+		"new_note_dir":         strings.TrimSpace(req.NewNoteDir),
+		"attachments_dir":      strings.TrimSpace(req.AttachmentsDir),
+		"book_scan_root":       strings.TrimSpace(req.BookScanRoot),
+		"book_new_note_dir":    strings.TrimSpace(req.BookNewNoteDir),
+		"book_attachments_dir": strings.TrimSpace(req.BookAttachmentsDir),
+		"reading_log_path":     strings.TrimSpace(req.ReadingLogPath),
+	}
+	for k, v := range kv {
+		if err := s.st.SetSetting(k, v); err != nil {
+			writeErr(w, err)
+			return
+		}
+	}
+
+	// MkdirAll the vault root and every configured sub-folder (relatives resolve
+	// against the vault root; absolutes are used as-is).
+	dirs := []string{vaultDir}
+	for _, rel := range []string{
+		kv["scan_root"], kv["new_note_dir"], kv["attachments_dir"],
+		kv["book_scan_root"], kv["book_new_note_dir"], kv["book_attachments_dir"],
+	} {
+		if rel != "" {
+			dirs = append(dirs, vault.ResolvePath(vaultDir, rel))
+		}
+	}
+	dirs = append(dirs, filepath.Join(vaultDir, ".obsidian"))
+	for _, d := range dirs {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			writeJSON(w, http.StatusInternalServerError, errBody("create folder "+d+": "+err.Error()))
+			return
+		}
+	}
+
+	// Reading-log note — create-if-missing, with a table header.
+	if lp := kv["reading_log_path"]; lp != "" {
+		if err := reading.EnsureLog(vault.ResolvePath(vaultDir, lp)); err != nil {
+			writeJSON(w, http.StatusInternalServerError, errBody("create reading log: "+err.Error()))
+			return
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // ── helpers ───────────────────────────────────────────────────

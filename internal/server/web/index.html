@@ -635,7 +635,10 @@
       </div>
 
       <div class="card">
-        <h3>Paths</h3>
+        <div class="row" style="justify-content:space-between;align-items:center;margin:0 0 .4rem">
+          <h3 style="margin:0">Paths</h3>
+          <button class="btn ghost" onclick="openWizard()">Run setup wizard</button>
+        </div>
         <div class="rule-grid" style="grid-template-columns:160px 1fr">
           <label>Vault root</label><input id="setVaultDir" placeholder="D:\...\vault (full path)">
         </div>
@@ -718,6 +721,13 @@
     <div class="modal">
       <button class="modal-close" onclick="closeReadingModal()" aria-label="Close">&times;</button>
       <div id="readingModalBody"></div>
+    </div>
+  </div>
+  <!-- vault setup wizard (#65) — numbered-step modal that builds the folder tree -->
+  <div id="wizardModalBackdrop" class="modal-backdrop" hidden onclick="if(event.target===this)closeWizard()">
+    <div class="modal">
+      <button class="modal-close" onclick="closeWizard()" aria-label="Close">&times;</button>
+      <div id="wizardBody"></div>
     </div>
   </div>
   </div>
@@ -2825,6 +2835,139 @@ async function saveSettings(){
   toast(r.ok?'Settings saved.':'Error: '+(r.data.error||r.status), r.ok?'success':'error');
 }
 
+/* ── vault setup wizard (#65) ──────────────────────────────────────────────
+   A numbered-step modal that turns "bring your own vault" into a guided build:
+   pick a root, accept/edit sensible sub-path defaults, confirm, and the server
+   creates the folder tree + reading log + .obsidian/ marker in one shot. Auto-
+   opens on first run (no vault configured) and is re-runnable from Settings. */
+const WIZARD_DEFAULTS = {
+  scan_root:'LightNovel', new_note_dir:'LightNovel', attachments_dir:'LightNovel/_attachments',
+  book_scan_root:'Book', book_new_note_dir:'Book', book_attachments_dir:'Book/_attachments',
+  reading_log_path:'_Read.md' };
+const WIZARD_KEYS = ['vault_dir','scan_root','new_note_dir','attachments_dir',
+  'book_scan_root','book_new_note_dir','book_attachments_dir','reading_log_path'];
+let _wizard = null;
+
+async function openWizard(){
+  let s = {};
+  try { s = await getJSON('/api/settings'); } catch(e){}
+  const eff = s.effective||{}, ov = s.overrides||{};
+  const hasExisting = WIZARD_KEYS.some(k => (ov[k]||'').trim() !== '');
+  const pick = k => (ov[k] || WIZARD_DEFAULTS[k] || '').trim();
+  const data = { vault_dir:(ov.vault_dir||eff.vault_dir||'').trim() };
+  WIZARD_KEYS.slice(1).forEach(k => data[k] = pick(k));
+  const steps = ['root','paths', hasExisting?'warn':null, 'confirm','done'].filter(Boolean);
+  _wizard = { step:0, steps, data };
+  $('wizardModalBackdrop').hidden = false;
+  renderWizard();
+}
+function closeWizard(){ $('wizardModalBackdrop').hidden = true; $('wizardBody').innerHTML = ''; _wizard = null; }
+
+/* Join a vault-relative sub-path onto the root for display; an absolute sub-path
+   (drive-letter or leading slash) is shown as-is, matching server ResolvePath. */
+function wizJoin(root, rel){
+  if(!rel) return '';
+  if(/^([a-zA-Z]:[\\/]|[\\/])/.test(rel)) return rel.replace(/\//g,'\\');
+  return (root||'').replace(/[\\/]+$/,'') + '\\' + rel.replace(/\//g,'\\');
+}
+/* Pull whatever inputs the current step shows back into _wizard.data. */
+function wizardCapture(){
+  WIZARD_KEYS.forEach(k => { const el = $('wiz_'+k); if(el) _wizard.data[k] = el.value.trim(); });
+}
+function wizardNav(delta){
+  wizardCapture();
+  const w = _wizard, id = w.steps[w.step];
+  if(delta>0 && id==='root' && !w.data.vault_dir){ toast('Pick a vault root folder first.','error'); return; }
+  if(delta>0 && id==='confirm'){ wizardCreate(); return; }   // confirm → build, then advance
+  w.step = Math.max(0, Math.min(w.steps.length-1, w.step+delta));
+  renderWizard();
+}
+async function wizardCreate(){
+  const w = _wizard;
+  const h = toast('Creating vault…','busy');
+  const r = await send('POST','/api/vault/setup', w.data);
+  if(r.status===401){ h.update('Unauthorized — set the password in Settings.','error'); return; }
+  if(!r.ok){ h.update('Error: '+(r.data.error||r.status),'error'); return; }
+  h.close();
+  loadSettings(); loadBooks(); loadUpdates(); loadEvents();   // reflect the new paths everywhere
+  w.step = w.steps.indexOf('done');
+  renderWizard();
+}
+function wizPathRow(label, key){
+  return `<label>${label}</label><input id="wiz_${key}" value="${esc(_wizard.data[key])}">`;
+}
+function renderWizard(){
+  const w = _wizard, id = w.steps[w.step], d = w.data;
+  let body = '';
+  if(id==='root'){
+    body = `<h3>Vault root</h3>
+      <p class="muted">Pick the folder that will be your Obsidian vault. It doesn't need to exist yet — the wizard creates it. Enter a full path.</p>
+      <div class="rule-grid" style="grid-template-columns:160px 1fr">
+        <label>Vault root</label><input id="wiz_vault_dir" value="${esc(d.vault_dir)}" placeholder="D:\\...\\MyVault">
+      </div>`;
+  } else if(id==='paths'){
+    body = `<h3>Folders</h3>
+      <p class="muted">Sensible defaults are filled in — keep them all for a single-folder setup, or edit any. Each is relative to the vault root above (or a full path).</p>
+      <h4>Light Novel</h4>
+      <div class="rule-grid" style="grid-template-columns:160px 1fr">
+        ${wizPathRow('Scan root','scan_root')}
+        ${wizPathRow('New-note folder','new_note_dir')}
+        ${wizPathRow('Attachments folder','attachments_dir')}
+      </div>
+      <h4>Book</h4>
+      <div class="rule-grid" style="grid-template-columns:160px 1fr">
+        ${wizPathRow('Scan root','book_scan_root')}
+        ${wizPathRow('New-note folder','book_new_note_dir')}
+        ${wizPathRow('Attachments folder','book_attachments_dir')}
+      </div>
+      <h4>Reading</h4>
+      <div class="rule-grid" style="grid-template-columns:160px 1fr">
+        ${wizPathRow('Reading log note','reading_log_path')}
+      </div>`;
+  } else if(id==='warn'){
+    body = `<h3>Heads up</h3>
+      <p>You already have paths configured. Finishing the wizard will <b>override</b> those path settings with the choices you just made.</p>
+      <p class="muted">Only the settings change — your existing notes and folders on disk are never touched or deleted.</p>`;
+  } else if(id==='confirm'){
+    const rows = [
+      ['Vault root', d.vault_dir],
+      ['LN scan root', wizJoin(d.vault_dir, d.scan_root)],
+      ['LN new-note', wizJoin(d.vault_dir, d.new_note_dir)],
+      ['LN attachments', wizJoin(d.vault_dir, d.attachments_dir)],
+      ['Book scan root', wizJoin(d.vault_dir, d.book_scan_root)],
+      ['Book new-note', wizJoin(d.vault_dir, d.book_new_note_dir)],
+      ['Book attachments', wizJoin(d.vault_dir, d.book_attachments_dir)],
+      ['Reading log', wizJoin(d.vault_dir, d.reading_log_path)],
+      ['Obsidian marker', wizJoin(d.vault_dir, '.obsidian')],
+    ].filter(r => r[1]);
+    body = `<h3>Ready to create</h3>
+      <p class="muted">These are created only if they don't already exist — nothing existing is overwritten:</p>
+      <div class="rule-grid" style="grid-template-columns:160px 1fr;gap:.2rem .8rem">
+        ${rows.map(r => `<label>${r[0]}</label><code style="word-break:break-all">${esc(r[1])}</code>`).join('')}
+      </div>`;
+  } else if(id==='done'){
+    body = `<h3>All set 🎉</h3>
+      <p>Your folder tree, an empty reading log, and the <code>.obsidian/</code> marker are ready.</p>
+      <p><b>Open it in Obsidian:</b> launch Obsidian → <i>Open folder as vault</i> → choose:</p>
+      <p><code style="word-break:break-all">${esc(d.vault_dir)}</code></p>`;
+  }
+  const isFirst = w.step===0, isDone = id==='done', isConfirm = id==='confirm';
+  const nav = `<div class="row" style="justify-content:space-between;align-items:center;margin-top:1rem">
+      ${isFirst||isDone ? '<span></span>' : `<button class="btn ghost" onclick="wizardNav(-1)">Back</button>`}
+      ${isDone ? `<button class="btn" onclick="closeWizard()">Done</button>`
+               : `<button class="btn" onclick="wizardNav(1)">${isConfirm?'Create':'Next'}</button>`}
+    </div>`;
+  $('wizardBody').innerHTML = `<h2 style="margin:0 0 .2rem">Vault setup</h2>
+    <p class="muted" style="margin:0 0 .8rem">Step ${w.step+1} of ${w.steps.length}</p>
+    ${body}${nav}`;
+}
+/* Auto-open on first run: no vault has been configured (no override yet). */
+async function maybeAutoWizard(){
+  let s = {};
+  try { s = await getJSON('/api/settings'); } catch(e){ return; }
+  if(!((s.overrides||{}).vault_dir||'').trim()) openWizard();
+}
+
 /* ── Sources sub-tabs ────────────────────────────────────────── */
 let srcTab = lsGet('src_tab') || 'watchlist';
 function setSrcTab(t){
@@ -3262,7 +3405,7 @@ setLogTab(logTab);
 setSrcTab(srcTab);
 setUpdatesKind(updatesKind); // syncs the toggle buttons to the restored kind and loads
 applyRoute(); // activate the tab (+ any ?kind= deep-link filter) for the current URL (#62)
-loadBooks(); loadLogs(); loadEvents(); loadSources(); loadSettings(); loadVersion();
+loadBooks(); loadLogs(); loadEvents(); loadSources(); loadSettings(); loadVersion(); maybeAutoWizard();
 // Seed the bar with current state (the stream only pushes on change, so an
 // in-flight check at page load needs one initial read), then follow via push.
 refreshStatus(); connectStatusStream();

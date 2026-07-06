@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -37,6 +38,29 @@ var titleRE = regexp.MustCompile(`\[\[([^\]]+)\]\]`)
 // separatorRow bootstraps a table when the log has none yet. The right-aligned
 // volume column (`---:`) matches the hand-authored note's own separator.
 const separatorRow = "| ------ | ------ | ---: | ---------- | ---------- |"
+
+// headerRow labels the columns of a brand-new log created by the vault wizard
+// (issue #65). The hand-maintained note lets its first data row double as the
+// header, but a wizard-created log has no reads yet, so it gets an explicit
+// header above the separator instead.
+const headerRow = "| Month | Title | Vol | Start | End |"
+
+// EnsureLog creates an empty reading log at path — a header row + separator so
+// the note renders as a table in Obsidian — but only if the file doesn't
+// already exist; an existing log (even an empty one) is left byte-for-byte
+// untouched. Parent directories are created as needed. Used by the vault setup
+// wizard's final confirm.
+func EnsureLog(path string) error {
+	if _, err := os.Stat(path); err == nil {
+		return nil // already exists — never clobber
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return vault.AtomicWrite(path, []byte(headerRow+"\n"+separatorRow+"\n"), 0o644)
+}
 
 // ParseFile reads and parses the log at path. A missing file is not an error —
 // there's simply nothing read yet, so it returns an empty slice.

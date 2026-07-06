@@ -161,6 +161,50 @@ func TestAppendCompletedLeavesExistingBytesUntouched(t *testing.T) {
 	}
 }
 
+func TestEnsureLogCreatesHeaderThenAppendable(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sub", "_Read.md") // nested — parent must be created
+
+	if err := EnsureLog(path); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("log not created: %v", err)
+	}
+	if !strings.Contains(string(got), separatorRow) {
+		t.Errorf("header/separator missing from fresh log:\n%s", got)
+	}
+	// A fresh log parses to zero reads (header + separator carry no [[link]]).
+	if reads := Parse(got); len(reads) != 0 {
+		t.Errorf("fresh log parsed %d reads, want 0", len(reads))
+	}
+	// The first append lands as a real row and parses back.
+	if err := AppendCompleted(path, NewCompletedRow("First Book", "1", "2026.07.01", "2026.07.02", true)); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = os.ReadFile(path)
+	if CountFor(Parse(got), "First Book", "1") != 1 {
+		t.Errorf("append after EnsureLog did not parse back:\n%s", got)
+	}
+}
+
+func TestEnsureLogNeverClobbers(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "_Read.md")
+	original := "| 202601 | [[Kept]] | 5 | 2026.01.01 | 2026.01.02 |\n"
+	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureLog(path); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(path)
+	if string(got) != original {
+		t.Errorf("existing log was clobbered:\ngot  %q\nwant %q", got, original)
+	}
+}
+
 func TestAppendCompletedUnknownDatesBlankCells(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "_Read.md")
