@@ -180,6 +180,43 @@ var migrations = []string{
 		created_at TEXT NOT NULL,
 		UNIQUE(book_id, volume)
 	);`,
+	// v9: Calibre import (#75). A resumable import session drives read → group →
+	// match → stage; one row per session, at most one not 'done' at a time.
+	// import_items is one row per work unit (an LN series with its volumes, or a
+	// regular book), keyed by the unit's primary Calibre uuid so a resume re-reads
+	// the library and reconciles by uuid without persisting book bodies.
+	// import_processed records every Calibre uuid ever handled (incl. rejected/
+	// archived) so a later re-run only picks up newly-added books — it outlives a
+	// single session, and Start-over clears only its own session's uuids.
+	`CREATE TABLE import_sessions (
+		id             INTEGER PRIMARY KEY,
+		status         TEXT NOT NULL DEFAULT 'running',
+		library_path   TEXT NOT NULL,
+		staging_dir    TEXT NOT NULL,
+		stop_requested INTEGER NOT NULL DEFAULT 0,
+		total          INTEGER NOT NULL DEFAULT 0,
+		started_at     TEXT NOT NULL,
+		finished_at    TEXT
+	);
+	CREATE TABLE import_items (
+		id            INTEGER PRIMARY KEY,
+		session_id    INTEGER NOT NULL REFERENCES import_sessions(id) ON DELETE CASCADE,
+		seq           INTEGER NOT NULL,
+		kind          TEXT NOT NULL,
+		title         TEXT NOT NULL,
+		uuid          TEXT NOT NULL,
+		uuids         TEXT NOT NULL DEFAULT '',
+		state         TEXT NOT NULL DEFAULT 'pending',
+		resolved_link TEXT NOT NULL DEFAULT '',
+		candidates    TEXT NOT NULL DEFAULT '',
+		staged_files  TEXT NOT NULL DEFAULT '',
+		error         TEXT NOT NULL DEFAULT '',
+		UNIQUE(session_id, uuid)
+	);
+	CREATE TABLE import_processed (
+		uuid         TEXT PRIMARY KEY,
+		processed_at TEXT NOT NULL
+	);`,
 }
 
 func (s *Store) migrate() error {

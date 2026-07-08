@@ -59,6 +59,14 @@ type Server struct {
 	coverMu  sync.Mutex
 	coverIdx map[string]string // basename → abs path, lazy vault-wide cover index
 	coverAt  time.Time         // when coverIdx was last built (for TTL invalidation)
+
+	// importMu guards the single-flight Calibre import run (#75) and its live
+	// progress, published over the same SSE stream as the check run. The done/
+	// total figures come from the persisted item states (see importStatusPayload),
+	// so only the in-flight unit's title needs tracking here.
+	importMu    sync.Mutex
+	importBusy  bool
+	importTitle string
 }
 
 // coverIdxTTL is how long the vault-wide cover index is reused before a rebuild,
@@ -129,6 +137,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/scrape/preview", s.auth(s.handleScrapePreview))
 	mux.HandleFunc("PUT /api/settings", s.auth(s.handleSetSettings))
 	mux.HandleFunc("POST /api/vault/setup", s.auth(s.handleVaultSetup))
+	mux.HandleFunc("GET /api/import/calibre/status", s.handleImportStatus)
+	mux.HandleFunc("POST /api/import/calibre/preview", s.auth(s.handleImportPreview))
+	mux.HandleFunc("POST /api/import/calibre", s.auth(s.handleImportStart))
+	mux.HandleFunc("POST /api/import/calibre/stop", s.auth(s.handleImportStop))
+	mux.HandleFunc("POST /api/import/calibre/retry", s.auth(s.handleImportRetry))
+	mux.HandleFunc("POST /api/import/calibre/start-over", s.auth(s.handleImportStartOver))
 	mux.HandleFunc("POST /api/trackers", s.auth(s.handleUpsertTracker))
 	mux.HandleFunc("DELETE /api/trackers/{id}", s.auth(s.handleDeleteTracker))
 	mux.HandleFunc("PUT /api/trackers/{id}/baseline", s.auth(s.handleUpdateBaseline))
@@ -299,6 +313,8 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 			"book_new_note_dir":    s.effectiveBookNewNoteDir(),
 			"book_attachments_dir": s.effectiveBookAttachmentsDir(),
 			"reading_log_path":     s.effective("reading_log_path", s.cfg.ReadingLogPath),
+			"calibre_library_path": s.effective("calibre_library_path", s.cfg.CalibreLibraryPath),
+			"import_staging_dir":   s.effective("import_staging_dir", s.cfg.ImportStagingDir),
 		},
 		"overrides": saved,
 	})
@@ -1847,7 +1863,7 @@ func (s *Server) handleUpdateBaseline(w http.ResponseWriter, r *http.Request) {
 var pathSettingKeys = map[string]bool{
 	"vault_dir": true, "scan_root": true, "new_note_dir": true, "attachments_dir": true,
 	"book_scan_root": true, "book_new_note_dir": true, "book_attachments_dir": true,
-	"reading_log_path": true,
+	"reading_log_path": true, "calibre_library_path": true, "import_staging_dir": true,
 }
 
 func (s *Server) handleSetSettings(w http.ResponseWriter, r *http.Request) {

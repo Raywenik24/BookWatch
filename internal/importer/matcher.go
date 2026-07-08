@@ -159,6 +159,10 @@ func (m *Matcher) Match(b calibre.Book) Result {
 // unused — jnovels search hits carry no author to check against.
 func (m *Matcher) MatchSeries(name, _ string) Result { return m.matchLN(name) }
 
+// Classify exposes the internal classification for the orchestration (#75),
+// which groups items by kind before matching.
+func Classify(b calibre.Book) Kind { return classify(b) }
+
 // classify decides the backend for an item. A "Light Novel"-tagged book with a
 // series is one owned volume (archived); without a series it's a standalone LN
 // matched as its own series. A non-LN book routes to Polish when it looks Polish

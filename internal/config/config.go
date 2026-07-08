@@ -32,6 +32,14 @@ type Config struct {
 	// default — the reading engine is inert until a path is set in the UI.
 	ReadingLogPath string
 
+	// CalibreLibraryPath is the Calibre library folder (the one holding
+	// metadata.db) the import reads (#75). ImportStagingDir is where staged
+	// import notes are written — vault-relative or absolute, and deliberately
+	// outside the scan roots so review notes aren't picked up as tracked. Both
+	// are settings-table editable; these are the CLI/env fallbacks.
+	CalibreLibraryPath string
+	ImportStagingDir   string
+
 	Port      string // HTTP listen port
 	Password  string // shared password for write endpoints
 	CheckCron string // cron expr for the scheduled check
@@ -56,6 +64,9 @@ func Default() Config {
 		BookScanRoot:       env("BOOKWATCH_BOOK_SCAN_ROOT", ""),
 
 		ReadingLogPath: env("BOOKWATCH_READING_LOG_PATH", ""),
+
+		CalibreLibraryPath: env("BOOKWATCH_CALIBRE_LIBRARY_PATH", ""),
+		ImportStagingDir:   env("BOOKWATCH_IMPORT_STAGING_DIR", "_CalibreImport"),
 
 		Port:      env("BOOKWATCH_PORT", "8080"),
 		Password:  env("BOOKWATCH_PASSWORD", ""),
