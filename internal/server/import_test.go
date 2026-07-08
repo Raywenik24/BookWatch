@@ -4,8 +4,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
+	"os"
 	"path/filepath"
 	"testing"
+
+	"bookwatch/internal/importer"
 
 	_ "modernc.org/sqlite"
 )
@@ -109,5 +112,47 @@ func TestImportStopNoSession(t *testing.T) {
 	h, _, _ := newTestServer(t)
 	if rec := do(h, "POST", "/api/import/calibre/stop", "secret", ""); rec.Code != http.StatusOK {
 		t.Errorf("stop with no session: got %d, want 200", rec.Code)
+	}
+}
+
+func TestImportFinalizeMovesStagedNotes(t *testing.T) {
+	h, st, vaultDir := newTestServer(t)
+	for k, v := range map[string]string{
+		"new_note_dir":      "01_LightNovel_db",
+		"book_new_note_dir": "02_Books_db",
+		"attachments_dir":   "01_LightNovel_db/_attachments",
+	} {
+		if err := st.SetSetting(k, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Stage a matched book into the default staging dir (vault/_CalibreImport).
+	staging := filepath.Join(vaultDir, "_CalibreImport")
+	w := importer.NewWriter(staging, "2026-07-08")
+	if _, err := w.StageBook(importer.PlanBook{Title: "Migrated", Link: "https://openlibrary.org/works/OLxW"}); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := do(h, "POST", "/api/import/calibre/finalize", "secret", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("finalize = %d: %s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		Notes       int    `json:"notes"`
+		ExcludeHint string `json:"exclude_hint"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &got)
+	if got.Notes != 1 {
+		t.Errorf("moved %d notes, want 1", got.Notes)
+	}
+	if got.ExcludeHint != "01_LightNovel_db/_volumes" {
+		t.Errorf("exclude hint = %q", got.ExcludeHint)
+	}
+	if _, err := os.Stat(filepath.Join(vaultDir, "02_Books_db", "Migrated.md")); err != nil {
+		t.Errorf("book note not moved to 02_Books_db: %v", err)
+	}
+	// Auth is required.
+	if rec := do(h, "POST", "/api/import/calibre/finalize", "", ""); rec.Code != http.StatusUnauthorized {
+		t.Errorf("finalize without token: got %d, want 401", rec.Code)
 	}
 }

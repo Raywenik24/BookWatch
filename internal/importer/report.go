@@ -71,6 +71,31 @@ func WriteReport(stagingDir, today string, items []store.ImportItem) (string, Re
 	return path, sum, nil
 }
 
+// WriteFinalizeReport appends a dated "Finalize" section to the staging dir's
+// import report: how many notes + covers were moved into the vault, any notes
+// skipped because their target already existed, and the Excluded-files hint the
+// user should paste into Obsidian's Settings → Files & links so the moved
+// `_volumes` archive isn't indexed. excludeHint is vault-relative.
+func WriteFinalizeReport(stagingDir, today string, res FinalizeResult, excludeHint string) (string, error) {
+	var b strings.Builder
+	fmt.Fprintf(&b, "## Finalize %s\n\n", today)
+	fmt.Fprintf(&b, "- Moved **%d** notes and **%d** covers into the vault.\n", res.Notes, res.Covers)
+	if len(res.Skipped) > 0 {
+		fmt.Fprintf(&b, "- Skipped **%d** (a note with that name already exists — review by hand):\n", len(res.Skipped))
+		for _, s := range res.Skipped {
+			fmt.Fprintf(&b, "  - %s\n", s)
+		}
+	}
+	b.WriteString("\n> [!info] Exclude the volume archive from Obsidian\n")
+	fmt.Fprintf(&b, "> Add `%s` to **Settings → Files & links → Excluded files** so the untracked volume notes stay out of search and the graph. (The app never touches `.obsidian`.)\n", excludeHint)
+
+	path := filepath.Join(stagingDir, reportName)
+	if err := appendReport(path, b.String()); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
 // appendReport appends a section to the report (long-path-safe), creating it —
 // with a title header — on first write.
 func appendReport(path, section string) error {

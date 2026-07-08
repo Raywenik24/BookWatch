@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"path/filepath"
 
 	"bookwatch/internal/calibre"
 	"bookwatch/internal/importer"
+	"bookwatch/internal/service"
 	"bookwatch/internal/sources"
 	"bookwatch/internal/store"
 	"bookwatch/internal/vault"
@@ -215,6 +217,57 @@ func (s *Server) handleImportStartOver(w http.ResponseWriter, r *http.Request) {
 	s.st.LogEvent("import", "Discarded Calibre import session")
 	s.publishImportStatus()
 	writeJSON(w, http.StatusOK, map[string]string{"status": "discarded"})
+}
+
+// ── finalize ───────────────────────────────────────────────────
+
+// handleImportFinalize moves the notes still in the staging folder — the ones
+// the reviewer kept after checking them in Obsidian — into their real
+// destinations, then refreshes the vault so they get tracked. Non-destructive:
+// existing notes are never overwritten (a collision is skipped and reported),
+// and only the cover a surviving note references travels with it. Runs
+// synchronously (a local file move, no network) and returns the outcome.
+func (s *Server) handleImportFinalize(w http.ResponseWriter, r *http.Request) {
+	s.importMu.Lock()
+	busy := s.importBusy
+	s.importMu.Unlock()
+	if busy {
+		writeJSON(w, http.StatusConflict, errBody("stop the running import before finalizing"))
+		return
+	}
+
+	vaultDir := s.effective("vault_dir", s.cfg.VaultDir)
+	lnNoteRel := s.effective("new_note_dir", s.cfg.NewNoteDir)
+	dest := importer.FinalizeDest{
+		NoteDirLN:     vault.ResolvePath(vaultDir, lnNoteRel),
+		AttachDirLN:   vault.ResolvePath(vaultDir, s.effective("attachments_dir", s.cfg.AttachmentsDir)),
+		NoteDirBook:   vault.ResolvePath(vaultDir, s.effectiveBookNewNoteDir()),
+		AttachDirBook: vault.ResolvePath(vaultDir, s.effectiveBookAttachmentsDir()),
+	}
+
+	stagingDir := s.effectiveImportStagingDir()
+	res, err := importer.Finalize(stagingDir, dest)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+
+	// Track the moved notes (existing offline reconcile), then record the outcome
+	// + the Excluded-files hint in the report.
+	refresh, _ := service.RefreshVault(s.st, ScanRoots(s.cfg, s.st))
+	excludeHint := filepath.ToSlash(filepath.Join(lnNoteRel, "_volumes"))
+	importer.WriteFinalizeReport(stagingDir, vault.Today(), res, excludeHint)
+	s.st.LogEvent("import", fmt.Sprintf("Finalized Calibre import: %d notes, %d covers moved, %d skipped",
+		res.Notes, res.Covers, len(res.Skipped)))
+	s.publishImportStatus()
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"notes":        res.Notes,
+		"covers":       res.Covers,
+		"skipped":      res.Skipped,
+		"exclude_hint": excludeHint,
+		"refresh":      refresh,
+	})
 }
 
 // ── driver ─────────────────────────────────────────────────────

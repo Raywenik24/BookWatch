@@ -143,6 +143,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/import/calibre/stop", s.auth(s.handleImportStop))
 	mux.HandleFunc("POST /api/import/calibre/retry", s.auth(s.handleImportRetry))
 	mux.HandleFunc("POST /api/import/calibre/start-over", s.auth(s.handleImportStartOver))
+	mux.HandleFunc("POST /api/import/calibre/finalize", s.auth(s.handleImportFinalize))
 	mux.HandleFunc("POST /api/trackers", s.auth(s.handleUpsertTracker))
 	mux.HandleFunc("DELETE /api/trackers/{id}", s.auth(s.handleDeleteTracker))
 	mux.HandleFunc("PUT /api/trackers/{id}/baseline", s.auth(s.handleUpdateBaseline))
