@@ -135,31 +135,73 @@ func (c *OLClient) SearchByTitle(q string) ([]Candidate, error) {
 	}
 	out := make([]Candidate, 0, len(resp.Docs))
 	for _, d := range resp.Docs {
-		author := ""
-		if len(d.AuthorName) > 0 {
-			author = d.AuthorName[0]
-		}
-		authorKey := ""
-		if len(d.AuthorKey) > 0 {
-			authorKey = strings.TrimPrefix(d.AuthorKey[0], "/authors/")
-		}
-		lang := ""
-		if len(d.Language) > 0 {
-			lang = d.Language[0]
-		}
-		id := parseWorkID(d.Key)
-		out = append(out, Candidate{
-			Title:     d.Title,
-			Author:    author,
-			AuthorKey: authorKey,
-			Year:      d.FirstPublishYear,
-			Language:  lang,
-			WorkID:    id,
-			CoverURL:  coverURL(c.coversURL, d.CoverI),
-			OLURL:     c.baseURL + "/works/" + id,
-		})
+		out = append(out, candidateFromDoc(d, c.coversURL, c.baseURL))
 	}
 	return out, nil
+}
+
+// isbnClean keeps only the ISBN's meaningful characters (digits + the check-digit
+// X), dropping the hyphens/spaces Calibre often stores an ISBN with.
+func isbnClean(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= '0' && r <= '9', r == 'x', r == 'X':
+			return r
+		default:
+			return -1
+		}
+	}, strings.TrimSpace(s))
+}
+
+// ByISBN resolves an ISBN to a single OpenLibrary work through the search index
+// (q=isbn:<isbn>) — the exact-match entry point the Calibre import matcher tries
+// before falling back to a fuzzy title search (#73). The current Provider had no
+// ISBN method; this adds one. A blank ISBN, or a search that matches nothing,
+// returns (zero Candidate, nil): a clean "no match", deliberately distinct from
+// a network/status error so the import can flag genuine failures for retry.
+func (c *OLClient) ByISBN(isbn string) (Candidate, error) {
+	isbn = isbnClean(isbn)
+	if isbn == "" {
+		return Candidate{}, nil
+	}
+	path := "/search.json?q=isbn:" + url.QueryEscape(isbn) +
+		"&fields=key,title,author_name,author_key,first_publish_year,language,cover_i&limit=1"
+	var resp olSearchResp
+	if err := c.get(c.url(path), &resp); err != nil {
+		return Candidate{}, err
+	}
+	if len(resp.Docs) == 0 {
+		return Candidate{}, nil
+	}
+	return candidateFromDoc(resp.Docs[0], c.coversURL, c.baseURL), nil
+}
+
+// candidateFromDoc builds a Candidate from an OL search doc — shared by the
+// title search and the ISBN lookup so both surface identical fields.
+func candidateFromDoc(d olSearchDoc, coversURL, baseURL string) Candidate {
+	author := ""
+	if len(d.AuthorName) > 0 {
+		author = d.AuthorName[0]
+	}
+	authorKey := ""
+	if len(d.AuthorKey) > 0 {
+		authorKey = strings.TrimPrefix(d.AuthorKey[0], "/authors/")
+	}
+	lang := ""
+	if len(d.Language) > 0 {
+		lang = d.Language[0]
+	}
+	id := parseWorkID(d.Key)
+	return Candidate{
+		Title:     d.Title,
+		Author:    author,
+		AuthorKey: authorKey,
+		Year:      d.FirstPublishYear,
+		Language:  lang,
+		WorkID:    id,
+		CoverURL:  coverURL(coversURL, d.CoverI),
+		OLURL:     baseURL + "/works/" + id,
+	}
 }
 
 // --- AuthorSearch ---

@@ -92,9 +92,18 @@ func newTestServer(t *testing.T) (*OLClient, *httptest.Server) {
 		p := r.URL.Path
 		switch {
 		case p == "/search.json":
-			if strings.HasPrefix(r.URL.Query().Get("q"), "author_key:") {
+			q := r.URL.Query().Get("q")
+			switch {
+			case strings.HasPrefix(q, "author_key:"):
 				w.Write([]byte(authorWorksFixture))
-			} else {
+			case strings.HasPrefix(q, "isbn:"):
+				// Only the known ISBN resolves; anything else is a clean miss.
+				if q == "isbn:9781234567890" {
+					w.Write([]byte(searchFixture))
+				} else {
+					w.Write([]byte(`{"docs":[]}`))
+				}
+			default:
 				w.Write([]byte(searchFixture))
 			}
 		case p == "/search/authors.json":
@@ -148,6 +157,37 @@ func TestSearchByTitle(t *testing.T) {
 	}
 	if !strings.Contains(r.OLURL, "OL4966121W") {
 		t.Errorf("ol_url %q should contain work id", r.OLURL)
+	}
+}
+
+func TestByISBN(t *testing.T) {
+	c, srv := newTestServer(t)
+	defer srv.Close()
+
+	// Hyphenated ISBN cleans to the digits the search index is keyed on.
+	got, err := c.ByISBN("978-1-234-56789-0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.WorkID != "OL4966121W" {
+		t.Errorf("work_id %q, want OL4966121W", got.WorkID)
+	}
+	if got.Author != "Peter V. Brett" {
+		t.Errorf("author %q", got.Author)
+	}
+
+	// An unmatched ISBN is a clean (zero, nil) miss, not an error.
+	miss, err := c.ByISBN("0000000000000")
+	if err != nil {
+		t.Fatalf("miss should not error: %v", err)
+	}
+	if miss.WorkID != "" {
+		t.Errorf("want empty candidate for a miss, got %+v", miss)
+	}
+
+	// A blank ISBN short-circuits without a request.
+	if blank, err := c.ByISBN("   "); err != nil || blank.WorkID != "" {
+		t.Errorf("blank ISBN = (%+v, %v), want (zero, nil)", blank, err)
 	}
 }
 
