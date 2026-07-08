@@ -8,8 +8,10 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -21,6 +23,15 @@ import (
 // maxBodyBytes caps a fetched page so a runaway/huge response can't balloon
 // memory. Novel pages are well under this.
 const maxBodyBytes = 8 << 20 // 8 MiB
+
+// jnovelsBaseURL is the LN scrape target. Its WordPress search endpoint is
+// ?s=<query>, which server-renders result posts (no API).
+const jnovelsBaseURL = "https://jnovels.com"
+
+// maxSearchResults caps how many ranked candidates a title search returns. The
+// import matcher (#73) only keeps the top 2–3 as fallbacks, so a handful is
+// plenty and bounds the noise the search hands downstream.
+const maxSearchResults = 10
 
 // maxRedirects caps how many redirects a fetch follows; every hop is re-checked
 // by the SSRF guard (guardDial runs on each dial).
@@ -273,6 +284,143 @@ func paragraphs(container *goquery.Selection) string {
 		}
 	})
 	return strings.Join(parts, " ")
+}
+
+// SearchResult is one candidate jnovels post for a title search: the post title
+// and its canonical URL. The list is fuzzy by nature — SearchTitle returns these
+// ranked (best first) and the import matcher (#73) applies the confidence gate.
+type SearchResult struct {
+	Title string `json:"title"`
+	URL   string `json:"url"`
+}
+
+// SearchTitle resolves a light-novel title to candidate jnovels post URLs, best
+// match first. jnovels has no API, so this scrapes its WordPress search page
+// (one request per call) through the same guarded client the page fetches use.
+// A search that finds nothing returns (nil, nil); a network/status failure
+// returns the error.
+func (c *Client) SearchTitle(query string) ([]SearchResult, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, nil
+	}
+	doc, err := c.fetch(jnovelsBaseURL + "/?s=" + url.QueryEscape(query))
+	if err != nil {
+		return nil, err
+	}
+	return rankSearchResults(doc, query), nil
+}
+
+// ParseSearchHTML ranks candidates from raw jnovels search HTML (used by tests
+// and the live-test tool, mirroring ParseNovelHTML).
+func ParseSearchHTML(html, query string) ([]SearchResult, error) {
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		return nil, err
+	}
+	return rankSearchResults(doc, query), nil
+}
+
+// singleVolumeRE detects a single-volume post title ("… Volume 3 Epub"). jnovels
+// lists both an aggregate series page ("… Light Novel Epub", carrying the whole
+// volume list — the page the add flow scrapes) and a post per individual volume;
+// the aggregate is what the matcher wants, so a single-volume hit ranks below it.
+var singleVolumeRE = regexp.MustCompile(`(?i)\bvolume\s*\d+`)
+
+// rankSearchResults reads every search-result post link (h1.post-title.entry-title
+// is a bare text node on a novel page but wraps an <a> in search results, so the
+// child-anchor requirement selects only real hits, skipping the "Search Results
+// for:" page heading). Hits are ranked by query-token overlap, then aggregate
+// before single-volume, then epub before pdf, then original page order — and
+// deduped by URL so an epub/pdf pair of the same post doesn't crowd the top slots.
+func rankSearchResults(doc *goquery.Document, query string) []SearchResult {
+	want := searchTokens(query)
+	type scored struct {
+		res        SearchResult
+		overlap    int
+		singleVol  bool
+		formatRank int // 0 epub, 1 pdf, 2 other
+		order      int
+	}
+	var cands []scored
+	doc.Find("h1.post-title.entry-title > a[href]").Each(func(_ int, a *goquery.Selection) {
+		href, _ := a.Attr("href")
+		href = strings.TrimSpace(href)
+		title := strings.TrimSpace(a.Text())
+		if href == "" || title == "" {
+			return
+		}
+		overlap := 0
+		for tok := range searchTokens(title) {
+			if want[tok] {
+				overlap++
+			}
+		}
+		if overlap == 0 {
+			return
+		}
+		cands = append(cands, scored{
+			res:        SearchResult{Title: title, URL: href},
+			overlap:    overlap,
+			singleVol:  singleVolumeRE.MatchString(title),
+			formatRank: formatRank(title),
+			order:      len(cands),
+		})
+	})
+	sort.SliceStable(cands, func(i, j int) bool {
+		a, b := cands[i], cands[j]
+		if a.overlap != b.overlap {
+			return a.overlap > b.overlap
+		}
+		if a.singleVol != b.singleVol {
+			return !a.singleVol // aggregate series page before a single volume
+		}
+		if a.formatRank != b.formatRank {
+			return a.formatRank < b.formatRank
+		}
+		return a.order < b.order
+	})
+	out := make([]SearchResult, 0, len(cands))
+	seen := map[string]bool{}
+	for _, c := range cands {
+		if seen[c.res.URL] {
+			continue
+		}
+		seen[c.res.URL] = true
+		out = append(out, c.res)
+		if len(out) >= maxSearchResults {
+			break
+		}
+	}
+	return out
+}
+
+// formatRank orders a post title by download format so the epub page (the one
+// the add flow scrapes) sorts ahead of its pdf twin.
+func formatRank(title string) int {
+	t := strings.ToLower(title)
+	switch {
+	case strings.Contains(t, "epub"):
+		return 0
+	case strings.Contains(t, "pdf"):
+		return 1
+	default:
+		return 2
+	}
+}
+
+// searchTokens splits a title/query into its set of lowercase alphanumeric tokens
+// of length >= 2 (dropping single-letter volume markers), for overlap scoring.
+func searchTokens(s string) map[string]bool {
+	out := map[string]bool{}
+	for _, t := range strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9')
+	}) {
+		if len(t) >= 2 {
+			out[t] = true
+		}
+	}
+	return out
 }
 
 func volumesFromDoc(doc *goquery.Document, rl Rules) (max, count int) {
