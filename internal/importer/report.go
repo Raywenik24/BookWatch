@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"bookwatch/internal/notes"
 	"bookwatch/internal/store"
 	"bookwatch/internal/vault"
 )
@@ -16,20 +17,23 @@ const reportName = "_CalibreImport-report.md"
 
 // ReportSummary is the tally a report section records.
 type ReportSummary struct {
-	Total     int
-	Matched   int
-	Unmatched int
-	Errored   int
+	Total      int
+	Matched    int
+	Unmatched  int
+	Duplicates int
+	Errored    int
 }
 
 // WriteReport appends a dated section to the staging dir's import report,
 // summarizing the session's items (matched/unmatched/errored, notes staged) and
-// listing the ones that need a human — unmatched notes to resolve and errored
-// units to retry. Returns the report path. Appends rather than overwrites so a
-// resumed or repeated import keeps its history.
+// listing the ones that need a human — unmatched notes to resolve, possible
+// duplicates to review, and errored units to retry. The unmatched + duplicate
+// lists are Obsidian `[[wikilinks]]` to the staged notes, so the report is a
+// clickable review checklist. Returns the report path. Appends rather than
+// overwrites so a resumed or repeated import keeps its history.
 func WriteReport(stagingDir, today string, items []store.ImportItem) (string, ReportSummary, error) {
 	var sum ReportSummary
-	var unmatched, errored []store.ImportItem
+	var unmatched, duplicates, errored []store.ImportItem
 	for _, it := range items {
 		sum.Total++
 		switch it.State {
@@ -42,17 +46,36 @@ func WriteReport(stagingDir, today string, items []store.ImportItem) (string, Re
 			sum.Errored++
 			errored = append(errored, it)
 		}
+		// A duplicate is orthogonal to match state (a staged note can be both
+		// unmatched and a duplicate) — count/list it whenever the app flagged one.
+		if it.DuplicateOf != "" {
+			sum.Duplicates++
+			duplicates = append(duplicates, it)
+		}
 	}
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "## Import %s\n\n", today)
 	fmt.Fprintf(&b, "- **%d** work units: %d matched, %d unmatched, %d errored.\n",
 		sum.Total, sum.Matched, sum.Unmatched, sum.Errored)
-	fmt.Fprintf(&b, "- **%d** notes staged for review.\n\n", sum.Matched+sum.Unmatched)
+	fmt.Fprintf(&b, "- **%d** notes staged for review", sum.Matched+sum.Unmatched)
+	if sum.Duplicates > 0 {
+		fmt.Fprintf(&b, " (%d flagged as possible duplicates)", sum.Duplicates)
+	}
+	b.WriteString(".\n\n")
 	if len(unmatched) > 0 {
 		b.WriteString("### Unmatched — resolve by hand\n\n")
+		b.WriteString("Open each note, pick the right candidate link in its body (or fix `Link:` yourself), then remove the `#import/unmatched` tag.\n\n")
 		for _, it := range unmatched {
-			fmt.Fprintf(&b, "- %s\n", it.Title)
+			fmt.Fprintf(&b, "- [[%s]]\n", notes.Sanitize(it.Title, false))
+		}
+		b.WriteString("\n")
+	}
+	if len(duplicates) > 0 {
+		b.WriteString("### Possible duplicates — review before finalizing\n\n")
+		b.WriteString("Each is a *proposal* tagged `#import/duplicate`; hand-merge into the existing note and delete the proposal, or keep it. Finalize skips any whose name already exists, so it can't overwrite the original.\n\n")
+		for _, it := range duplicates {
+			fmt.Fprintf(&b, "- [[%s]] — duplicate of [[%s]]\n", notes.Sanitize(it.Title, false), it.DuplicateOf)
 		}
 		b.WriteString("\n")
 	}

@@ -40,8 +40,9 @@ type ImportItem struct {
 	UUIDs        string `json:"uuids"` // JSON array
 	State        string `json:"state"` // pending|matched|unmatched|errored
 	ResolvedLink string `json:"resolved_link"`
-	Candidates   string `json:"candidates"`   // JSON array
-	StagedFiles  string `json:"staged_files"` // JSON array
+	Candidates   string `json:"candidates"`    // JSON array
+	StagedFiles  string `json:"staged_files"`  // JSON array
+	DuplicateOf  string `json:"duplicate_of"`  // existing vault note this item duplicates ("" if none)
 	Error        string `json:"error"`
 }
 
@@ -58,6 +59,40 @@ func (s *Store) GetImportSession(id int64) (ImportSession, bool, error) {
 	return s.scanImportSession(s.db.QueryRow(
 		`SELECT id, status, library_path, staging_dir, stop_requested, total, started_at, COALESCE(finished_at,'')
 		 FROM import_sessions WHERE id = ?`, id))
+}
+
+// LatestImportSession returns the newest session regardless of status — the one
+// the review/finalize flow works against, since a fully-completed run leaves a
+// 'done' session that ActiveImportSession (non-'done' only) wouldn't return.
+func (s *Store) LatestImportSession() (ImportSession, bool, error) {
+	return s.scanImportSession(s.db.QueryRow(
+		`SELECT id, status, library_path, staging_dir, stop_requested, total, started_at, COALESCE(finished_at,'')
+		 FROM import_sessions ORDER BY id DESC LIMIT 1`))
+}
+
+// GetImportItem returns one work-unit item by its row id (the review flow keys
+// edits/accepts on it).
+func (s *Store) GetImportItem(id int64) (ImportItem, bool, error) {
+	var it ImportItem
+	err := s.db.QueryRow(`
+		SELECT id, session_id, seq, kind, title, uuid, uuids, state, resolved_link, candidates, staged_files, duplicate_of, error
+		FROM import_items WHERE id = ?`, id).Scan(
+		&it.ID, &it.SessionID, &it.Seq, &it.Kind, &it.Title, &it.UUID, &it.UUIDs,
+		&it.State, &it.ResolvedLink, &it.Candidates, &it.StagedFiles, &it.DuplicateOf, &it.Error)
+	if err == sql.ErrNoRows {
+		return ImportItem{}, false, nil
+	}
+	return it, err == nil, err
+}
+
+// SetImportItemStaged updates one item's staged-files JSON + resolved link +
+// state after an in-app review edit (a rename changes the file paths; picking a
+// candidate resolves the link and clears the unmatched flag).
+func (s *Store) SetImportItemStaged(id int64, stagedFiles, resolvedLink, state, duplicateOf string) error {
+	_, err := s.db.Exec(
+		`UPDATE import_items SET staged_files=?, resolved_link=?, state=?, duplicate_of=? WHERE id=?`,
+		stagedFiles, resolvedLink, state, duplicateOf, id)
+	return err
 }
 
 func (s *Store) scanImportSession(row *sql.Row) (ImportSession, bool, error) {
@@ -137,21 +172,21 @@ func (s *Store) DeleteImportSession(id int64) error {
 // UpsertImportItem inserts or replaces one work unit's state by (session, uuid).
 func (s *Store) UpsertImportItem(it ImportItem) error {
 	_, err := s.db.Exec(`
-		INSERT INTO import_items(session_id, seq, kind, title, uuid, uuids, state, resolved_link, candidates, staged_files, error)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?)
+		INSERT INTO import_items(session_id, seq, kind, title, uuid, uuids, state, resolved_link, candidates, staged_files, duplicate_of, error)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(session_id, uuid) DO UPDATE SET
 			seq=excluded.seq, kind=excluded.kind, title=excluded.title, uuids=excluded.uuids,
 			state=excluded.state, resolved_link=excluded.resolved_link, candidates=excluded.candidates,
-			staged_files=excluded.staged_files, error=excluded.error`,
+			staged_files=excluded.staged_files, duplicate_of=excluded.duplicate_of, error=excluded.error`,
 		it.SessionID, it.Seq, it.Kind, it.Title, it.UUID, it.UUIDs, it.State,
-		it.ResolvedLink, it.Candidates, it.StagedFiles, it.Error)
+		it.ResolvedLink, it.Candidates, it.StagedFiles, it.DuplicateOf, it.Error)
 	return err
 }
 
 // ListImportItems returns a session's items in processing order.
 func (s *Store) ListImportItems(sessionID int64) ([]ImportItem, error) {
 	rows, err := s.db.Query(`
-		SELECT id, session_id, seq, kind, title, uuid, uuids, state, resolved_link, candidates, staged_files, error
+		SELECT id, session_id, seq, kind, title, uuid, uuids, state, resolved_link, candidates, staged_files, duplicate_of, error
 		FROM import_items WHERE session_id=? ORDER BY seq`, sessionID)
 	if err != nil {
 		return nil, err
@@ -161,7 +196,7 @@ func (s *Store) ListImportItems(sessionID int64) ([]ImportItem, error) {
 	for rows.Next() {
 		var it ImportItem
 		if err := rows.Scan(&it.ID, &it.SessionID, &it.Seq, &it.Kind, &it.Title, &it.UUID, &it.UUIDs,
-			&it.State, &it.ResolvedLink, &it.Candidates, &it.StagedFiles, &it.Error); err != nil {
+			&it.State, &it.ResolvedLink, &it.Candidates, &it.StagedFiles, &it.DuplicateOf, &it.Error); err != nil {
 			return nil, err
 		}
 		out = append(out, it)
@@ -225,6 +260,29 @@ func (s *Store) ForgetProcessedUUIDs(uuids []string) error {
 			continue
 		}
 		if _, err := tx.Exec(`DELETE FROM import_processed WHERE uuid=?`, u); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// ResetImport wipes all import state — every session (+ its items) and the whole
+// processed-uuid idempotency set — for a clean slate. Used when the staging
+// folder has been abandoned (deleted / emptied of notes), so a fresh import
+// doesn't keep reporting the old books as already-done. Files on disk are the
+// caller's concern; this is DB-only.
+func (s *Store) ResetImport() error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, q := range []string{
+		`DELETE FROM import_items`,
+		`DELETE FROM import_sessions`,
+		`DELETE FROM import_processed`,
+	} {
+		if _, err := tx.Exec(q); err != nil {
 			return err
 		}
 	}

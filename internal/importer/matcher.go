@@ -65,11 +65,12 @@ const (
 )
 
 // Candidate is one fallback the reviewer can promote when a match is uncertain:
-// the source's own title + URL. Kept small — the note writer (#74) drops these
-// into the staged note body.
+// the source's own title + author + URL. Kept small — the note writer (#74) drops
+// these into the staged note body, and the in-app reviewer shows them.
 type Candidate struct {
-	Title string `json:"title"`
-	URL   string `json:"url"`
+	Title  string `json:"title"`
+	Author string `json:"author,omitempty"`
+	URL    string `json:"url"`
 }
 
 // Result is the matcher's per-item output. On a confident match ResolvedLink is
@@ -310,7 +311,7 @@ func pickOLBest(cands []provider.Candidate, title string, authors []string) (pro
 		if i >= maxFallbacks {
 			break
 		}
-		fallbacks = append(fallbacks, Candidate{Title: s.c.Title, URL: s.c.OLURL})
+		fallbacks = append(fallbacks, Candidate{Title: s.c.Title, Author: s.c.Author, URL: s.c.OLURL})
 	}
 	if len(ss) == 0 {
 		return provider.Candidate{}, false, nil
@@ -349,7 +350,7 @@ func pickLCBest(hits []provider.LCSearchResult, title string, authors []string) 
 		if i >= maxFallbacks {
 			break
 		}
-		fallbacks = append(fallbacks, Candidate{Title: h.Title, URL: h.URL})
+		fallbacks = append(fallbacks, Candidate{Title: h.Title, Author: h.Author, URL: h.URL})
 	}
 	if len(hits) == 0 {
 		return provider.LCSearchResult{}, false, nil

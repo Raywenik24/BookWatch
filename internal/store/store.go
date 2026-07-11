@@ -217,6 +217,11 @@ var migrations = []string{
 		uuid         TEXT PRIMARY KEY,
 		processed_at TEXT NOT NULL
 	);`,
+
+	// v10: record which existing vault note a staged item duplicates (#77 report
+	// follow-up), so the import report can list the possible-duplicate notes to
+	// review alongside the unmatched ones. Empty for a non-duplicate item.
+	`ALTER TABLE import_items ADD COLUMN duplicate_of TEXT NOT NULL DEFAULT '';`,
 }
 
 func (s *Store) migrate() error {

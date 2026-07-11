@@ -144,6 +144,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/import/calibre/retry", s.auth(s.handleImportRetry))
 	mux.HandleFunc("POST /api/import/calibre/start-over", s.auth(s.handleImportStartOver))
 	mux.HandleFunc("POST /api/import/calibre/finalize", s.auth(s.handleImportFinalize))
+	mux.HandleFunc("GET /api/import/calibre/review", s.auth(s.handleReviewList))
+	mux.HandleFunc("GET /api/import/calibre/review/item", s.auth(s.handleReviewItem))
+	mux.HandleFunc("POST /api/import/calibre/review/pick", s.auth(s.handleReviewPick))
+	mux.HandleFunc("POST /api/import/calibre/review/pull", s.auth(s.handleReviewPull))
+	mux.HandleFunc("PUT /api/import/calibre/review/item", s.auth(s.handleReviewEdit))
+	mux.HandleFunc("POST /api/import/calibre/review/cover", s.authLimited(s.handleReviewCover, maxCoverUploadBytes))
+	mux.HandleFunc("POST /api/import/calibre/review/accept", s.auth(s.handleReviewAccept))
+	mux.HandleFunc("POST /api/import/calibre/review/reject", s.auth(s.handleReviewReject))
+	mux.HandleFunc("POST /api/import/calibre/review/accept-clean", s.auth(s.handleReviewAcceptClean))
 	mux.HandleFunc("POST /api/trackers", s.auth(s.handleUpsertTracker))
 	mux.HandleFunc("DELETE /api/trackers/{id}", s.auth(s.handleDeleteTracker))
 	mux.HandleFunc("PUT /api/trackers/{id}/baseline", s.auth(s.handleUpdateBaseline))
@@ -314,8 +323,11 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 			"book_new_note_dir":    s.effectiveBookNewNoteDir(),
 			"book_attachments_dir": s.effectiveBookAttachmentsDir(),
 			"reading_log_path":     s.effective("reading_log_path", s.cfg.ReadingLogPath),
-			"calibre_library_path": s.effective("calibre_library_path", s.cfg.CalibreLibraryPath),
-			"import_staging_dir":   s.effective("import_staging_dir", s.cfg.ImportStagingDir),
+			"calibre_library_path":          s.effective("calibre_library_path", s.cfg.CalibreLibraryPath),
+			"import_staging_dir":            s.effective("import_staging_dir", s.cfg.ImportStagingDir),
+			"import_filter_field":           s.effective("import_filter_field", s.cfg.ImportFilterField),
+			"import_filter_values":          s.effective("import_filter_values", s.cfg.ImportFilterValues),
+			"import_filter_include_missing": s.effective("import_filter_include_missing", ""),
 		},
 		"overrides": saved,
 	})

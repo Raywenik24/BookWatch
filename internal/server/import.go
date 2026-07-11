@@ -4,10 +4,13 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
+	"strings"
 
 	"bookwatch/internal/calibre"
 	"bookwatch/internal/importer"
+	"bookwatch/internal/provider"
 	"bookwatch/internal/service"
 	"bookwatch/internal/sources"
 	"bookwatch/internal/store"
@@ -25,7 +28,68 @@ const importMinGap = 400 // milliseconds
 // Resume" readout. Open (read-only) like /api/status. When no session exists it
 // reports state:"idle" so the UI shows the plain Start button.
 func (s *Server) handleImportStatus(w http.ResponseWriter, r *http.Request) {
+	s.reconcileImportSession()
 	writeJSON(w, http.StatusOK, s.importStatusPayload())
+}
+
+// reconcileImportSession resets all import state when the staging folder has been
+// abandoned — the folder is the source of truth, so if the user deletes it (or
+// empties it of notes) the import is over. Without this the durable
+// import_processed idempotency outlives the on-disk notes and a fresh preview
+// keeps reporting the prior run's books as "already done", even across the
+// several stale sessions a few re-runs leave behind.
+//
+// It wipes *everything* (all sessions + the whole processed set — `ResetImport`)
+// rather than one session, since "already done" is global and re-runs pile up
+// multiple finished sessions. Gates:
+//   - skipped while a run is in flight (busy) or a session is active/stopped
+//     (ActiveImportSession) — those are handled by Resume / Stop / Start-over, and
+//     the gate also avoids a race with a just-created run session;
+//   - only fires when there's actually state to clear and no staged notes remain
+//     on disk. A completed Finalize (notes moved to the vault) also leaves no
+//     notes — fine: the kept books are tracked, and a later re-run re-proposing
+//     them is dup-detection + collision-safe.
+func (s *Server) reconcileImportSession() {
+	s.importMu.Lock()
+	busy := s.importBusy
+	s.importMu.Unlock()
+	if busy {
+		return
+	}
+	if _, active, err := s.st.ActiveImportSession(); err != nil || active {
+		return // a run in progress or a stopped/resumable session — leave it be
+	}
+	_, hasSession, _ := s.st.LatestImportSession()
+	proc, _ := s.st.ProcessedUUIDs()
+	if !hasSession && len(proc) == 0 {
+		return // nothing to reconcile
+	}
+	if s.stagingHasNotes() {
+		return // notes still staged for review/finalize — not abandoned
+	}
+	if err := s.st.ResetImport(); err == nil {
+		s.st.LogEvent("import", "Staging empty — Calibre import state reset")
+		s.publishImportStatus()
+	}
+}
+
+// stagingHasNotes reports whether the staging folder still holds any staged note
+// (a `.md` other than the import report). A missing folder counts as no notes.
+func (s *Server) stagingHasNotes() bool {
+	dir := s.effectiveImportStagingDir()
+	found := false
+	filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		name := d.Name()
+		if strings.HasSuffix(strings.ToLower(name), ".md") && name != "_CalibreImport-report.md" {
+			found = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return found
 }
 
 // importStatusPayload is the shared import-status shape served by the status
@@ -37,16 +101,15 @@ func (s *Server) importStatusPayload() map[string]any {
 	busy, title := s.importBusy, s.importTitle
 	s.importMu.Unlock()
 
-	sess, ok, err := s.st.ActiveImportSession()
-	if err != nil {
-		return map[string]any{"state": "idle", "busy": busy}
-	}
-	if !ok {
-		// No active session: report the most recent finished one's totals, or idle.
+	// The review/finalize flow works off the *latest* session (a fully-completed
+	// run leaves a 'done' session ActiveImportSession wouldn't return), so a
+	// finished import still surfaces its summary + review controls.
+	sess, ok, err := s.st.LatestImportSession()
+	if err != nil || !ok {
 		return map[string]any{"state": "idle", "busy": busy}
 	}
 	items, _ := s.st.ListImportItems(sess.ID)
-	done, unmatched, errored := 0, 0, 0
+	done, unmatched, duplicates, errored := 0, 0, 0, 0
 	for _, it := range items {
 		switch it.State {
 		case "matched":
@@ -57,10 +120,20 @@ func (s *Server) importStatusPayload() map[string]any {
 		case "errored":
 			errored++
 		}
+		if it.DuplicateOf != "" {
+			duplicates++
+		}
 	}
-	state := "resumable"
-	if busy {
+	var state string
+	switch {
+	case busy:
 		state = "running"
+	case sess.Status != "done":
+		state = "resumable" // stopped mid-run — resumable
+	case s.reviewableCount(items) > 0:
+		state = "review" // finished; notes still staged for review/finalize
+	default:
+		return map[string]any{"state": "idle", "busy": busy} // finished + nothing left staged
 	}
 	return map[string]any{
 		"state":         state,
@@ -69,6 +142,7 @@ func (s *Server) importStatusPayload() map[string]any {
 		"total":         sess.Total,
 		"done":          done,
 		"unmatched":     unmatched,
+		"duplicates":    duplicates,
 		"errored":       errored,
 		"current_title": title,
 		"staging_dir":   sess.StagingDir,
@@ -84,6 +158,7 @@ func (s *Server) publishImportStatus() { s.stream.Publish("import", s.importStat
 // configured library, group + count what a run would cover, so a wrong library
 // path is caught before anything is written.
 func (s *Server) handleImportPreview(w http.ResponseWriter, r *http.Request) {
+	s.reconcileImportSession()
 	libPath := s.effectiveCalibreLibraryPath()
 	if libPath == "" {
 		writeJSON(w, http.StatusBadRequest, errBody("no Calibre library path configured — set it in Settings"))
@@ -94,6 +169,7 @@ func (s *Server) handleImportPreview(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errBody("read Calibre library: "+err.Error()))
 		return
 	}
+	books = s.importFilter().Apply(books)
 	dup := s.buildDupIndex()
 	proc, _ := s.st.ProcessedUUIDs()
 	writeJSON(w, http.StatusOK, importer.BuildPreview(books, dup, proc))
@@ -113,6 +189,7 @@ func (s *Server) handleImportStart(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, errBody("an import is already running"))
 		return
 	}
+	s.reconcileImportSession() // a deleted staging folder → fresh start, not a resume
 
 	sess, active, err := s.st.ActiveImportSession()
 	if err != nil {
@@ -201,7 +278,9 @@ func (s *Server) handleImportStartOver(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, errBody("stop the running import before starting over"))
 		return
 	}
-	sess, ok, err := s.st.ActiveImportSession()
+	// Latest (not just active) so a completed 'done' session can also be discarded
+	// — wiping its staged notes + processed uuids for a clean re-import.
+	sess, ok, err := s.st.LatestImportSession()
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -236,15 +315,7 @@ func (s *Server) handleImportFinalize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	vaultDir := s.effective("vault_dir", s.cfg.VaultDir)
-	lnNoteRel := s.effective("new_note_dir", s.cfg.NewNoteDir)
-	dest := importer.FinalizeDest{
-		NoteDirLN:     vault.ResolvePath(vaultDir, lnNoteRel),
-		AttachDirLN:   vault.ResolvePath(vaultDir, s.effective("attachments_dir", s.cfg.AttachmentsDir)),
-		NoteDirBook:   vault.ResolvePath(vaultDir, s.effectiveBookNewNoteDir()),
-		AttachDirBook: vault.ResolvePath(vaultDir, s.effectiveBookAttachmentsDir()),
-	}
-
+	dest, lnNoteRel := s.finalizeDest()
 	stagingDir := s.effectiveImportStagingDir()
 	res, err := importer.Finalize(stagingDir, dest)
 	if err != nil {
@@ -305,6 +376,7 @@ func (s *Server) runImport(sid int64) {
 			log.Printf("import: read library %q: %v", sess.LibraryPath, err)
 			return
 		}
+		books = s.importFilter().Apply(books)
 		im := s.buildImport(sess)
 		proc, err := s.st.ProcessedUUIDs()
 		if err != nil {
@@ -345,6 +417,28 @@ func (s *Server) buildImport(sess store.ImportSession) *importer.Import {
 		}
 		return nd.Volumes, nd.Description
 	}
+	// Description fallback for a matched regular book whose Calibre record has no
+	// comments: pull the blurb off the resolved source page (OpenLibrary for
+	// English, Lubimyczytać for Polish). Best-effort — any failure leaves it blank.
+	bookDesc := func(kind importer.Kind, link, workID string) string {
+		switch kind {
+		case importer.KindPolish:
+			if s.lc != nil && link != "" {
+				if b, err := s.lc.BookDetail(link); err == nil {
+					return b.Description
+				}
+			}
+		case importer.KindEnglish:
+			if o, ok := s.ol.(interface {
+				WorkDetail(string) (provider.Work, error)
+			}); ok && workID != "" {
+				if w, err := o.WorkDetail(workID); err == nil {
+					return w.Description
+				}
+			}
+		}
+		return ""
+	}
 	progress := func(done, total int, title string) {
 		s.importMu.Lock()
 		s.importTitle = title
@@ -352,13 +446,14 @@ func (s *Server) buildImport(sess store.ImportSession) *importer.Import {
 		s.publishImportStatus()
 	}
 	return &importer.Import{
-		Store:        s.st,
-		Matcher:      importer.New(ol, s.lc, s.sc, importMinGap*1_000_000), // ms → ns
-		Writer:       importer.NewWriter(sess.StagingDir, vault.Today()),
-		Dup:          s.buildDupIndex(),
-		Today:        vault.Today(),
-		ScrapeSeries: scrape,
-		Progress:     progress,
+		Store:                 s.st,
+		Matcher:               importer.New(ol, s.lc, s.sc, importMinGap*1_000_000), // ms → ns
+		Writer:                importer.NewWriter(sess.StagingDir, vault.Today()),
+		Dup:                   s.buildDupIndex(),
+		Today:                 vault.Today(),
+		ScrapeSeries:          scrape,
+		ScrapeBookDescription: bookDesc,
+		Progress:              progress,
 	}
 }
 
@@ -386,4 +481,15 @@ func (s *Server) effectiveImportStagingDir() string {
 		dir = "_CalibreImport"
 	}
 	return vault.ResolvePath(s.effective("vault_dir", s.cfg.VaultDir), dir)
+}
+
+// importFilter builds the identifier filter from the current settings, applied
+// (before grouping) to both the dry-run preview and the real run so an
+// owner-scoped library imports only the wanted books.
+func (s *Server) importFilter() importer.ImportFilter {
+	return importer.ImportFilter{
+		Field:          s.effective("import_filter_field", s.cfg.ImportFilterField),
+		Values:         importer.SplitFilterValues(s.effective("import_filter_values", s.cfg.ImportFilterValues)),
+		IncludeMissing: s.effective("import_filter_include_missing", "") == "1",
+	}
 }

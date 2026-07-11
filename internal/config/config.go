@@ -40,6 +40,14 @@ type Config struct {
 	CalibreLibraryPath string
 	ImportStagingDir   string
 
+	// ImportFilterField / ImportFilterValues optionally restrict the import to
+	// books carrying a particular Calibre identifier (e.g. field "czyj", values
+	// "andrzej"). Blank field = import everything. Values is a comma/newline list;
+	// import_filter_include_missing (settings-only) also admits books lacking the
+	// field. Settings-table editable; these are the CLI/env fallbacks.
+	ImportFilterField  string
+	ImportFilterValues string
+
 	Port      string // HTTP listen port
 	Password  string // shared password for write endpoints
 	CheckCron string // cron expr for the scheduled check
@@ -67,6 +75,8 @@ func Default() Config {
 
 		CalibreLibraryPath: env("BOOKWATCH_CALIBRE_LIBRARY_PATH", ""),
 		ImportStagingDir:   env("BOOKWATCH_IMPORT_STAGING_DIR", "_CalibreImport"),
+		ImportFilterField:  env("BOOKWATCH_IMPORT_FILTER_FIELD", ""),
+		ImportFilterValues: env("BOOKWATCH_IMPORT_FILTER_VALUES", ""),
 
 		Port:      env("BOOKWATCH_PORT", "8080"),
 		Password:  env("BOOKWATCH_PASSWORD", ""),

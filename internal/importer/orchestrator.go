@@ -51,6 +51,13 @@ type Import struct {
 	// source rules); nil skips the scrape, staging the Calibre volume count.
 	ScrapeSeries func(link string) (volumes int, description string)
 
+	// ScrapeBookDescription fetches a matched regular book's blurb from its
+	// resolved source (OpenLibrary / Lubimyczytać), used only when Calibre carries
+	// no description of its own. Injected by the caller (which owns the providers);
+	// nil, an unmatched item, or a source with no blurb leaves the description
+	// blank. kind picks the source.
+	ScrapeBookDescription func(kind Kind, link, workID string) string
+
 	// Progress, if set, is called before each unit is processed with the number
 	// already done, the session total, and the unit's title — mirroring the
 	// check run so the UI's progress bar is driven the same way.
@@ -189,6 +196,7 @@ func (im *Import) processUnit(sessionID int64, u workUnit, anchors map[string]st
 	it.ResolvedLink = res.ResolvedLink
 	it.Candidates = jsonCandidates(res.Candidates)
 	it.StagedFiles = jsonArray(staged.all())
+	it.DuplicateOf = staged.DuplicateOf
 	it.State = "matched"
 	if res.Unmatched {
 		it.State = "unmatched"
@@ -242,6 +250,13 @@ func (im *Import) stageLN(u workUnit, res Result) (StageResult, error) {
 // when this book anchors a multi-book regular series.
 func (im *Import) stageBook(u workUnit, res Result, anchors map[string]string, members map[string][]string) (StageResult, error) {
 	b := u.books[0]
+	// Calibre's own comments win; fall back to the matched source's blurb when it
+	// has none (many Polish/older imports carry no comments even though the
+	// catalog page does).
+	desc := b.Comments
+	if strings.TrimSpace(desc) == "" && !res.Unmatched && im.ScrapeBookDescription != nil {
+		desc = im.ScrapeBookDescription(u.kind, res.ResolvedLink, res.WorkID)
+	}
 	p := PlanBook{
 		Title:       b.Title,
 		Author:      joinAuthors(b.Authors),
@@ -254,7 +269,7 @@ func (im *Import) stageBook(u workUnit, res Result, anchors map[string]string, m
 		Candidates:  res.Candidates,
 		Done:        hasTag(b.Tags, "done"),
 		ReleasedEN:  pubYear(b.PubDate),
-		Description: b.Comments,
+		Description: desc,
 		CoverPath:   b.CoverPath,
 	}
 	if im.Dup != nil {

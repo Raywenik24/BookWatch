@@ -116,6 +116,7 @@ type StageResult struct {
 	Note        string   // path to the primary (series/book/index) note
 	VolumeNotes []string // paths to any staged volume notes
 	Covers      []string // paths to any copied cover images
+	DuplicateOf string   // existing vault note the primary note duplicates ("" if none)
 }
 
 // Writer stages notes + covers under a single root directory. today is stamped
@@ -156,6 +157,7 @@ func (w *Writer) StageLNSeries(p PlanLNSeries) (StageResult, error) {
 	}
 	if p.ExistingNote != "" {
 		tags = append(tags, "#import/duplicate")
+		res.DuplicateOf = p.ExistingNote
 	}
 
 	base := notes.Sanitize(p.Series, false)
@@ -203,6 +205,7 @@ func (w *Writer) StageBook(p PlanBook) (StageResult, error) {
 	}
 	if p.ExistingNote != "" {
 		tags = append(tags, "#import/duplicate")
+		res.DuplicateOf = p.ExistingNote
 	}
 	status := "Backlog"
 	if p.Done {
@@ -234,7 +237,10 @@ func (w *Writer) StageBook(p PlanBook) (StageResult, error) {
 func (w *Writer) StageSeriesIndex(p PlanSeriesIndex) (StageResult, error) {
 	var res StageResult
 	base := notes.Sanitize(p.Series, false)
-	notePath := filepath.Join(w.dir, base+".md")
+	// A distinct " (series)" filename so the index never collides with a book
+	// note whose title equals the series name (e.g. a "Zbuntowana" book in a
+	// "Zbuntowana" series) — otherwise one would overwrite the other on disk.
+	notePath := filepath.Join(w.dir, base+" (series).md")
 	if err := w.writeNote(notePath, w.buildSeriesIndex(p, base)); err != nil {
 		return res, err
 	}

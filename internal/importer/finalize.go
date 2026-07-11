@@ -82,52 +82,85 @@ func Finalize(stagingDir string, d FinalizeDest) (FinalizeResult, error) {
 	}
 
 	for _, note := range noteFiles {
-		rel, relErr := filepath.Rel(root, note)
-		if relErr != nil {
-			return res, relErr
-		}
-		content, readErr := os.ReadFile(note)
-		if readErr != nil {
-			return res, readErr
-		}
-
-		noteDir, attachDir, ok := classifyNote(rel, string(content), d)
-		if !ok {
-			continue // unrecognized note — leave it in staging
-		}
-
-		var destNote string
-		if underVolumes(rel) {
-			destNote = filepath.Join(noteDir, rel) // preserve _volumes/<Series>/
-		} else {
-			destNote = filepath.Join(noteDir, filepath.Base(note))
-		}
-
-		moved, mErr := moveNoCollision(note, destNote)
-		if mErr != nil {
-			return res, mErr
-		}
-		if !moved {
-			res.Skipped = append(res.Skipped, filepath.ToSlash(rel))
-			continue // target exists — leave note + cover in staging, report it
-		}
-		res.Notes++
-
-		// Move the one cover this note embeds, from beside the note in staging
-		// into the matching attachments dir.
-		if m := coverEmbedRE.FindStringSubmatch(string(content)); m != nil {
-			coverName := strings.TrimSpace(m[1])
-			src := filepath.Join(filepath.Dir(note), coverName)
-			movedCover, cErr := moveNoCollision(src, filepath.Join(attachDir, coverName))
-			if cErr != nil {
-				return res, cErr
-			}
-			if movedCover {
-				res.Covers++
-			}
+		if err := moveStagedNote(root, note, d, &res); err != nil {
+			return res, err
 		}
 	}
 	return res, nil
+}
+
+// FinalizeNotes moves a specific set of staged notes (+ their covers) out of
+// stagingDir — the in-app reviewer's per-item / bulk-accept path, which finalizes
+// only the notes the reviewer accepted rather than everything on disk. notePaths
+// are absolute staged .md paths (a note plus, for an LN series, its volume
+// notes). Same collision-safety and cover-follow rules as Finalize.
+func FinalizeNotes(stagingDir string, notePaths []string, d FinalizeDest) (FinalizeResult, error) {
+	var res FinalizeResult
+	root := longPath(stagingDir)
+	for _, note := range notePaths {
+		if !strings.HasSuffix(strings.ToLower(note), ".md") {
+			continue // covers travel with their note; skip non-note entries
+		}
+		if err := moveStagedNote(root, longPath(note), d, &res); err != nil {
+			return res, err
+		}
+	}
+	return res, nil
+}
+
+// moveStagedNote moves one staged note (and the cover it embeds) from staging
+// into its routed destination, accumulating into res. A target that already
+// exists is skipped + reported (never overwritten). root is the long-path
+// staging root; note is an absolute (long-path) staged .md path under it.
+func moveStagedNote(root, note string, d FinalizeDest, res *FinalizeResult) error {
+	rel, relErr := filepath.Rel(root, note)
+	if relErr != nil {
+		return relErr
+	}
+	content, readErr := os.ReadFile(note)
+	if readErr != nil {
+		if os.IsNotExist(readErr) {
+			return nil // already moved/removed — nothing to do
+		}
+		return readErr
+	}
+
+	noteDir, attachDir, ok := classifyNote(rel, string(content), d)
+	if !ok {
+		return nil // unrecognized note — leave it in staging
+	}
+
+	var destNote string
+	if underVolumes(rel) {
+		destNote = filepath.Join(noteDir, rel) // preserve _volumes/<Series>/
+	} else {
+		destNote = filepath.Join(noteDir, filepath.Base(note))
+	}
+
+	moved, mErr := moveNoCollision(note, destNote)
+	if mErr != nil {
+		return mErr
+	}
+	if !moved {
+		res.Skipped = append(res.Skipped, filepath.ToSlash(rel))
+		return nil // target exists — leave note + cover in staging, report it
+	}
+	res.Notes++
+
+	// Move the one cover this note embeds, from beside the note in staging into
+	// the matching attachments dir.
+	if m := coverEmbedRE.FindStringSubmatch(string(content)); m != nil {
+		coverName := strings.TrimSpace(m[1])
+		src := filepath.Join(filepath.Dir(note), coverName)
+		movedCover, cErr := moveNoCollision(src, filepath.Join(attachDir, coverName))
+		if cErr != nil {
+			return cErr
+		}
+		if movedCover {
+			res.Covers++
+		}
+	}
+	return nil
 }
 
 // classifyNote returns the destination note + attachments dirs for a staged

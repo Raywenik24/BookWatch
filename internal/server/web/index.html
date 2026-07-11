@@ -353,6 +353,7 @@
       <button data-s="reading">Reading</button>
       <button data-s="randomize">Randomizer</button>
       <button data-s="sources">Sources</button>
+      <button data-s="import">Import</button>
       <button data-s="settings">Settings</button>
       <button data-s="logs">Logs</button>
       <button data-s="about">About</button>
@@ -674,6 +675,95 @@
       </div>
     </section>
 
+    <!-- IMPORT (Calibre) -->
+    <section id="import">
+      <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:.6rem">
+        <h2 style="margin:0">Import from Calibre</h2>
+        <span id="importStateBadge" class="badge">idle</span>
+      </div>
+      <p class="muted"><small>One-time-ish bulk import of a Calibre library into the vault. Books are matched
+        against OpenLibrary / jnovels / Lubimyczytać and staged as review notes in the staging folder below;
+        you review them in Obsidian, then <b>Finalize</b> to move the keepers into the vault. Nothing is written
+        into your scan roots until you finalize.</small></p>
+
+      <div class="card">
+        <h3>Paths</h3>
+        <div class="rule-grid" style="grid-template-columns:160px 1fr">
+          <label>Calibre library</label><input id="impLibPath" placeholder="D:\...\Calibre Library (folder with metadata.db)">
+          <label>Staging folder</label><input id="impStagingDir" placeholder="_CalibreImport (relative to vault, or full path)">
+        </div>
+        <div class="row" style="justify-content:flex-end;margin-top:.5rem">
+          <button class="btn ghost" onclick="saveImportSettings()">Save paths</button>
+        </div>
+        <p class="muted"><small>The staging folder is kept out of your scan roots so half-reviewed notes are never
+          tracked. Leave it as <code>_CalibreImport</code> unless you have a reason to change it.</small></p>
+      </div>
+
+      <div class="card">
+        <h3>Filter (optional)</h3>
+        <p class="muted" style="margin:0 0 .5rem"><small>Import only books carrying a particular Calibre
+          <b>identifier</b> (the <code>type:value</code> pairs on a book, e.g. <code>czyj:andrzej</code>). Leave the
+          field blank to import everything.</small></p>
+        <div class="rule-grid" style="grid-template-columns:160px 1fr">
+          <label>Identifier field</label><input id="impFilterField" placeholder="e.g. czyj  (blank = no filter)">
+          <label>Accepted values</label><input id="impFilterValues" placeholder="comma-separated, e.g. andrzej, arek">
+        </div>
+        <label class="switch-row" style="margin:.6rem 0 0">
+          <span class="switch"><input id="impFilterMissing" type="checkbox"><span class="switch-track"></span></span>
+          <span>Also import books that <b>don't</b> carry this identifier at all
+            <br><small class="muted">A book passes when one of its owners is an accepted value — or, with this on, when it has no such identifier.</small>
+          </span>
+        </label>
+        <p class="muted" style="margin:.5rem 0 0"><small>Multiple owners: since Calibre stores one value per identifier,
+          a value like <code>andrzej; czyj:arek</code> (comma- or semicolon-separated) is read as <b>two owners</b>
+          and matches either — but <code>andrzej arek</code> (space) is one value and matches neither.</small></p>
+        <div class="row" style="justify-content:flex-end;margin-top:.5rem">
+          <button class="btn ghost" onclick="saveImportSettings()">Save filter</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="row" style="justify-content:space-between;align-items:center;margin:0 0 .5rem">
+          <h3 style="margin:0">Dry-run preview</h3>
+          <button class="btn ghost" id="impPreviewBtn" onclick="importPreview()">Preview</button>
+        </div>
+        <p class="muted" style="margin:0"><small>A cheap, network-free scope check — counts what a run would cover,
+          so a wrong library path is caught before anything is matched or written.</small></p>
+        <div id="impPreviewOut" hidden style="margin-top:.6rem"></div>
+      </div>
+
+      <div class="card">
+        <h3>Run</h3>
+        <div id="impProgress" hidden style="margin:.2rem 0 .6rem">
+          <div class="bar"><span id="impProgressFill"></span></div>
+          <div id="impProgressLabel"></div>
+        </div>
+        <div id="impSummary" class="row" style="gap:.4rem;flex-wrap:wrap;margin-bottom:.6rem" hidden></div>
+        <div id="impReview" hidden style="margin:0 0 .7rem;padding:.6rem .8rem;border-left:3px solid var(--mauve);background:var(--mantle);border-radius:0 6px 6px 0"></div>
+        <div class="row" style="gap:.5rem;flex-wrap:wrap">
+          <button class="btn" id="impStartBtn" onclick="importStart()">Start import</button>
+          <button class="btn" id="impReviewBtn" onclick="openReview()" hidden>Review in app</button>
+          <button class="btn ghost" id="impStopBtn" onclick="importStop()" hidden>Stop</button>
+          <button class="btn ghost" id="impRetryBtn" onclick="importRetry()" hidden>Retry errored / unmatched</button>
+          <button class="btn ghost" id="impStartOverBtn" onclick="importStartOver()" hidden>Start over</button>
+        </div>
+        <p class="muted" id="impRunHint" style="margin:.5rem 0 0"><small>Matching a large library takes a while and is
+          polite-throttled against each source. <b>Stop</b> halts after the current item; you can <b>Resume</b> later and
+          it picks up where it left off, reusing matches it already found.</small></p>
+      </div>
+
+      <div class="card">
+        <div class="row" style="justify-content:space-between;align-items:center;margin:0 0 .5rem">
+          <h3 style="margin:0">Finalize</h3>
+          <button class="btn" id="impFinalizeBtn" onclick="importFinalize()">Finalize</button>
+        </div>
+        <p class="muted" style="margin:0"><small>After you've reviewed the staged notes in Obsidian — deleting the
+          duplicates/rejects you don't want — <b>Finalize</b> moves the survivors into the vault. Non-destructive:
+          an existing note is never overwritten (a collision is skipped and reported).</small></p>
+        <div id="impFinalizeOut" hidden style="margin-top:.6rem"></div>
+      </div>
+    </section>
+
     <!-- LOGS -->
     <section id="logs">
       <div class="row" style="margin-bottom:.6rem">
@@ -729,6 +819,15 @@
     <div class="modal">
       <button class="modal-close" onclick="closeWizard()" aria-label="Close">&times;</button>
       <div id="wizardBody"></div>
+    </div>
+  </div>
+  <!-- Calibre import reviewer (#77 follow-up) — step through staged notes in-app.
+       No outside-click close (unlike other modals) — closes only via the X, so a
+       stray click can't drop you out of a review mid-edit. -->
+  <div id="reviewModalBackdrop" class="modal-backdrop" hidden>
+    <div class="modal" style="max-width:780px">
+      <button class="modal-close" onclick="closeReview()" aria-label="Close">&times;</button>
+      <div id="reviewBody"></div>
     </div>
   </div>
   </div>
@@ -1060,7 +1159,7 @@ function sseConnect(url, { headers = {}, onEvent, onOpen, onFatal } = {}){
    the matching tab. The section ids match the data-s values; only Randomizer's
    path differs (section id "randomize" ↔ path "randomizer"). */
 const TAB_TO_PATH = { updates:'updates', books:'books', reading:'reading', randomize:'randomizer',
-  sources:'sources', settings:'settings', logs:'logs', about:'about' };
+  sources:'sources', import:'import', settings:'settings', logs:'logs', about:'about' };
 const PATH_TO_TAB = Object.fromEntries(Object.entries(TAB_TO_PATH).map(([t,p]) => [p,t]));
 
 // showTab activates a tab's nav button + section, no history change. Unknown ids
@@ -1071,6 +1170,7 @@ function showTab(tab){
   document.querySelectorAll('section').forEach(s => s.classList.toggle('active', s.id===tab));
   if(tab === 'randomize') rerollRandomize();
   if(tab === 'reading') loadReading();
+  if(tab === 'import') loadImport();
   return tab;
 }
 
@@ -2436,7 +2536,10 @@ function connectStatusStream(){
   if(statusStream) return;
   statusStream = sseConnect('/api/stream', {
     headers: { 'X-BookWatch-Token': token() },
-    onEvent: (name, data) => { if(name==='status'){ try { onStatus(JSON.parse(data)); } catch(e){} } },
+    onEvent: (name, data) => {
+      if(name==='status'){ try { onStatus(JSON.parse(data)); } catch(e){} }
+      else if(name==='import'){ try { onImportStatus(JSON.parse(data)); } catch(e){} }
+    },
     onFatal: () => { statusStream = null; }, // 401 (no/blank token) — stop, don't hammer
   });
 }
@@ -2523,7 +2626,9 @@ function resetAddPanels(){
 }
 document.addEventListener('keydown', e => {
   if(e.key !== 'Escape') return;
+  if($('lightbox')) return closeLightbox(); // enlarged cover closes first
   if(_dpCal && !_dpCal.hidden) return hideDpCal(); // close the date calendar before its modal
+  if(!$('reviewModalBackdrop').hidden) return closeReview();
   if(!$('readingModalBackdrop').hidden) return closeReadingModal();
   if(!$('previewModalBackdrop').hidden) return closeRelPreview();
   if(!$('deleteModalBackdrop').hidden) return closeDeleteModal();
@@ -2867,6 +2972,459 @@ async function saveSettings(){
   const r = await send('PUT','/api/settings',body); if(need(r)) return;
   if(r.ok){ TZ = tzPicker.getValue(); loadUpdates(); loadBooks(); loadLogs(); loadEvents(); }
   toast(r.ok?'Settings saved.':'Error: '+(r.data.error||r.status), r.ok?'success':'error');
+}
+
+/* ── Calibre import (#77) ──────────────────────────────────────────────────
+   The browser front for the whole import flow whose backend landed in #75/#76.
+   Path fields are pre-filled from /api/settings; the run drives the same
+   start/stop/resume/retry/start-over/finalize endpoints and follows live
+   progress over the shared SSE stream (the server publishes `import` frames the
+   way the check publishes `status`). onImportStatus renders every state — idle,
+   running, resumable — from a single status shape, so a page reload mid-run
+   lands on the right controls. */
+let importWasRunning = false;   // edge-detect the running→done transition
+let importToast = null;         // the "Import running…" toast for a user-started run
+
+async function loadImport(){
+  // Pre-fill the two path fields from effective settings, then paint the current
+  // session state. Both are cheap reads; the live bar takes over from here.
+  try {
+    const s = await getJSON('/api/settings');
+    const eff = s.effective||{};
+    $('impLibPath').value = toWinPath(eff.calibre_library_path);
+    $('impStagingDir').value = toWinPath(eff.import_staging_dir);
+    $('impFilterField').value = eff.import_filter_field || '';
+    $('impFilterValues').value = eff.import_filter_values || '';
+    $('impFilterMissing').checked = eff.import_filter_include_missing === '1';
+  } catch(e){}
+  try { onImportStatus(await getJSON('/api/import/calibre/status')); } catch(e){}
+}
+
+async function saveImportSettings(){
+  const body = { calibre_library_path:$('impLibPath').value.trim(),
+                 import_staging_dir:$('impStagingDir').value.trim(),
+                 import_filter_field:$('impFilterField').value.trim(),
+                 import_filter_values:$('impFilterValues').value.trim(),
+                 import_filter_include_missing:$('impFilterMissing').checked ? '1' : '' };
+  const r = await send('PUT','/api/settings',body); if(need(r)) return;
+  toast(r.ok?'Import settings saved.':'Error: '+(r.data.error||r.status), r.ok?'success':'error');
+}
+
+// onImportStatus paints the whole Import view from one status frame. Called from
+// the SSE `import` handler and from the seed read in loadImport.
+function onImportStatus(s){
+  s = s || {};
+  const state = s.state || 'idle';
+  const running = state === 'running' || s.busy;
+  const finished = state === 'resumable' || state === 'review'; // a run to review/finalize
+  const hasSession = state !== 'idle';
+  $('importStateBadge').textContent = running ? 'running' : (state === 'review' ? 'run finished' : state);
+
+  const p = $('impProgress');
+  if(running){
+    p.hidden = false;
+    if(s.total > 0){
+      $('impProgressFill').style.width = Math.round((s.done||0)/s.total*100) + '%';
+      $('impProgressLabel').textContent = `${s.done||0}/${s.total}` + (s.current_title ? ' — ' + s.current_title : '');
+    } else {
+      $('impProgressFill').style.width = '0%';
+      $('impProgressLabel').textContent = 'starting…';
+    }
+  } else {
+    p.hidden = true;
+  }
+
+  const done = s.done||0, unmatched = s.unmatched||0, duplicates = s.duplicates||0, errored = s.errored||0;
+  const matched = Math.max(0, done - unmatched);
+  const sum = $('impSummary');
+  if(hasSession){
+    sum.hidden = false;
+    sum.innerHTML =
+      `<span class="badge applied">matched ${matched}</span>` +
+      `<span class="badge pending">unmatched ${unmatched}</span>` +
+      (duplicates ? `<span class="badge pending">duplicates ${duplicates}</span>` : '') +
+      `<span class="badge dismissed">errored ${errored}</span>` +
+      `<span class="badge">${done}/${s.total||0} done</span>`;
+  } else {
+    sum.hidden = true;
+  }
+
+  // Review guidance: once a run has finished (or was stopped) tell the reviewer
+  // what's left and point at the two ways to handle it — the in-app reviewer or
+  // Obsidian — the app is otherwise silent about "done, now review".
+  const review = $('impReview');
+  if(finished){
+    review.hidden = false;
+    const bits = [];
+    if(unmatched) bits.push(`<b>${unmatched}</b> unmatched`);
+    if(duplicates) bits.push(`<b>${duplicates}</b> possible duplicate${duplicates===1?'':'s'}`);
+    review.innerHTML =
+      `<div style="font-weight:600;margin-bottom:.25rem">✅ Run finished — review the staged notes, then move the keepers into your vault.</div>` +
+      `<div style="font-size:.85rem;color:var(--subtext);line-height:1.5">` +
+      (bits.length ? `Needs a decision: ${bits.join(', ')}. ` : `Nothing flagged for attention. `) +
+      `Use <b>Review in app</b> to step through them here — pick a candidate link for the unmatched ones, edit, and accept each into the vault — ` +
+      `or review in Obsidian (search <code>#import/unmatched</code> / <code>#import/duplicate</code>, checklist in <code>_CalibreImport-report.md</code>) and then <b>Finalize</b>. ` +
+      `<b>Finalize moves every note still in staging</b>; the in-app reviewer moves them one at a time. Existing notes are never overwritten.` +
+      `</div>`;
+  } else {
+    review.hidden = true;
+  }
+
+  const startBtn = $('impStartBtn');
+  startBtn.disabled = running;
+  startBtn.textContent = state === 'resumable' ? `Resume ${s.done||0}/${s.total||0}` : 'Start import';
+  startBtn.hidden = state === 'review'; // a finished run has nothing to start/resume here
+  $('impReviewBtn').hidden = !finished;
+  $('impStopBtn').hidden = !running;
+  const unresolved = (s.unmatched||0) + (s.errored||0);
+  const retry = $('impRetryBtn');
+  retry.hidden = running || state !== 'resumable' || unresolved === 0;
+  $('impStartOverBtn').hidden = !finished;
+  $('impPreviewBtn').disabled = running;
+  $('impFinalizeBtn').disabled = running;
+
+  // running→done edge: settle the toast and refresh anything the run touched.
+  if(running){ importWasRunning = true; }
+  else if(importWasRunning){
+    importWasRunning = false;
+    if(importToast){ importToast.update('Import finished.','success'); importToast = null; }
+    loadEvents(); loadLogs();
+  }
+}
+
+async function importPreview(){
+  const btn = $('impPreviewBtn'); btn.disabled = true;
+  const out = $('impPreviewOut'); out.hidden = false; out.innerHTML = '<span class="muted">reading library…</span>';
+  try {
+    const r = await send('POST','/api/import/calibre/preview'); if(need(r)){ out.hidden = true; return; }
+    if(!r.ok){ out.innerHTML = `<span class="badge dismissed">${esc(r.data.error||('error '+r.status))}</span>`; return; }
+    const d = r.data;
+    out.innerHTML =
+      `<div class="row" style="gap:.4rem;flex-wrap:wrap">` +
+      `<span class="badge">${d.ln_series||0} LN series</span>` +
+      `<span class="badge">${d.ln_volumes||0} volumes</span>` +
+      `<span class="badge">${d.regular_books||0} regular books</span>` +
+      `<span class="badge pending">~${d.duplicates||0} likely duplicates</span>` +
+      (d.already_done ? `<span class="badge applied">${d.already_done} already done</span>` : '') +
+      `</div>`;
+  } finally { btn.disabled = false; }
+}
+
+async function importStart(){
+  const r = await send('POST','/api/import/calibre'); if(need(r)) return;
+  if(r.status===409) return toast('An import is already running.','info');
+  if(!r.ok) return toast('Error: '+(r.data.error||r.status),'error');
+  importToast = toast('Import running…','busy');
+  connectStatusStream();
+}
+async function importStop(){
+  const r = await send('POST','/api/import/calibre/stop'); if(need(r)) return;
+  toast(r.ok?'Stopping after the current item…':'Error: '+(r.data.error||r.status), r.ok?'info':'error');
+}
+async function importRetry(){
+  const r = await send('POST','/api/import/calibre/retry'); if(need(r)) return;
+  if(r.status===409) return toast('An import is already running.','info');
+  if(!r.ok) return toast('Error: '+(r.data.error||r.status),'error');
+  importToast = toast('Retrying errored / unmatched…','busy');
+  connectStatusStream();
+}
+async function importStartOver(){
+  if(!confirm('Discard the current import session and every note the app staged for it? Your own edits to other notes are untouched.')) return;
+  const r = await send('POST','/api/import/calibre/start-over'); if(need(r)) return;
+  if(r.status===409) return toast('Stop the running import first.','info');
+  toast(r.ok?'Import session discarded.':'Error: '+(r.data.error||r.status), r.ok?'success':'error');
+  $('impPreviewOut').hidden = true; $('impFinalizeOut').hidden = true;
+  loadImport();
+}
+async function importFinalize(){
+  const btn = $('impFinalizeBtn'); btn.disabled = true;
+  const out = $('impFinalizeOut'); out.hidden = false; out.innerHTML = '<span class="muted">moving notes…</span>';
+  try {
+    const r = await send('POST','/api/import/calibre/finalize'); if(need(r)){ out.hidden = true; return; }
+    if(r.status===409){ out.innerHTML = '<span class="badge pending">stop the running import first</span>'; return; }
+    if(!r.ok){ out.innerHTML = `<span class="badge dismissed">${esc(r.data.error||('error '+r.status))}</span>`; return; }
+    const d = r.data;
+    const skipped = d.skipped||[];
+    let html =
+      `<div class="row" style="gap:.4rem;flex-wrap:wrap">` +
+      `<span class="badge applied">${d.notes||0} notes moved</span>` +
+      `<span class="badge applied">${d.covers||0} covers moved</span>` +
+      (skipped.length ? `<span class="badge pending">${skipped.length} skipped</span>` : '') +
+      `</div>`;
+    if(skipped.length){
+      html += `<p class="muted" style="margin:.4rem 0 0"><small>Skipped (a note with that name already exists — review by hand):</small></p>`;
+      html += `<ul style="margin:.2rem 0 0 1.1rem">` + skipped.map(x => `<li><small>${esc(x)}</small></li>`).join('') + `</ul>`;
+    }
+    if(d.exclude_hint){
+      html += `<div class="card" style="margin-top:.6rem;background:var(--mantle)"><p style="margin:0"><small>` +
+        `📌 <b>Excluded-files hint:</b> add <code>${esc(toWinPath(d.exclude_hint))}</code> to ` +
+        `Obsidian's <b>Settings → Files &amp; links → Excluded files</b> so the moved volume archive stays out of ` +
+        `search and the graph. (The app never touches <code>.obsidian</code>.)</small></p></div>`;
+    }
+    out.innerHTML = html;
+    toast('Finalize done.','success');
+    loadEvents(); loadLogs();
+  } finally { btn.disabled = false; }
+}
+
+/* ── in-app import reviewer (#77 follow-up) ────────────────────────────────
+   Step through the staged notes one at a time without opening Obsidian: filter
+   to what you want to see (unmatched always worth a look; duplicates + clean
+   opt-in), pick a candidate link for an unmatched note (which also pulls the
+   source blurb), edit the result (title/status/link/description/cover), then
+   Accept — moving just that note into the vault — or Reject it. Bulk-accept
+   moves every clean note at once. All against the latest session's staged files. */
+let _review = null; // { items, staging, filters, idx, detail, moved }
+
+// showLightbox floats an image full-screen (click / Esc to dismiss) — used by the
+// reviewer's click-to-enlarge cover.
+function showLightbox(src){
+  if(!src) return;
+  closeLightbox();
+  const lb = document.createElement('div'); lb.id = 'lightbox';
+  lb.style.cssText = 'position:fixed;inset:0;z-index:80;background:rgba(0,0,0,.82);display:flex;align-items:center;justify-content:center;cursor:zoom-out';
+  lb.onclick = closeLightbox;
+  const img = document.createElement('img'); img.src = src;
+  img.style.cssText = 'max-width:92vw;max-height:92vh;border-radius:8px;box-shadow:0 20px 60px rgba(0,0,0,.6)';
+  lb.appendChild(img); document.body.appendChild(lb);
+}
+function closeLightbox(){ const lb = $('lightbox'); if(lb) lb.remove(); }
+
+async function openReview(){
+  const r = await send('GET','/api/import/calibre/review'); if(need(r)) return;
+  if(!r.ok) return toast('Could not load review queue: '+(r.data.error||r.status),'error');
+  _review = { items:(r.data.items||[]), staging:r.data.staging_dir||'',
+              filters:{ unmatched:true, duplicates:false, clean:false }, idx:0, moved:0 };
+  // Freeze each item's bucket at load so resolving one (picking / pasting a link →
+  // "matched") doesn't yank it out of the current filter view mid-review; items
+  // leave the queue only when accepted or rejected.
+  _review.items.forEach(it => { it._bucket = it.unmatched ? 'unmatched' : (it.duplicate_of ? 'duplicates' : 'clean'); });
+  $('reviewModalBackdrop').hidden = false;
+  renderReview();
+}
+async function closeReview(){
+  $('reviewModalBackdrop').hidden = true; $('reviewBody').innerHTML = '';
+  const moved = _review && _review.moved; _review = null; _coverPending = null;
+  if(moved){ // track everything accepted this session, then repaint the tab
+    try { await send('POST','/api/vault/refresh'); } catch(e){}
+    loadBooks();
+  }
+  loadImport(); loadEvents();
+}
+function reviewCounts(){
+  const c = { unmatched:0, duplicates:0, clean:0 };
+  (_review.items||[]).forEach(it => { c[it._bucket] = (c[it._bucket]||0) + 1; });
+  return c;
+}
+function reviewQueue(){
+  const f = _review.filters;
+  return (_review.items||[]).filter(it => f[it._bucket]);
+}
+function reviewFilter(key, on){ _review.filters[key] = on; _review.idx = 0; renderReview(); }
+function reviewCurrentId(){ const q = reviewQueue(); const it = q[_review.idx]; return it ? it.id : 0; }
+
+function renderReview(){
+  const q = reviewQueue(), c = reviewCounts();
+  if(_review.idx >= q.length) _review.idx = Math.max(0, q.length - 1);
+  const f = _review.filters;
+  const chk = (k,label,n) => `<label class="switch-row" style="gap:.35rem;cursor:pointer;margin:0">
+      <input type="checkbox" ${f[k]?'checked':''} onchange="reviewFilter('${k}',this.checked)">
+      <span>${label} <span class="badge">${n}</span></span></label>`;
+  let head = `<h2 style="margin:0 0 .5rem">Review staged notes</h2>
+    <div class="row" style="gap:1rem;flex-wrap:wrap;align-items:center;margin-bottom:.6rem">
+      ${chk('unmatched','Unmatched', c.unmatched)}
+      ${chk('duplicates','Duplicates', c.duplicates)}
+      ${chk('clean','Matched (clean)', c.clean)}
+    </div>`;
+  if(c.clean > 0){
+    head += `<div class="card" style="margin:0 0 .6rem;background:var(--mantle)"><div class="row" style="justify-content:space-between;align-items:center;margin:0">
+      <small class="muted">Skip the review for the clean ones — move all <b>${c.clean}</b> matched, non-duplicate notes into the vault at once.</small>
+      <button class="btn" onclick="reviewBulkClean()">Accept all clean (${c.clean})</button></div></div>`;
+  }
+  if(q.length === 0){
+    $('reviewBody').innerHTML = head +
+      `<p class="muted" style="margin:.4rem 0">Nothing to review for the current filters.` +
+      (_review.moved ? ` Moved <b>${_review.moved}</b> note(s) into the vault this session.` : '') +
+      `</p><div class="row" style="justify-content:flex-end"><button class="btn" onclick="closeReview()">Done</button></div>`;
+    return;
+  }
+  const one = q.length <= 1;
+  $('reviewBody').innerHTML = head +
+    `<div class="row" style="justify-content:space-between;align-items:center;margin:.2rem 0 .5rem">
+       <button class="btn ghost" onclick="reviewGo(-1)" ${one?'disabled':''}>‹ Prev</button>
+       <span class="muted">${_review.idx+1} / ${q.length}</span>
+       <button class="btn ghost" onclick="reviewGo(1)" ${one?'disabled':''}>Next ›</button>
+     </div>
+     <div id="rvItem"><p class="muted">loading…</p></div>`;
+  loadReviewStep();
+}
+// Move through the queue, wrapping around at the ends so Next/Skip on the last
+// item cycles back to the first (to revisit ones you didn't accept/reject). A
+// full renderReview is used so the "N / total" counter + button states refresh,
+// not just the item body.
+function reviewGo(delta){
+  const n = reviewQueue().length;
+  if(n === 0){ return renderReview(); }
+  _review.idx = ((_review.idx + delta) % n + n) % n;
+  renderReview();
+}
+async function loadReviewStep(){
+  _coverPending = null;
+  const id = reviewCurrentId(); if(!id){ return renderReview(); }
+  const r = await send('GET','/api/import/calibre/review/item?id='+id);
+  if(!r.ok){ $('rvItem').innerHTML = `<span class="badge dismissed">${esc(r.data.error||('error '+r.status))}</span>`; return; }
+  _review.detail = r.data;
+  renderReviewItem();
+}
+const RV_STATUSES = ['Backlog','Completed','Dropped','Shelved'];
+function renderReviewItem(){
+  const d = _review.detail || {};
+  const cands = d.candidates || [];
+  let flags = '';
+  if(d.unmatched) flags += `<span class="badge pending">unmatched</span> `;
+  if(d.duplicate_of) flags += `<span class="badge dismissed">possible duplicate of [[${esc(d.duplicate_of)}]]</span> `;
+  const statusOpts = RV_STATUSES.map(s => `<option ${(''+d.status).toLowerCase()===s.toLowerCase()?'selected':''}>${s}</option>`).join('');
+  let html = (flags ? `<div style="margin-bottom:.5rem">${flags}</div>` : '');
+  html += `<div class="row" style="align-items:flex-start;gap:1rem">
+      <div>${coverPicker({ id:'rvCover', currentSrc: d.cover_data||'', prompt:'Change cover — paste URL, upload, or drop' })}
+        <div class="muted" style="font-size:.75rem;margin-top:.2rem;text-align:center">click cover to enlarge</div></div>
+      <div style="flex:1;min-width:0">
+        <div class="rule-grid" style="grid-template-columns:80px 1fr;gap:.4rem .6rem">
+          <label>Title</label><input id="rvTitle" value="${esc(d.title||'')}">
+          <label>Author</label><input id="rvAuthor" value="${esc(d.author||'')}">
+          <label>Series</label><input id="rvSeries" value="${esc(d.series||'')}" placeholder="(none)">
+          <label>Volume</label><input id="rvSeriesIdx" value="${esc(d.series_index||'')}" placeholder="e.g. 2">
+          <label>Status</label><select id="rvStatus">${statusOpts}</select>
+          <label>Link</label><div class="row" style="margin:0;gap:.35rem">
+            <input id="rvLink" value="${esc(d.link||'')}" spellcheck="false" style="flex:1">
+            <button class="btn ghost" style="padding:.3rem .5rem" onclick="reviewPullSource('description')" title="Fetch the description from the Link above">⬇ Desc</button>
+            <button class="btn ghost" style="padding:.3rem .5rem" onclick="reviewPullSource('cover')" title="Fetch the cover from the Link above">⬇ Cover</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  if(cands.length){
+    const cur = (d.link||'').trim();
+    html += `<div style="margin-top:.7rem">
+      <div style="font-weight:600;margin-bottom:.3rem">Choose the right source — sets the link + pulls its description (change anytime):</div>
+      ${cands.map((c,i) => { const sel = c.url && c.url.trim() === cur; return `<div class="cand-row" style="cursor:default${sel?';border-color:var(--green)':''}">
+          <div class="cand-meta"><div class="cand-title">${esc(c.title)}${c.author?` <span class="muted" style="font-weight:400">— ${esc(c.author)}</span>`:''}</div>
+            <div class="cand-sub"><a href="${esc(c.url)}" target="_blank" rel="noopener">${esc(c.url)}</a></div></div>
+          <button class="btn ${sel?'':'ghost'}" onclick="reviewPickIdx(${i})">${sel?'✓ Selected':'Use this'}</button>
+        </div>`; }).join('')}
+      <div class="muted" style="font-size:.78rem;margin-top:.3rem">None right? Paste the correct link into <b>Link</b> above, then ⬇ Desc / ⬇ Cover to pull them from it.</div>
+    </div>`;
+  }
+  html += `<label style="display:block;margin:.7rem 0 .2rem;font-size:.85rem;color:var(--subtext)">Description</label>
+      <textarea id="rvDesc" rows="6" style="width:100%">${esc(d.description||'')}</textarea>`;
+  html += `<div class="row" style="gap:.5rem;margin-top:.8rem;flex-wrap:wrap">
+      <button class="btn" onclick="reviewAccept()">✓ Accept &amp; move to vault</button>
+      <button class="btn ghost" onclick="reviewSaveOnly()">Save edits</button>
+      <button class="btn ghost" onclick="reviewGo(1)">Skip →</button>
+      <span class="spacer"></span>
+      <button class="btn ghost danger" onclick="reviewReject()">Reject (delete)</button>
+    </div>`;
+  $('rvItem').innerHTML = html;
+  // Make the staged cover clickable to enlarge (the picker's preview img).
+  const cp = $('rvCoverPreview');
+  if(cp){ cp.style.cursor = 'zoom-in'; cp.onclick = () => showLightbox(cp.src || d.cover_data || ''); }
+}
+async function reviewSave(silent){
+  const id = reviewCurrentId(); if(!id) return false;
+  const d = _review.detail || {};
+  const body = { id, description: $('rvDesc').value, status: $('rvStatus').value };
+  const t = $('rvTitle').value.trim(); if(t && t !== d.title) body.title = t;
+  const lk = $('rvLink').value.trim(); if(lk !== (d.link||'')) body.link = lk;
+  const au = $('rvAuthor').value.trim(); if(au !== (d.author||'')) body.author = au;
+  const se = $('rvSeries').value.trim(); if(se !== (d.series||'')) body.series = se;
+  const si = $('rvSeriesIdx').value.trim(); if(si !== (d.series_index||'')) body.series_index = si;
+  const r = await send('PUT','/api/import/calibre/review/item', body);
+  if(need(r)) return false;
+  if(r.status===409){ toast('A staged note with that title already exists.','error'); return false; }
+  if(!r.ok){ toast('Save failed: '+(r.data.error||r.status),'error'); return false; }
+  _review.detail = r.data;
+  if(_coverPending){
+    const cr = await sendReviewCover(id, _coverPending); _coverPending = null;
+    if(!cr.ok){ toast('Saved, but cover failed: '+(cr.data.error||cr.status),'error'); return true; }
+    _review.detail = cr.data;
+  }
+  if(!silent) toast('Saved.','success');
+  return true;
+}
+async function reviewSaveOnly(){ if(await reviewSave(false)) renderReviewItem(); }
+async function sendReviewCover(id, pending){
+  const url = '/api/import/calibre/review/cover?id=' + id;
+  if(pending.file){
+    const fd = new FormData(); fd.append('cover', pending.file);
+    const r = await fetch(url, { method:'POST', headers:{ 'X-BookWatch-Token': token() }, body: fd });
+    return { ok:r.ok, status:r.status, data: await r.json().catch(()=>({})) };
+  }
+  return send('POST', url, { url: pending.url });
+}
+async function reviewPickIdx(i){
+  const c = (_review.detail.candidates||[])[i]; if(!c) return;
+  const id = reviewCurrentId();
+  const r = await send('POST','/api/import/calibre/review/pick', { id, url:c.url });
+  if(need(r)) return;
+  if(!r.ok) return toast('Pick failed: '+(r.data.error||r.status),'error');
+  _review.detail = r.data; // item stays in the queue (frozen bucket) so you can re-pick
+  const it = (_review.items||[]).find(x => x.id === id); if(it){ it.resolved_link = c.url; }
+  toast('Linked + pulled description.','success');
+  renderReviewItem();
+}
+// Load the description or cover from the Link field (a pasted link, or the picked
+// one) — for when the right source isn't among the candidates.
+async function reviewPullSource(what){
+  const id = reviewCurrentId(); if(!id) return;
+  const url = $('rvLink').value.trim();
+  if(!url || url.includes('unmatched.bookwatch.invalid')) return toast('Paste a real source link into Link first.','info');
+  const h = toast(what==='cover'?'Fetching cover…':'Fetching description…','busy');
+  const r = await send('POST','/api/import/calibre/review/pull', { id, url, what });
+  if(need(r,h)) return;
+  if(!r.ok){ h.update('Fetch failed: '+(r.data.error||r.status),'error'); return; }
+  const before = _review.detail || {};
+  _review.detail = r.data;
+  const got = what==='cover' ? (r.data.cover_data && r.data.cover_data!==before.cover_data)
+                             : ((r.data.description||'') !== (before.description||'') && (r.data.description||'').trim()!=='');
+  h.update(got ? (what==='cover'?'Cover loaded.':'Description loaded.') : 'Nothing found at that link for this.', got?'success':'info');
+  renderReviewItem();
+}
+async function reviewAccept(){
+  const id = reviewCurrentId(); if(!id) return;
+  if(!await reviewSave(true)) return;
+  const r = await send('POST','/api/import/calibre/review/accept', { id });
+  if(need(r)) return;
+  if(!r.ok) return toast('Accept failed: '+(r.data.error||r.status),'error');
+  const skipped = r.data.skipped || [];
+  if(skipped.length && !r.data.notes){ toast('Skipped — a note with that name already exists in the vault.','info'); }
+  else { toast('Moved into the vault.','success'); _review.moved += (r.data.notes||0); }
+  reviewDrop(id);
+}
+async function reviewReject(){
+  const id = reviewCurrentId(); if(!id) return;
+  if(!confirm('Delete this staged note (and its cover)? It won’t be imported. Your existing vault notes are untouched.')) return;
+  const r = await send('POST','/api/import/calibre/review/reject', { id });
+  if(need(r)) return;
+  if(!r.ok) return toast('Reject failed: '+(r.data.error||r.status),'error');
+  toast('Rejected.','info');
+  reviewDrop(id);
+}
+function reviewDrop(id){
+  _review.items = (_review.items||[]).filter(x => x.id !== id);
+  renderReview();
+}
+async function reviewBulkClean(){
+  const c = reviewCounts();
+  if(!confirm(`Move all ${c.clean} clean (matched, non-duplicate) notes into the vault now?`)) return;
+  const r = await send('POST','/api/import/calibre/review/accept-clean');
+  if(need(r)) return;
+  if(!r.ok) return toast('Bulk accept failed: '+(r.data.error||r.status),'error');
+  _review.moved += (r.data.notes||0);
+  toast(`Moved ${r.data.notes||0} clean note(s) into the vault.`,'success');
+  // Drop the accepted clean items locally so the queue reflects it.
+  _review.items = (_review.items||[]).filter(it => !(it.state==='matched' && !it.duplicate_of && !it.unmatched));
+  loadBooks();
+  renderReview();
 }
 
 /* ── vault setup wizard (#65) ──────────────────────────────────────────────

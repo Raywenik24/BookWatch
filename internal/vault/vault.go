@@ -29,6 +29,10 @@ var (
 	workIDRE         = regexp.MustCompile(`(?i)^Work ID:\s*(.+)$`)
 	releasedENRE     = regexp.MustCompile(`(?i)^Released EN:\s*(.+)$`)
 	seriesRE         = regexp.MustCompile(`(?i)^Series:\s*(.*)$`)
+	seriesIndexRE    = regexp.MustCompile(`(?i)^Series Index:\s*(.*)$`)
+	seriesPrefixRE   = regexp.MustCompile(`(?i)^Series:\s*`)
+	seriesIdxPrefRE  = regexp.MustCompile(`(?i)^Series Index:\s*`)
+	authorPrefixRE   = regexp.MustCompile(`(?i)^Author:\s*`)
 	tagsKeyRE        = regexp.MustCompile(`(?i)^tags:\s*(.*)$`)
 	tagItemRE        = regexp.MustCompile(`^\s*-\s*"?#?([^"]+?)"?\s*$`)
 
@@ -37,6 +41,8 @@ var (
 	lastUpdRE        = regexp.MustCompile(`(?i)^Last Update:\s*`)
 	coverPrefixRE    = regexp.MustCompile(`(?i)^Cover:\s*`)
 	releasedPrefixRE = regexp.MustCompile(`(?i)^Released EN:\s*`)
+	linkPrefixRE     = regexp.MustCompile(`(?i)^Link:\s*`)
+	workIDPrefixRE   = regexp.MustCompile(`(?i)^Work ID:\s*`)
 	titlePrefixRE    = regexp.MustCompile(`(?i)^Title:\s*`)
 	readVolPrefixRE  = regexp.MustCompile(`(?i)^Read Volumes:\s*`)
 
@@ -487,6 +493,33 @@ func UpdateReleasedEN(path, value string) error {
 	return setFrontmatterScalar(path, releasedPrefixRE, "Released EN", value)
 }
 
+// UpdateLink rewrites the `Link:` frontmatter line — used by the in-app import
+// reviewer when a chosen candidate replaces the synthetic unmatched placeholder.
+func UpdateLink(path, value string) error {
+	return setFrontmatterScalar(path, linkPrefixRE, "Link", value)
+}
+
+// UpdateWorkID rewrites the `Work ID:` frontmatter line — set when the import
+// reviewer resolves an unmatched note to a real catalog link.
+func UpdateWorkID(path, value string) error {
+	return setFrontmatterScalar(path, workIDPrefixRE, "Work ID", value)
+}
+
+// UpdateAuthor rewrites the `Author:` frontmatter line — editable in the reviewer.
+func UpdateAuthor(path, value string) error {
+	return setFrontmatterScalar(path, authorPrefixRE, "Author", value)
+}
+
+// UpdateSeries / UpdateSeriesIndex rewrite the `Series:` / `Series Index:`
+// frontmatter lines — editable in the import reviewer.
+func UpdateSeries(path, value string) error {
+	return setFrontmatterScalar(path, seriesPrefixRE, "Series", value)
+}
+
+func UpdateSeriesIndex(path, value string) error {
+	return setFrontmatterScalar(path, seriesIdxPrefRE, "Series Index", value)
+}
+
 // UpdateTags rewrites the `tags:` block list to exactly the given tags (each
 // stored as `  - "#Tag"`, matching the builders). A nil/empty list leaves just
 // the `tags:` key.
@@ -650,6 +683,7 @@ type Note struct {
 	WorkID         string   `json:"work_id"`
 	ReleasedEN     string   `json:"released_en"`
 	Series         string   `json:"series"`
+	SeriesIndex    string   `json:"series_index"`
 	Cover          string   `json:"cover"`
 	Status         string   `json:"status"`
 	Volumes        int      `json:"volumes"`
@@ -738,7 +772,9 @@ func ReadNote(path string) (Note, error) {
 		if m := releasedENRE.FindStringSubmatch(line); m != nil {
 			n.ReleasedEN = strings.TrimSpace(m[1])
 		}
-		if m := seriesRE.FindStringSubmatch(line); m != nil {
+		if m := seriesIndexRE.FindStringSubmatch(line); m != nil {
+			n.SeriesIndex = strings.TrimSpace(m[1])
+		} else if m := seriesRE.FindStringSubmatch(line); m != nil {
 			n.Series = strings.TrimSpace(m[1])
 		}
 		if m := statusRE.FindStringSubmatch(line); m != nil {

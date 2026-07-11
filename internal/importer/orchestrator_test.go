@@ -143,6 +143,41 @@ func TestRunStagesAndRecords(t *testing.T) {
 	}
 }
 
+func TestBookDescriptionFallback(t *testing.T) {
+	st := newTestStore(t)
+	im, stagingDir := fullImport(t, st)
+	calls := 0
+	im.ScrapeBookDescription = func(kind Kind, link, workID string) string {
+		calls++
+		return "source blurb"
+	}
+
+	// One matched book with no Calibre comments (→ fallback fills it) and one with
+	// comments (→ kept, fallback not called). Both resolve via the same stub ISBN.
+	withComments := engBook("Dune Two", "u-dune2", "111")
+	withComments.Comments = "calibre blurb"
+
+	sid, err := st.CreateImportSession("lib", stagingDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	units := GroupWorkUnits([]calibre.Book{engBook("Dune", "u-dune", "111"), withComments}, nil)
+	if err := im.Run(sid, units); err != nil {
+		t.Fatal(err)
+	}
+
+	if calls != 1 {
+		t.Fatalf("fallback called %d times, want 1 (only the comment-less book)", calls)
+	}
+	if dune := readFile(t, filepath.Join(stagingDir, "Dune.md")); !strings.Contains(dune, "source blurb") {
+		t.Errorf("Dune note missing source-fallback description:\n%s", dune)
+	}
+	two := readFile(t, filepath.Join(stagingDir, "Dune Two.md"))
+	if !strings.Contains(two, "calibre blurb") || strings.Contains(two, "source blurb") {
+		t.Errorf("Dune Two should keep its Calibre comments, not the fallback:\n%s", two)
+	}
+}
+
 func TestReRunSkipsProcessed(t *testing.T) {
 	st := newTestStore(t)
 	im, stagingDir := fullImport(t, st)
@@ -276,17 +311,24 @@ func TestWriteReport(t *testing.T) {
 	items := []store.ImportItem{
 		{Title: "Dune", State: "matched"},
 		{Title: "Mystery Book", State: "unmatched"},
+		{Title: "Wiedźmin - Ostatnie Życzenie", State: "matched", DuplicateOf: "Ostatnie Zyczenie"},
 		{Title: "Broken", State: "errored", Error: "network"},
 	}
 	path, sum, err := WriteReport(dir, testToday, items)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sum.Matched != 1 || sum.Unmatched != 1 || sum.Errored != 1 {
+	if sum.Matched != 2 || sum.Unmatched != 1 || sum.Duplicates != 1 || sum.Errored != 1 {
 		t.Fatalf("summary wrong: %+v", sum)
 	}
 	body := readFile(t, path)
-	for _, want := range []string{"Import 2026-07-08", "Mystery Book", "Broken — network"} {
+	for _, want := range []string{
+		"Import 2026-07-08",
+		"[[Mystery Book]]",                                          // unmatched → wikilink
+		"Possible duplicates",                                       // dup section header
+		"duplicate of [[Ostatnie Zyczenie]]",                        // dup target wikilink
+		"Broken — network",                                          // errored, plain (no staged note)
+	} {
 		if !contains(body, want) {
 			t.Errorf("report missing %q", want)
 		}
