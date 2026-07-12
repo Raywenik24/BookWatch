@@ -34,9 +34,10 @@ func newTestServer(t *testing.T) (http.Handler, *store.Store, string) {
 	vaultDir := t.TempDir()
 	cfg := config.Config{Password: "secret", VaultDir: vaultDir, AttachmentsDir: "_attachments"}
 	sc := scraper.New("t", 5*time.Second)
-	sched := scheduler.New(func(func(i, total int, title string)) (service.CheckSummary, error) {
+	noop := func(func(i, total int, title string)) (service.CheckSummary, error) {
 		return service.CheckSummary{}, nil
-	})
+	}
+	sched := scheduler.New(noop, noop, noop)
 	ol := provider.NewOpenLibrary("test", 5*time.Second)
 	gb := provider.NewGoogleBooks("", 5*time.Second)
 	gr := provider.NewGoodreads("test", 5*time.Second)

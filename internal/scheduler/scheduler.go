@@ -1,5 +1,8 @@
-// Package scheduler runs the check on a cron schedule and on demand, with a
-// single-flight lock so a scheduled run and a manual run never overlap.
+// Package scheduler runs the LN volume check and the author/release tracker
+// on their own independent cron schedules (plus on demand), with a
+// single-flight lock so no two runs — scheduled or manual, either phase —
+// ever overlap. A run that finds the lock held is simply skipped; it fires
+// again on its own next tick (#80).
 package scheduler
 
 import (
@@ -16,15 +19,32 @@ import (
 // before each book so the scheduler can publish live check progress.
 type RunFunc func(progress func(i, total int, title string)) (service.CheckSummary, error)
 
+// ValidateSpec reports whether spec is a valid cron expression for AddFunc.
+// An empty spec (cron disabled) is always valid.
+func ValidateSpec(spec string) error {
+	if spec == "" {
+		return nil
+	}
+	_, err := cron.ParseStandard(spec)
+	return err
+}
+
 type Scheduler struct {
-	run RunFunc
-	c   *cron.Cron
+	run        RunFunc // combined LN+tracker run, used by the manual "Run check"
+	runLN      RunFunc // LN volume check only
+	runTracker RunFunc // author/release tracking only
 
-	mu      sync.Mutex
-	running bool
-	lastRun time.Time
+	c *cron.Cron
 
-	cur, total int    // live progress of the in-flight run
+	mu           sync.Mutex
+	lnEntry      cron.EntryID
+	trackerEntry cron.EntryID
+	lnSpec       string
+	trackerSpec  string
+	running      bool
+	lastRun      time.Time
+
+	cur, total int // live progress of the in-flight run
 	curTitle   string
 
 	// observer, if set, is called (off-lock) after every state change — run
@@ -34,8 +54,11 @@ type Scheduler struct {
 	observer func()
 }
 
-func New(run RunFunc) *Scheduler {
-	return &Scheduler{run: run, c: cron.New()}
+// New builds a Scheduler. run is the combined LN+tracker run used by the
+// manual "Run check" action; runLN and runTracker are the two phases that
+// get their own independent cron schedules.
+func New(run, runLN, runTracker RunFunc) *Scheduler {
+	return &Scheduler{run: run, runLN: runLN, runTracker: runTracker, c: cron.New()}
 }
 
 // OnChange registers a callback fired after every run-state change (start,
@@ -50,18 +73,56 @@ func (s *Scheduler) notify() {
 	}
 }
 
-// Start schedules the cron job (if spec is non-empty) and starts the ticker.
-func (s *Scheduler) Start(spec string) error {
-	if spec != "" {
-		if _, err := s.c.AddFunc(spec, func() { s.Trigger("cron") }); err != nil {
-			return err
-		}
+// Start registers the LN and tracker cron jobs (either spec may be empty to
+// leave that phase cron-disabled) and starts the ticker.
+func (s *Scheduler) Start(lnSpec, trackerSpec string) error {
+	if err := s.RescheduleLN(lnSpec); err != nil {
+		return err
+	}
+	if err := s.RescheduleTracker(trackerSpec); err != nil {
+		return err
 	}
 	s.c.Start()
 	return nil
 }
 
 func (s *Scheduler) Stop() { s.c.Stop() }
+
+// RescheduleLN swaps the LN-check cron entry for a new spec (empty disables
+// it). Safe to call at any time, including while the ticker is running — this
+// is what lets a Settings edit take effect without a restart.
+func (s *Scheduler) RescheduleLN(spec string) error {
+	return s.reschedule(spec, &s.lnSpec, &s.lnEntry, func() { s.trigger("cron-ln", s.runLN) })
+}
+
+// RescheduleTracker is RescheduleLN for the tracker-poll cron entry.
+func (s *Scheduler) RescheduleTracker(spec string) error {
+	return s.reschedule(spec, &s.trackerSpec, &s.trackerEntry, func() { s.trigger("cron-tracker", s.runTracker) })
+}
+
+func (s *Scheduler) reschedule(spec string, curSpec *string, curEntry *cron.EntryID, fn func()) error {
+	if err := ValidateSpec(spec); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if spec == *curSpec {
+		return nil
+	}
+	if *curEntry != 0 {
+		s.c.Remove(*curEntry)
+		*curEntry = 0
+	}
+	if spec != "" {
+		id, err := s.c.AddFunc(spec, fn)
+		if err != nil {
+			return err
+		}
+		*curEntry = id
+	}
+	*curSpec = spec
+	return nil
+}
 
 // Busy reports whether a run is currently in progress.
 func (s *Scheduler) Busy() bool {
@@ -78,12 +139,20 @@ func (s *Scheduler) Progress() (cur, total int, title string) {
 	return s.cur, s.total, s.curTitle
 }
 
-// Trigger starts a run in the background. Returns false if one is already
-// running (single-flight). source is just for logging.
+// Trigger starts the combined LN+tracker run in the background — this is
+// what the manual "Run check" action uses. Returns false if a run (scheduled
+// or manual, either phase) is already in progress (single-flight).
 func (s *Scheduler) Trigger(source string) bool {
+	return s.trigger(source, s.run)
+}
+
+// trigger starts run in the background under the shared single-flight lock.
+// source is just for logging. Returns false if a run is already in progress.
+func (s *Scheduler) trigger(source string, run RunFunc) bool {
 	s.mu.Lock()
 	if s.running {
 		s.mu.Unlock()
+		log.Printf("check skipped (%s): a run is already in progress", source)
 		return false
 	}
 	s.running = true
@@ -108,7 +177,7 @@ func (s *Scheduler) Trigger(source string) bool {
 			s.notify() // run finished
 		}()
 		log.Printf("check started (%s)", source)
-		sum, err := s.run(progress)
+		sum, err := run(progress)
 		if err != nil {
 			log.Printf("check error (%s): %v", source, err)
 			return

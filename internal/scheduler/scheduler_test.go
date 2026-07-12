@@ -29,7 +29,7 @@ func TestTrigger_singleFlightAndProgress(t *testing.T) {
 		<-release
 		return service.CheckSummary{}, nil
 	}
-	s := New(run)
+	s := New(run, nil, nil)
 
 	if !s.Trigger("a") {
 		t.Fatal("first trigger should start")
@@ -62,7 +62,7 @@ func TestTrigger_acceptsAfterCompletion(t *testing.T) {
 		atomic.AddInt32(&runs, 1)
 		return service.CheckSummary{}, nil
 	}
-	s := New(run)
+	s := New(run, nil, nil)
 	if !s.Trigger("1") {
 		t.Fatal("first trigger should start")
 	}
@@ -71,4 +71,35 @@ func TestTrigger_acceptsAfterCompletion(t *testing.T) {
 		t.Fatal("a trigger after completion should be accepted")
 	}
 	waitFor(t, func() bool { return atomic.LoadInt32(&runs) == 2 })
+}
+
+func TestReschedule_validatesAndSwapsWithoutRestart(t *testing.T) {
+	noop := func(func(i, total int, title string)) (service.CheckSummary, error) {
+		return service.CheckSummary{}, nil
+	}
+	s := New(noop, noop, noop)
+
+	if err := s.Start("@every 1h", "@every 1h"); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer s.Stop()
+
+	if err := s.RescheduleLN("not a cron expr"); err == nil {
+		t.Error("bad LN spec should be rejected")
+	}
+	if err := s.RescheduleTracker("not a cron expr"); err == nil {
+		t.Error("bad tracker spec should be rejected")
+	}
+	if err := s.RescheduleLN("@every 2h"); err != nil {
+		t.Errorf("valid reschedule should succeed: %v", err)
+	}
+	if s.lnSpec != "@every 2h" {
+		t.Errorf("lnSpec = %q, want @every 2h", s.lnSpec)
+	}
+	if err := s.RescheduleTracker(""); err != nil {
+		t.Errorf("empty spec (disable) should succeed: %v", err)
+	}
+	if s.trackerSpec != "" || s.trackerEntry != 0 {
+		t.Errorf("tracker cron not disabled: spec=%q entry=%v", s.trackerSpec, s.trackerEntry)
+	}
 }

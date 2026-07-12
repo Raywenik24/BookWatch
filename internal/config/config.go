@@ -50,10 +50,11 @@ type Config struct {
 	ImportFilterField  string
 	ImportFilterValues string
 
-	Port      string // HTTP listen port
-	Password  string // shared password for write endpoints
-	CheckCron string // cron expr for the scheduled check
-	GBKey     string // Google Books API key — needed for covers; keyless quota is now zero
+	Port        string // HTTP listen port
+	Password    string // shared password for write endpoints
+	CheckCron   string // cron expr for the scheduled LN volume check
+	TrackerCron string // cron expr for the scheduled author/release tracker poll (#80)
+	GBKey       string // Google Books API key — needed for covers; keyless quota is now zero
 }
 
 // Default reads env vars, falling back to sane defaults.
@@ -87,10 +88,11 @@ func Default() Config {
 		ImportFilterField:  env("BOOKWATCH_IMPORT_FILTER_FIELD", ""),
 		ImportFilterValues: env("BOOKWATCH_IMPORT_FILTER_VALUES", ""),
 
-		Port:      env("BOOKWATCH_PORT", "8080"),
-		Password:  env("BOOKWATCH_PASSWORD", ""),
-		CheckCron: env("BOOKWATCH_CHECK_CRON", "0 9 * * *"),
-		GBKey:     env("BOOKWATCH_GB_KEY", ""),
+		Port:        env("BOOKWATCH_PORT", "8080"),
+		Password:    env("BOOKWATCH_PASSWORD", ""),
+		CheckCron:   env("BOOKWATCH_CHECK_CRON", "0 9 * * *"),
+		TrackerCron: env("BOOKWATCH_TRACKER_CRON", "0 10 * * *"),
+		GBKey:       env("BOOKWATCH_GB_KEY", ""),
 	}
 }
 

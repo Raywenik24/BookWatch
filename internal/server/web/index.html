@@ -665,6 +665,15 @@
       </div>
 
       <div class="card">
+        <h3>Schedule</h3>
+        <div class="rule-grid" style="grid-template-columns:160px 1fr">
+          <label>LN volume check</label><input id="setLnCron" placeholder="0 9 * * *">
+          <label>Author/release tracking</label><input id="setTrackerCron" placeholder="0 10 * * *">
+        </div>
+        <p class="muted"><small>Standard 5-field cron expressions, checked independently on their own schedules. "Run check" (above) always runs both in one pass. Saving takes effect immediately, no restart needed.</small></p>
+      </div>
+
+      <div class="card">
         <h3>Matching</h3>
         <label class="switch-row" style="margin:0">
           <span class="switch"><input id="setUnsafeCover" type="checkbox"><span class="switch-track"></span></span>
@@ -2420,6 +2429,8 @@ async function loadSettings(){
   $('setBookNewNoteDir').value = toWinPath(eff.book_new_note_dir);
   $('setBookAttachDir').value = toWinPath(eff.book_attachments_dir);
   $('setReadingLog').value = toWinPath(eff.reading_log_path);
+  $('setLnCron').value = eff.ln_check_cron||'';
+  $('setTrackerCron').value = eff.tracker_check_cron||'';
   $('setUnsafeCover').checked = ov.unsafe_cover_match === '1';
   const theme = ov.theme || lsGet('pw_theme') || 'mocha';
   themePicker.setValue(theme); applyTheme(theme);
@@ -2967,7 +2978,9 @@ async function saveSettings(){
                  attachments_dir:$('setAttachDir').value.trim(),
                  book_scan_root:$('setBookScanRoot').value.trim(), book_new_note_dir:$('setBookNewNoteDir').value.trim(),
                  book_attachments_dir:$('setBookAttachDir').value.trim(),
-                 reading_log_path:$('setReadingLog').value.trim(), theme:themePicker.getValue(),
+                 reading_log_path:$('setReadingLog').value.trim(),
+                 ln_check_cron:$('setLnCron').value.trim(), tracker_check_cron:$('setTrackerCron').value.trim(),
+                 theme:themePicker.getValue(),
                  timezone:tzPicker.getValue(), unsafe_cover_match:$('setUnsafeCover').checked ? '1' : '' };
   const r = await send('PUT','/api/settings',body); if(need(r)) return;
   if(r.ok){ TZ = tzPicker.getValue(); loadUpdates(); loadBooks(); loadLogs(); loadEvents(); }

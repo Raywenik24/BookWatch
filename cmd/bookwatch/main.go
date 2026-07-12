@@ -138,12 +138,27 @@ func runServeErr() error {
 	gr := provider.NewGoodreads(cfg.UserAgent, cfg.Timeout)
 	lc := provider.NewLubimyczytac(cfg.UserAgent, cfg.Timeout)
 
-	sched := scheduler.New(func(progress func(i, total int, title string)) (service.CheckSummary, error) {
-		// Detect-only: a check never writes the vault. Writes happen on an
-		// explicit apply (POST /api/apply), never on a cron/manual check.
-		return service.RunCheck(sc, st, ol, lc, server.ScanRoots(cfg, st), false, progress)
-	})
-	if err := sched.Start(cfg.CheckCron); err != nil {
+	// Detect-only: a check never writes the vault. Writes happen on an
+	// explicit apply (POST /api/apply), never on a cron/manual check.
+	sched := scheduler.New(
+		func(progress func(i, total int, title string)) (service.CheckSummary, error) {
+			return service.RunCheck(sc, st, ol, lc, server.ScanRoots(cfg, st), false, progress)
+		},
+		func(progress func(i, total int, title string)) (service.CheckSummary, error) {
+			return service.RunLNCheck(sc, st, server.ScanRoots(cfg, st), false, progress)
+		},
+		func(progress func(i, total int, title string)) (service.CheckSummary, error) {
+			return service.RunTrackerPoll(st, ol, lc, progress)
+		},
+	)
+	lnCron, trackerCron := cfg.CheckCron, cfg.TrackerCron
+	if v, ok, _ := st.GetSetting("ln_check_cron"); ok && v != "" {
+		lnCron = v
+	}
+	if v, ok, _ := st.GetSetting("tracker_check_cron"); ok && v != "" {
+		trackerCron = v
+	}
+	if err := sched.Start(lnCron, trackerCron); err != nil {
 		return fmt.Errorf("scheduler: %w", err)
 	}
 	defer sched.Stop()
@@ -159,7 +174,7 @@ func runServeErr() error {
 	defer stop()
 	errCh := make(chan error, 1)
 	go func() {
-		log.Printf("BookWatch listening on http://localhost%s (cron %q, scan %s)", addr, cfg.CheckCron, cfg.ScanRoot)
+		log.Printf("BookWatch listening on http://localhost%s (LN cron %q, tracker cron %q, scan %s)", addr, lnCron, trackerCron, cfg.ScanRoot)
 		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			errCh <- err
 			return

@@ -198,6 +198,45 @@ func RunCheck(sc *scraper.Client, st *store.Store, ol provider.Provider, lc prov
 	return sum, nil
 }
 
+// RunLNCheck runs only the LN volume-check phase — vault scan, jnovels-style
+// scraping, and vault/DB bookkeeping — with no author/release tracker polling.
+// It's RunCheck with the tracker phase always skipped, so it gets its own
+// cron schedule independent of RunTrackerPoll (#80).
+func RunLNCheck(sc *scraper.Client, st *store.Store, scanRoots []string, write bool,
+	progress func(i, total int, title string)) (CheckSummary, error) {
+	return RunCheck(sc, st, nil, nil, scanRoots, write, progress)
+}
+
+// RunTrackerPoll runs only the author/release-tracking phase — polling
+// watched authors on OL/LC for new releases. No vault scan, no LN scraping.
+// ol may be nil to no-op (mirrors RunCheck's guard). Records its own runs row
+// so it gets its own cron schedule independent of RunLNCheck (#80).
+func RunTrackerPoll(st *store.Store, ol provider.Provider, lc provider.PolishSource,
+	progress func(i, total int, title string)) (CheckSummary, error) {
+
+	var sum CheckSummary
+	var runID int64
+	if st != nil {
+		var err error
+		if runID, err = st.StartRun(); err != nil {
+			return sum, fmt.Errorf("start run: %w", err)
+		}
+	}
+
+	if st != nil && ol != nil {
+		sum.TrackersChecked, sum.NewReleases, sum.TrackingErrors = pollTrackers(ol, lc, st, progress)
+	}
+
+	if st != nil {
+		summary := fmt.Sprintf("%d authors polled, %d new releases, %d tracking errors",
+			sum.TrackersChecked, sum.NewReleases, sum.TrackingErrors)
+		if e := st.FinishRun(runID, sum.TrackersChecked, sum.NewReleases, sum.TrackingErrors, summary); e != nil {
+			return sum, e
+		}
+	}
+	return sum, nil
+}
+
 // RefreshResult is the outcome of a vault-only reconcile (see RefreshVault).
 type RefreshResult struct {
 	Added   int `json:"added"`

@@ -174,7 +174,8 @@ after first run.
 | `BOOKWATCH_READING_LOG_PATH` | *(disabled)* | Path to the unified completed-reads log; usually set via Settings/the wizard. |
 | `BOOKWATCH_DB_PATH` | `config/bookwatch.db` (next to the exe) | SQLite database file. A legacy root-level `bookwatch.db` is auto-migrated into `config/` on first startup. |
 | `BOOKWATCH_PORT` | `8080` | HTTP listen port. |
-| `BOOKWATCH_CHECK_CRON` | `0 9 * * *` | Cron expression for scheduled checks. |
+| `BOOKWATCH_CHECK_CRON` | `0 9 * * *` | Cron expression for the scheduled LN volume check. Editable in Settings (`ln_check_cron`), takes effect without restart. |
+| `BOOKWATCH_TRACKER_CRON` | `0 10 * * *` | Cron expression for the scheduled author/release tracker poll — runs on its own schedule, independent of the LN check (#80). Editable in Settings (`tracker_check_cron`), takes effect without restart. |
 | `BOOKWATCH_GB_KEY` | *(none)* | Google Books API key, used as a cover fallback. |
 | `BOOKWATCH_USER_AGENT` | `Mozilla/5.0 (page-watcher/1.0)` | Scraper user agent. |
 | `BOOKWATCH_TIMEOUT` | `30` | Per-request timeout, seconds. |

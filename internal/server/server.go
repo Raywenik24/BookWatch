@@ -323,6 +323,8 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 			"book_new_note_dir":    s.effectiveBookNewNoteDir(),
 			"book_attachments_dir": s.effectiveBookAttachmentsDir(),
 			"reading_log_path":     s.effective("reading_log_path", s.cfg.ReadingLogPath),
+			"ln_check_cron":                 s.effective("ln_check_cron", s.cfg.CheckCron),
+			"tracker_check_cron":            s.effective("tracker_check_cron", s.cfg.TrackerCron),
 			"calibre_library_path":          s.effective("calibre_library_path", s.cfg.CalibreLibraryPath),
 			"import_staging_dir":            s.effective("import_staging_dir", s.cfg.ImportStagingDir),
 			"import_filter_field":           s.effective("import_filter_field", s.cfg.ImportFilterField),
@@ -1879,6 +1881,11 @@ var pathSettingKeys = map[string]bool{
 	"reading_log_path": true, "calibre_library_path": true, "import_staging_dir": true,
 }
 
+// cronSettingKeys are the settings holding a cron expression — validated with
+// robfig/cron's standard parser before being persisted, and rescheduled live
+// on the running scheduler so the edit takes effect without a restart (#80).
+var cronSettingKeys = map[string]bool{"ln_check_cron": true, "tracker_check_cron": true}
+
 func (s *Server) handleSetSettings(w http.ResponseWriter, r *http.Request) {
 	var kv map[string]string
 	if err := json.NewDecoder(r.Body).Decode(&kv); err != nil {
@@ -1886,10 +1893,30 @@ func (s *Server) handleSetSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for k, v := range kv {
+		if cronSettingKeys[k] {
+			if err := scheduler.ValidateSpec(strings.TrimSpace(v)); err != nil {
+				writeJSON(w, http.StatusBadRequest, errBody(fmt.Sprintf("%s: invalid cron expression: %v", k, err)))
+				return
+			}
+		}
+	}
+	for k, v := range kv {
 		if pathSettingKeys[k] {
 			v = filepath.FromSlash(v)
 		}
 		if err := s.st.SetSetting(k, v); err != nil {
+			writeErr(w, err)
+			return
+		}
+	}
+	if _, ok := kv["ln_check_cron"]; ok {
+		if err := s.sched.RescheduleLN(s.effective("ln_check_cron", s.cfg.CheckCron)); err != nil {
+			writeErr(w, err)
+			return
+		}
+	}
+	if _, ok := kv["tracker_check_cron"]; ok {
+		if err := s.sched.RescheduleTracker(s.effective("tracker_check_cron", s.cfg.TrackerCron)); err != nil {
 			writeErr(w, err)
 			return
 		}
