@@ -824,7 +824,7 @@
     </div>
   </div>
   <!-- vault setup wizard (#65) — numbered-step modal that builds the folder tree -->
-  <div id="wizardModalBackdrop" class="modal-backdrop" hidden onclick="if(event.target===this)closeWizard()">
+  <div id="wizardModalBackdrop" class="modal-backdrop" hidden>
     <div class="modal">
       <button class="modal-close" onclick="closeWizard()" aria-label="Close">&times;</button>
       <div id="wizardBody"></div>
@@ -3458,15 +3458,31 @@ async function openWizard(){
   try { s = await getJSON('/api/settings'); } catch(e){}
   const eff = s.effective||{}, ov = s.overrides||{};
   const hasExisting = WIZARD_KEYS.some(k => (ov[k]||'').trim() !== '');
+  const hadToken = !!token();
   const pick = k => toWinPath((ov[k] || WIZARD_DEFAULTS[k] || '').trim());
   const data = { vault_dir:toWinPath((ov.vault_dir||eff.vault_dir||'').trim()) };
   WIZARD_KEYS.slice(1).forEach(k => data[k] = pick(k));
-  const steps = ['root','paths', hasExisting?'warn':null, 'confirm','done'].filter(Boolean);
-  _wizard = { step:0, steps, data };
+  const steps = [hadToken?null:'password', 'root','paths', hasExisting?'warn':null, 'confirm','done'].filter(Boolean);
+  _wizard = { step:0, steps, data, hasExisting, hadToken };
   $('wizardModalBackdrop').hidden = false;
   renderWizard();
 }
-function closeWizard(){ $('wizardModalBackdrop').hidden = true; $('wizardBody').innerHTML = ''; _wizard = null; }
+/* Closing an incomplete wizard risks leaving the app half-configured or the
+   final write unauthorized — warn unless setup was already fully usable
+   before the wizard opened (existing paths + a stored token) or the wizard
+   actually finished (issue #81c). */
+function closeWizard(){
+  const w = _wizard;
+  if(w){
+    const done = w.steps[w.step] === 'done';
+    const wasAlreadyComplete = w.hasExisting && w.hadToken;
+    if(!done && !wasAlreadyComplete){
+      const ok = confirm('Setup is required for the app to work correctly — you can finish later via Settings → Run setup wizard.');
+      if(!ok) return;
+    }
+  }
+  $('wizardModalBackdrop').hidden = true; $('wizardBody').innerHTML = ''; _wizard = null;
+}
 
 /* Show any path with Windows-native backslashes — Explorer copies paths that
    way, so forward slashes read as a mismatch even though both resolve fine
@@ -3483,13 +3499,30 @@ function wizJoin(root, rel){
 /* Pull whatever inputs the current step shows back into _wizard.data. */
 function wizardCapture(){
   WIZARD_KEYS.forEach(k => { const el = $('wiz_'+k); if(el) _wizard.data[k] = el.value.trim(); });
+  const pw = $('wiz_pw'); if(pw) _wizard.data.pw = pw.value;
 }
-function wizardNav(delta){
+/* Resolve the vault root to an absolute path for display (issue #81d) — done
+   once on entering 'confirm' and reused on 'done' since the root doesn't
+   change during creation. */
+async function wizardResolveAbsPath(){
+  const w = _wizard;
+  try {
+    const r = await getJSON('/api/vault/resolve?dir='+encodeURIComponent(w.data.vault_dir));
+    w.data.vault_dir_abs = toWinPath(r.abs || w.data.vault_dir);
+  } catch(e){ w.data.vault_dir_abs = w.data.vault_dir; }
+}
+async function wizardNav(delta){
   wizardCapture();
   const w = _wizard, id = w.steps[w.step];
+  if(delta>0 && id==='password'){
+    if(!w.data.pw){ toast('Enter the password shown in the console or .env first.','error'); return; }
+    lsSet('pw_token', w.data.pw);
+    reconnectStatusStream();
+  }
   if(delta>0 && id==='root' && !w.data.vault_dir){ toast('Pick a vault root folder first.','error'); return; }
   if(delta>0 && id==='confirm'){ wizardCreate(); return; }   // confirm → build, then advance
   w.step = Math.max(0, Math.min(w.steps.length-1, w.step+delta));
+  if(w.steps[w.step]==='confirm' && !w.data.vault_dir_abs) await wizardResolveAbsPath();
   renderWizard();
 }
 async function wizardCreate(){
@@ -3509,7 +3542,13 @@ function wizPathRow(label, key){
 function renderWizard(){
   const w = _wizard, id = w.steps[w.step], d = w.data;
   let body = '';
-  if(id==='root'){
+  if(id==='password'){
+    body = `<h3>Password</h3>
+      <p class="muted">Enter the password shown in the console output or your <code>.env</code> (<code>BOOKWATCH_PASSWORD</code>). This authorizes the wizard's final write — it does not create or change the password.</p>
+      <div class="rule-grid" style="grid-template-columns:160px 1fr">
+        <label>Password</label><input id="wiz_pw" type="password" value="${esc(d.pw||'')}">
+      </div>`;
+  } else if(id==='root'){
     body = `<h3>Vault root</h3>
       <p class="muted">Pick the folder that will be your Obsidian vault. It doesn't need to exist yet — the wizard creates it. Enter a full path.</p>
       <div class="rule-grid" style="grid-template-columns:160px 1fr">
@@ -3539,16 +3578,17 @@ function renderWizard(){
       <p>You already have paths configured. Finishing the wizard will <b>override</b> those path settings with the choices you just made.</p>
       <p class="muted">Only the settings change — your existing notes and folders on disk are never touched or deleted.</p>`;
   } else if(id==='confirm'){
+    const root = d.vault_dir_abs || d.vault_dir;
     const rows = [
-      ['Vault root', d.vault_dir],
-      ['LN scan root', wizJoin(d.vault_dir, d.scan_root)],
-      ['LN new-note', wizJoin(d.vault_dir, d.new_note_dir)],
-      ['LN attachments', wizJoin(d.vault_dir, d.attachments_dir)],
-      ['Book scan root', wizJoin(d.vault_dir, d.book_scan_root)],
-      ['Book new-note', wizJoin(d.vault_dir, d.book_new_note_dir)],
-      ['Book attachments', wizJoin(d.vault_dir, d.book_attachments_dir)],
-      ['Reading log', wizJoin(d.vault_dir, d.reading_log_path)],
-      ['Obsidian marker', wizJoin(d.vault_dir, '.obsidian')],
+      ['Vault root', root],
+      ['LN scan root', wizJoin(root, d.scan_root)],
+      ['LN new-note', wizJoin(root, d.new_note_dir)],
+      ['LN attachments', wizJoin(root, d.attachments_dir)],
+      ['Book scan root', wizJoin(root, d.book_scan_root)],
+      ['Book new-note', wizJoin(root, d.book_new_note_dir)],
+      ['Book attachments', wizJoin(root, d.book_attachments_dir)],
+      ['Reading log', wizJoin(root, d.reading_log_path)],
+      ['Obsidian marker', wizJoin(root, '.obsidian')],
     ].filter(r => r[1]);
     body = `<h3>Ready to create</h3>
       <p class="muted">These are created only if they don't already exist — nothing existing is overwritten:</p>
@@ -3559,7 +3599,7 @@ function renderWizard(){
     body = `<h3>All set 🎉</h3>
       <p>Your folder tree, an empty reading log, and the <code>.obsidian/</code> marker are ready.</p>
       <p><b>Open it in Obsidian:</b> launch Obsidian → <i>Open folder as vault</i> → choose:</p>
-      <p><code style="word-break:break-all">${esc(d.vault_dir)}</code></p>`;
+      <p><code style="word-break:break-all">${esc(d.vault_dir_abs || d.vault_dir)}</code></p>`;
   }
   const isFirst = w.step===0, isDone = id==='done', isConfirm = id==='confirm';
   const nav = `<div class="row" style="justify-content:space-between;align-items:center;margin-top:1rem">

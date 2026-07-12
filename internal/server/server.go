@@ -137,6 +137,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/scrape/preview", s.auth(s.handleScrapePreview))
 	mux.HandleFunc("PUT /api/settings", s.auth(s.handleSetSettings))
 	mux.HandleFunc("POST /api/vault/setup", s.auth(s.handleVaultSetup))
+	mux.HandleFunc("GET /api/vault/resolve", s.handleVaultResolve)
 	mux.HandleFunc("GET /api/import/calibre/status", s.handleImportStatus)
 	mux.HandleFunc("POST /api/import/calibre/preview", s.auth(s.handleImportPreview))
 	mux.HandleFunc("POST /api/import/calibre", s.auth(s.handleImportStart))
@@ -1998,6 +1999,21 @@ func (s *Server) handleVaultSetup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleVaultResolve resolves a (possibly relative) vault path to an absolute
+// one for display in the setup wizard (issue #81) — the wizard should never
+// show ".\vault" when the server actually resolves it against its own CWD.
+// Read-only and side-effect-free, so it doesn't need the password gate.
+func (s *Server) handleVaultResolve(w http.ResponseWriter, r *http.Request) {
+	dir := strings.TrimSpace(r.URL.Query().Get("dir"))
+	abs := dir
+	if dir != "" {
+		if a, err := filepath.Abs(filepath.FromSlash(dir)); err == nil {
+			abs = a
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"abs": abs})
 }
 
 // ── helpers ───────────────────────────────────────────────────
