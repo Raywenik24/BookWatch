@@ -67,6 +67,12 @@ func Default() Config {
 		dbPath = defaultDBPath()
 		migrateLegacyDB(dbPath)
 	}
+	// A brand-new install has no legacy db to migrate, so the dir above never
+	// gets created and SQLite fails to open the file (error 14). Always
+	// ensure it exists, regardless of migration.
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
+		fmt.Fprintln(os.Stderr, "warning: could not create db dir:", err)
+	}
 
 	return Config{
 		UserAgent:      env("BOOKWATCH_USER_AGENT", "Mozilla/5.0 (page-watcher/1.0)"),
