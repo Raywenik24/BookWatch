@@ -6,13 +6,17 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -28,6 +32,11 @@ import (
 )
 
 func main() {
+	if portable {
+		runPortable()
+		return
+	}
+
 	cmd := ""
 	if len(os.Args) > 1 {
 		cmd = os.Args[1]
@@ -44,16 +53,82 @@ func main() {
 	}
 }
 
+// ── portable ──────────────────────────────────────────────────
+// runPortable is the bookwatch-portable.exe entrypoint (#78): double-click
+// starts the server, generating + persisting a password on first run, and
+// keeps the console open on exit/error so the window doesn't just vanish.
+func runPortable() {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Println("panic:", r)
+		}
+		fmt.Println("\nPress Enter to close…")
+		bufio.NewReader(os.Stdin).ReadString('\n')
+	}()
+
+	// Resolve .env/db/vault relative to the exe's own folder, not whatever
+	// directory Explorer happened to launch it from.
+	if exe, err := os.Executable(); err == nil {
+		if err := os.Chdir(filepath.Dir(exe)); err != nil {
+			fmt.Println("warning: could not switch to exe dir:", err)
+		}
+	}
+
+	ensurePortablePassword()
+
+	if err := runServeErr(); err != nil {
+		fmt.Println("error:", err)
+	}
+}
+
+// ensurePortablePassword generates + persists a random password into a
+// gitignored .env next to the exe if none is configured yet, so a
+// double-click has no manual setup step.
+func ensurePortablePassword() {
+	if config.Default().Password != "" {
+		return
+	}
+
+	buf := make([]byte, 18)
+	if _, err := rand.Read(buf); err != nil {
+		fmt.Println("error generating password:", err)
+		return
+	}
+	pw := base64.RawURLEncoding.EncodeToString(buf)
+
+	f, err := os.OpenFile(".env", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		fmt.Println("warning: could not write .env:", err)
+	} else {
+		fmt.Fprintf(f, "BOOKWATCH_PASSWORD=%s\n", pw)
+		f.Close()
+	}
+	os.Setenv("BOOKWATCH_PASSWORD", pw)
+	fmt.Println("No password configured — generated one and saved it to .env:")
+	fmt.Println("  " + pw)
+	fmt.Println("Edit .env next to this exe to change it.")
+}
+
 // ── serve ─────────────────────────────────────────────────────
 func runServe(argv []string) {
+	if err := runServeErr(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+// runServeErr does the actual serving and returns errors instead of calling
+// log.Fatal, so the portable entrypoint (which needs its deferred console
+// pause to run on failure) can report the error itself instead of the
+// process exiting out from under it.
+func runServeErr() error {
 	cfg := config.Default()
 	if cfg.Password == "" {
-		log.Fatal("BOOKWATCH_PASSWORD is required to run the server (write endpoints need it)")
+		return fmt.Errorf("BOOKWATCH_PASSWORD is required to run the server (write endpoints need it)")
 	}
 
 	st, err := store.Open(cfg.DBPath)
 	if err != nil {
-		log.Fatal("db open: ", err)
+		return fmt.Errorf("db open: %w", err)
 	}
 	defer st.Close()
 
@@ -69,7 +144,7 @@ func runServe(argv []string) {
 		return service.RunCheck(sc, st, ol, lc, server.ScanRoots(cfg, st), false, progress)
 	})
 	if err := sched.Start(cfg.CheckCron); err != nil {
-		log.Fatal("scheduler: ", err)
+		return fmt.Errorf("scheduler: %w", err)
 	}
 	defer sched.Stop()
 
@@ -79,17 +154,26 @@ func runServe(argv []string) {
 
 	// Listen on a goroutine so the main path can wait for a shutdown signal and
 	// drain cleanly — letting the deferred sched.Stop()/st.Close() actually run
-	// (log.Fatal would have skipped them) and any in-flight vault write finish.
+	// and any in-flight vault write finish.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	errCh := make(chan error, 1)
 	go func() {
 		log.Printf("BookWatch listening on http://localhost%s (cron %q, scan %s)", addr, cfg.CheckCron, cfg.ScanRoot)
 		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatal(err)
+			errCh <- err
+			return
 		}
+		errCh <- nil
 	}()
 
-	<-ctx.Done()
+	select {
+	case <-ctx.Done():
+	case err := <-errCh:
+		if err != nil {
+			return err
+		}
+	}
 	stop() // restore default signal handling so a second Ctrl+C force-quits
 	log.Println("shutting down…")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -97,6 +181,7 @@ func runServe(argv []string) {
 	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("graceful shutdown: %v", err)
 	}
+	return nil
 }
 
 // ── check ─────────────────────────────────────────────────────

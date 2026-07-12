@@ -1,0 +1,52 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: Build vars
+        id: vars
+        run: |
+          $version = "${{ github.ref_name }}"
+          $commit = (git rev-parse --short HEAD)
+          $date = (Get-Date -AsUTC -Format "yyyy-MM-dd")
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "commit=$commit" >> $env:GITHUB_OUTPUT
+          "date=$date" >> $env:GITHUB_OUTPUT
+
+      - name: Build bookwatch.exe
+        run: >-
+          go build
+          -ldflags "-X bookwatch/internal/buildinfo.Version=${{ steps.vars.outputs.version }} -X bookwatch/internal/buildinfo.Commit=${{ steps.vars.outputs.commit }} -X bookwatch/internal/buildinfo.Date=${{ steps.vars.outputs.date }}"
+          -o bookwatch.exe ./cmd/bookwatch
+
+      - name: Build bookwatch-portable.exe
+        run: >-
+          go build -tags portable
+          -ldflags "-X bookwatch/internal/buildinfo.Version=${{ steps.vars.outputs.version }} -X bookwatch/internal/buildinfo.Commit=${{ steps.vars.outputs.commit }} -X bookwatch/internal/buildinfo.Date=${{ steps.vars.outputs.date }}"
+          -o bookwatch-portable.exe ./cmd/bookwatch
+
+      - name: Zip artifacts
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Compress-Archive -Path bookwatch.exe -DestinationPath "dist/bookwatch-${{ steps.vars.outputs.version }}-windows.zip"
+          Compress-Archive -Path bookwatch-portable.exe -DestinationPath "dist/bookwatch-portable-${{ steps.vars.outputs.version }}-windows.zip"
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
