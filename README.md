@@ -172,7 +172,7 @@ after first run.
 | `BOOKWATCH_BOOK_NEW_NOTE_DIR` | *(falls back to `NEW_NOTE_DIR`)* | Where new `#Book` notes are created. |
 | `BOOKWATCH_BOOK_ATTACHMENTS_DIR` | *(falls back to `ATTACHMENTS_DIR`)* | Book cover location. |
 | `BOOKWATCH_READING_LOG_PATH` | *(disabled)* | Path to the unified completed-reads log; usually set via Settings/the wizard. |
-| `BOOKWATCH_DB_PATH` | `bookwatch.db` | SQLite database file. |
+| `BOOKWATCH_DB_PATH` | `config/bookwatch.db` (next to the exe) | SQLite database file. A legacy root-level `bookwatch.db` is auto-migrated into `config/` on first startup. |
 | `BOOKWATCH_PORT` | `8080` | HTTP listen port. |
 | `BOOKWATCH_CHECK_CRON` | `0 9 * * *` | Cron expression for scheduled checks. |
 | `BOOKWATCH_GB_KEY` | *(none)* | Google Books API key, used as a cover fallback. |

@@ -1,7 +1,9 @@
 package config
 
 import (
+	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -58,10 +60,17 @@ type Config struct {
 func Default() Config {
 	loadDotEnv()
 	vault := env("BOOKWATCH_VAULT_DIR", "./vault")
+
+	dbPath := os.Getenv("BOOKWATCH_DB_PATH")
+	if dbPath == "" {
+		dbPath = defaultDBPath()
+		migrateLegacyDB(dbPath)
+	}
+
 	return Config{
 		UserAgent:      env("BOOKWATCH_USER_AGENT", "Mozilla/5.0 (page-watcher/1.0)"),
 		Timeout:        time.Duration(envInt("BOOKWATCH_TIMEOUT", 30)) * time.Second,
-		DBPath:         env("BOOKWATCH_DB_PATH", "bookwatch.db"),
+		DBPath:         dbPath,
 		VaultDir:       vault,
 		NewNoteDir:     env("BOOKWATCH_NEW_NOTE_DIR", "LightNovel"),
 		AttachmentsDir: env("BOOKWATCH_ATTACHMENTS_DIR", "LightNovel/_attachments"),
@@ -99,6 +108,48 @@ func envInt(key string, def int) int {
 		}
 	}
 	return def
+}
+
+// defaultDBPath returns config/bookwatch.db resolved next to the executable
+// (not the working dir), so a portable exe finds its db regardless of the
+// dir it was launched from. Falls back to a cwd-relative path if the
+// executable can't be resolved.
+func defaultDBPath() string {
+	base := "."
+	if exe, err := os.Executable(); err == nil {
+		base = filepath.Dir(exe)
+	}
+	return filepath.Join(base, "config", "bookwatch.db")
+}
+
+// migrateLegacyDB moves a pre-#79 root-level bookwatch.db (plus its -wal/-shm
+// siblings) into the new config/ dir, one time, on startup. No-op if the new
+// path already has a db (already migrated) or no legacy db exists.
+func migrateLegacyDB(newPath string) {
+	if _, err := os.Stat(newPath); err == nil {
+		return
+	}
+
+	dir := filepath.Dir(newPath)
+	legacy := filepath.Join(filepath.Dir(dir), "bookwatch.db")
+	if _, err := os.Stat(legacy); err != nil {
+		return
+	}
+
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		fmt.Fprintln(os.Stderr, "warning: could not create config dir for db migration:", err)
+		return
+	}
+
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		src := legacy + suffix
+		if _, err := os.Stat(src); err != nil {
+			continue
+		}
+		if err := os.Rename(src, newPath+suffix); err != nil {
+			fmt.Fprintln(os.Stderr, "warning: could not migrate", src, "to config/:", err)
+		}
+	}
 }
 
 var dotEnvOnce sync.Once
