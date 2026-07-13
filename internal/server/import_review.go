@@ -83,7 +83,10 @@ func parseCandidates(raw string) []importer.Candidate {
 }
 
 // reviewItem loads one review item and its primary staged note path, writing the
-// appropriate error response and returning ok=false on any problem.
+// appropriate error response and returning ok=false on any problem. An item whose
+// staged note has already been moved/deleted (accepted or rejected in another tab,
+// or stale client state after back-navigating) is reported as "stale" rather than
+// a hard error, so the reviewer can skip it instead of showing a file-not-found.
 func (s *Server) reviewItem(w http.ResponseWriter, id int64) (store.ImportItem, string, bool) {
 	it, ok, err := s.st.GetImportItem(id)
 	if err != nil {
@@ -97,6 +100,10 @@ func (s *Server) reviewItem(w http.ResponseWriter, id int64) (store.ImportItem, 
 	np := primaryNote(parseStagedFiles(it.StagedFiles))
 	if np == "" {
 		writeJSON(w, http.StatusBadRequest, errBody("this item has no staged note (nothing to review)"))
+		return it, "", false
+	}
+	if _, err := os.Stat(np); err != nil {
+		writeJSON(w, http.StatusGone, map[string]any{"error": "already handled", "stale": true})
 		return it, "", false
 	}
 	return it, np, true
@@ -164,15 +171,43 @@ func idFrom(r *http.Request) int64 {
 func (s *Server) reviewableCount(items []store.ImportItem) int {
 	n := 0
 	for _, it := range items {
-		np := primaryNote(parseStagedFiles(it.StagedFiles))
-		if np == "" {
-			continue
-		}
-		if _, err := os.Stat(np); err == nil {
+		if s.isReviewable(it) {
 			n++
 		}
 	}
 	return n
+}
+
+// isReviewable reports whether an item's staged note is still on disk — i.e. not
+// yet accepted (moved) or rejected (deleted). Accept/reject only touch the file,
+// not the item's persisted state, so this on-disk check is the single source of
+// truth for "still needs a decision" (#85: status and reviewer must agree).
+func (s *Server) isReviewable(it store.ImportItem) bool {
+	np := primaryNote(parseStagedFiles(it.StagedFiles))
+	if np == "" {
+		return false
+	}
+	_, err := os.Stat(np)
+	return err == nil
+}
+
+// pendingReviewCounts is the unmatched/duplicate counts among still-reviewable
+// items — the same figures the reviewer queue's filter checkboxes show, used so
+// the status panel's "needs a decision" summary never disagrees with what
+// opening the reviewer actually reveals.
+func (s *Server) pendingReviewCounts(items []store.ImportItem) (unmatched, duplicates int) {
+	for _, it := range items {
+		if !s.isReviewable(it) {
+			continue
+		}
+		if it.State == "unmatched" {
+			unmatched++
+		}
+		if it.DuplicateOf != "" {
+			duplicates++
+		}
+	}
+	return
 }
 
 // ── list ───────────────────────────────────────────────────────
@@ -194,11 +229,7 @@ func (s *Server) handleReviewList(w http.ResponseWriter, r *http.Request) {
 	out := make([]map[string]any, 0, len(items))
 	var nUn, nDup, nClean int
 	for _, it := range items {
-		np := primaryNote(parseStagedFiles(it.StagedFiles))
-		if np == "" {
-			continue
-		}
-		if _, err := os.Stat(np); err != nil {
+		if !s.isReviewable(it) {
 			continue // already accepted/rejected — gone from staging
 		}
 		unmatched := it.State == "unmatched"

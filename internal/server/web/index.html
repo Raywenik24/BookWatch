@@ -3097,9 +3097,13 @@ function onImportStatus(s){
   const review = $('impReview');
   if(finished){
     review.hidden = false;
+    // Use the pending (still-on-disk) counts here, not the run-total unmatched/
+    // duplicates above — those include items already accepted/rejected, which
+    // would disagree with what opening the reviewer actually shows (#85).
+    const pendUn = s.pending_unmatched||0, pendDup = s.pending_duplicates||0;
     const bits = [];
-    if(unmatched) bits.push(`<b>${unmatched}</b> unmatched`);
-    if(duplicates) bits.push(`<b>${duplicates}</b> possible duplicate${duplicates===1?'':'s'}`);
+    if(pendUn) bits.push(`<b>${pendUn}</b> unmatched`);
+    if(pendDup) bits.push(`<b>${pendDup}</b> possible duplicate${pendDup===1?'':'s'}`);
     review.innerHTML =
       `<div style="font-weight:600;margin-bottom:.25rem">✅ Run finished — review the staged notes, then move the keepers into your vault.</div>` +
       `<div style="font-size:.85rem;color:var(--subtext);line-height:1.5">` +
@@ -3314,6 +3318,7 @@ async function loadReviewStep(){
   _coverPending = null;
   const id = reviewCurrentId(); if(!id){ return renderReview(); }
   const r = await send('GET','/api/import/calibre/review/item?id='+id);
+  if(r.data && r.data.stale){ return reviewDrop(id); } // already accepted/rejected elsewhere — skip it, not an error
   if(!r.ok){ $('rvItem').innerHTML = `<span class="badge dismissed">${esc(r.data.error||('error '+r.status))}</span>`; return; }
   _review.detail = r.data;
   renderReviewItem();

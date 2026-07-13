@@ -124,6 +124,10 @@ func (s *Server) importStatusPayload() map[string]any {
 			duplicates++
 		}
 	}
+	// "Needs a decision" must agree with what the reviewer queue actually shows,
+	// which counts only items whose staged note is still on disk — accept/reject
+	// remove the file but don't flip the item's persisted state (#85).
+	pendingUnmatched, pendingDuplicates := s.pendingReviewCounts(items)
 	var state string
 	switch {
 	case busy:
@@ -136,16 +140,18 @@ func (s *Server) importStatusPayload() map[string]any {
 		return map[string]any{"state": "idle", "busy": busy} // finished + nothing left staged
 	}
 	return map[string]any{
-		"state":         state,
-		"busy":          busy,
-		"session_id":    sess.ID,
-		"total":         sess.Total,
-		"done":          done,
-		"unmatched":     unmatched,
-		"duplicates":    duplicates,
-		"errored":       errored,
-		"current_title": title,
-		"staging_dir":   sess.StagingDir,
+		"state":              state,
+		"busy":               busy,
+		"session_id":         sess.ID,
+		"total":              sess.Total,
+		"done":               done,
+		"unmatched":          unmatched,
+		"duplicates":         duplicates,
+		"errored":            errored,
+		"pending_unmatched":  pendingUnmatched,
+		"pending_duplicates": pendingDuplicates,
+		"current_title":      title,
+		"staging_dir":        sess.StagingDir,
 	}
 }
 
