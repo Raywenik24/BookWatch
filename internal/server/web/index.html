@@ -3395,10 +3395,8 @@ async function reviewPullSource(what){
   const r = await send('POST','/api/import/calibre/review/pull', { id, url, what });
   if(need(r,h)) return;
   if(!r.ok){ h.update('Fetch failed: '+(r.data.error||r.status),'error'); return; }
-  const before = _review.detail || {};
   _review.detail = r.data;
-  const got = what==='cover' ? (r.data.cover_data && r.data.cover_data!==before.cover_data)
-                             : ((r.data.description||'') !== (before.description||'') && (r.data.description||'').trim()!=='');
+  const got = !!r.data.pull_found;
   h.update(got ? (what==='cover'?'Cover loaded.':'Description loaded.') : 'Nothing found at that link for this.', got?'success':'info');
   renderReviewItem();
 }

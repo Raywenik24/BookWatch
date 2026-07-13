@@ -104,7 +104,7 @@ func (s *Server) reviewItem(w http.ResponseWriter, id int64) (store.ImportItem, 
 
 // reviewDetail re-reads an item's staged note and writes the full editable
 // payload (frontmatter fields + inlined cover + candidates + import flags).
-func (s *Server) reviewDetail(w http.ResponseWriter, it store.ImportItem, notePath string) {
+func (s *Server) reviewDetail(w http.ResponseWriter, it store.ImportItem, notePath string, extra ...map[string]any) {
 	n, err := vault.ReadNote(notePath)
 	if err != nil {
 		writeErr(w, err)
@@ -120,6 +120,11 @@ func (s *Server) reviewDetail(w http.ResponseWriter, it store.ImportItem, notePa
 	m["candidates"] = parseCandidates(it.Candidates)
 	if n.Cover != "" {
 		m["cover_data"] = fileCoverDataURI(filepath.Join(filepath.Dir(notePath), n.Cover))
+	}
+	for _, e := range extra {
+		for k, v := range e {
+			m[k] = v
+		}
 	}
 	writeJSON(w, http.StatusOK, m)
 }
@@ -291,11 +296,10 @@ func (s *Server) resolveStagedLink(it *store.ImportItem, notePath, url string) e
 		_ = vault.UpdateWorkID(notePath, wid)
 	}
 	stripCandidateBlock(notePath)
-	// Fill the description from the source when the note (still) has none.
-	if strings.TrimSpace(n.Description) == "" {
-		if d := s.sourceDescription(url); d != "" {
-			_ = vault.UpdateDescription(notePath, d)
-		}
+	// Always refresh the description from the newly chosen source — picking a
+	// different candidate should replace a stale blurb, not just fill a blank one.
+	if d := s.sourceDescription(url); d != "" {
+		_ = vault.UpdateDescription(notePath, d)
 	}
 	it.State, it.ResolvedLink = "matched", url
 	return s.st.SetImportItemStaged(it.ID, it.StagedFiles, url, "matched", it.DuplicateOf)
@@ -353,12 +357,22 @@ func (s *Server) handleReviewPull(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errBody("paste a real source link first"))
 		return
 	}
+	// Persist the (possibly just-pasted) link up front so it survives the
+	// reviewDetail re-render below even if nothing is actually found at it.
+	if url != it.ResolvedLink {
+		if err := vault.UpdateLink(np, url); err == nil {
+			it.ResolvedLink = url
+			_ = s.st.SetImportItemStaged(it.ID, it.StagedFiles, url, it.State, it.DuplicateOf)
+		}
+	}
 	wantDesc := body.What == "description" || body.What == "both"
 	wantCover := body.What == "cover" || body.What == "both"
+	descFound, coverFound := false, false
 
 	if wantDesc {
 		if d := s.sourceDescription(url); d != "" {
 			_ = vault.UpdateDescription(np, d)
+			descFound = true
 		}
 	}
 	if wantCover {
@@ -372,6 +386,7 @@ func (s *Server) handleReviewPull(w http.ResponseWriter, r *http.Request) {
 			coverName := notes.CoverName(n.Title, ext)
 			newCoverPath := filepath.Join(dir, coverName)
 			if err := notes.DownloadCover(cu, newCoverPath); err == nil {
+				coverFound = true
 				if n.Cover != "" && n.Cover != coverName {
 					os.Remove(filepath.Join(dir, n.Cover))
 				}
@@ -388,7 +403,11 @@ func (s *Server) handleReviewPull(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	s.reviewDetail(w, it, np)
+	// Report what was actually fetched — the reviewer must not infer success by
+	// diffing before/after text, which false-negatives when the fetched value
+	// happens to match what was already there.
+	found := (wantDesc && descFound) || (wantCover && coverFound)
+	s.reviewDetail(w, it, np, map[string]any{"pull_found": found})
 }
 
 // sourceCoverURL returns a book's cover image URL from a resolved link
