@@ -291,6 +291,10 @@
   .modal-close { position: absolute; top: .4rem; right: .5rem; background: transparent; border: 0;
         color: var(--subtext); font-size: 1.4rem; line-height: 1; padding: .25rem .45rem; cursor: pointer; border-radius: 6px; }
   .modal-close:hover { color: var(--text); background: var(--surface0); }
+  /* in-app confirm() replacement (#84) — stacks above any other open modal */
+  #confirmModalBackdrop { z-index: 60; }
+  #confirmModalBackdrop .modal { max-width: 420px; }
+  #confirmModalBody p { margin: 0 0 1rem; }
   /* note view/edit modal (#55) */
   .note-open { color: var(--text); text-decoration: none; cursor: pointer; }
   .note-open:hover { text-decoration: underline; }
@@ -837,6 +841,13 @@
     <div class="modal" style="max-width:780px">
       <button class="modal-close" onclick="closeReview()" aria-label="Close">&times;</button>
       <div id="reviewBody"></div>
+    </div>
+  </div>
+  <!-- generic in-app confirm() replacement (#84) — no outside-close, resolves a pending promise -->
+  <div id="confirmModalBackdrop" class="modal-backdrop" hidden>
+    <div class="modal">
+      <button class="modal-close" onclick="_confirmModalResolve(false)" aria-label="Close">&times;</button>
+      <div id="confirmModalBody"></div>
     </div>
   </div>
   </div>
@@ -2639,12 +2650,30 @@ document.addEventListener('keydown', e => {
   if(e.key !== 'Escape') return;
   if($('lightbox')) return closeLightbox(); // enlarged cover closes first
   if(_dpCal && !_dpCal.hidden) return hideDpCal(); // close the date calendar before its modal
+  if(!$('confirmModalBackdrop').hidden) return _confirmModalResolve(false); // stacked above everything else
   if(!$('reviewModalBackdrop').hidden) return closeReview();
   if(!$('readingModalBackdrop').hidden) return closeReadingModal();
   if(!$('previewModalBackdrop').hidden) return closeRelPreview();
   if(!$('deleteModalBackdrop').hidden) return closeDeleteModal();
   if(!$('addModalBackdrop').hidden) closeAddModal();
 });
+/* in-app confirm() replacement (#84) — usage: if(!await showConfirm('Delete this?')) return; */
+let _confirmModalResolve = null;
+function showConfirm(message, opts){
+  opts = opts || {};
+  return new Promise(resolve => {
+    _confirmModalResolve = ok => {
+      $('confirmModalBackdrop').hidden = true; $('confirmModalBody').innerHTML = ''; _confirmModalResolve = null;
+      resolve(ok);
+    };
+    $('confirmModalBody').innerHTML = `<p>${esc(message)}</p>
+      <div class="row" style="justify-content:flex-end; gap:.5rem">
+        <button class="btn ghost" onclick="_confirmModalResolve(false)">Cancel</button>
+        <button class="btn ghost danger" onclick="_confirmModalResolve(true)">${esc(opts.confirmLabel || 'Confirm')}</button>
+      </div>`;
+    $('confirmModalBackdrop').hidden = false;
+  });
+}
 async function startAdd(){
   const raw = $('addField').value.trim();
   if(!raw) return toast('Enter a URL or a book title.','error');
@@ -3413,7 +3442,7 @@ async function reviewAccept(){
 }
 async function reviewReject(){
   const id = reviewCurrentId(); if(!id) return;
-  if(!confirm('Delete this staged note (and its cover)? It won’t be imported. Your existing vault notes are untouched.')) return;
+  if(!await showConfirm('Delete this staged note (and its cover)? It won’t be imported. Your existing vault notes are untouched.', {confirmLabel:'Delete'})) return;
   const r = await send('POST','/api/import/calibre/review/reject', { id });
   if(need(r)) return;
   if(!r.ok) return toast('Reject failed: '+(r.data.error||r.status),'error');
@@ -3426,7 +3455,7 @@ function reviewDrop(id){
 }
 async function reviewBulkClean(){
   const c = reviewCounts();
-  if(!confirm(`Move all ${c.clean} clean (matched, non-duplicate) notes into the vault now?`)) return;
+  if(!await showConfirm(`Move all ${c.clean} clean (matched, non-duplicate) notes into the vault now?`, {confirmLabel:'Move'})) return;
   const r = await send('POST','/api/import/calibre/review/accept-clean');
   if(need(r)) return;
   if(!r.ok) return toast('Bulk accept failed: '+(r.data.error||r.status),'error');
@@ -3469,13 +3498,13 @@ async function openWizard(){
    final write unauthorized — warn unless setup was already fully usable
    before the wizard opened (existing paths + a stored token) or the wizard
    actually finished (issue #81c). */
-function closeWizard(){
+async function closeWizard(){
   const w = _wizard;
   if(w){
     const done = w.steps[w.step] === 'done';
     const wasAlreadyComplete = w.hasExisting && w.hadToken;
     if(!done && !wasAlreadyComplete){
-      const ok = confirm('Setup is required for the app to work correctly — you can finish later via Settings → Run setup wizard.');
+      const ok = await showConfirm('Setup is required for the app to work correctly — you can finish later via Settings → Run setup wizard.', {confirmLabel:'Leave setup'});
       if(!ok) return;
     }
   }
