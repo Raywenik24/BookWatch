@@ -72,6 +72,20 @@ func TestImportFilter(t *testing.T) {
 	if got := (ImportFilter{Field: "owner", Values: []string{"x"}}).Apply(books); len(got) != 0 {
 		t.Errorf("unknown field = %v, want none", titles(got))
 	}
+
+	// Field set with no accepted Values is a presence filter: every book
+	// carrying the identifier passes, regardless of its value.
+	got = titles(ImportFilter{Field: "czyj"}.Apply(books))
+	want = []string{"Andrzej's", "Arek's", "Andrzej caps", "Co-owned", "Two owners", "Spaced"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("presence filter (no values) = %v, want %v", got, want)
+	}
+
+	// Same presence filter with include-missing → all books, including "No owner".
+	got = titles(ImportFilter{Field: "czyj", IncludeMissing: true}.Apply(books))
+	if len(got) != len(books) {
+		t.Errorf("presence filter + include-missing = %v, want all %d books", got, len(books))
+	}
 }
 
 func TestSplitFilterValues(t *testing.T) {

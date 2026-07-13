@@ -13,7 +13,8 @@ import (
 //
 // A blank Field disables the filter — every book passes (the default). Otherwise
 // a book passes when *any* owner in its Field value is one of Values, OR the book
-// has no Field identifier at all and IncludeMissing is set.
+// has no Field identifier at all and IncludeMissing is set. A Field set with no
+// Values acts as a presence filter: any book carrying that identifier passes.
 //
 // Calibre only stores one value per identifier type, so people pack several
 // owners into that one value. This treats **comma and semicolon** as owner
@@ -43,6 +44,7 @@ func (f ImportFilter) Apply(books []calibre.Book) []calibre.Book {
 			accept[v] = true
 		}
 	}
+	presenceOnly := len(accept) == 0
 	out := make([]calibre.Book, 0, len(books))
 	for _, b := range books {
 		val, has := identValue(b, field)
@@ -50,6 +52,10 @@ func (f ImportFilter) Apply(books []calibre.Book) []calibre.Book {
 			if f.IncludeMissing {
 				out = append(out, b)
 			}
+			continue
+		}
+		if presenceOnly {
+			out = append(out, b)
 			continue
 		}
 		for _, owner := range splitOwners(val, field) {

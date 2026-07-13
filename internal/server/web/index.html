@@ -715,12 +715,12 @@
           field blank to import everything.</small></p>
         <div class="rule-grid" style="grid-template-columns:160px 1fr">
           <label>Identifier field</label><input id="impFilterField" placeholder="e.g. czyj  (blank = no filter)">
-          <label>Accepted values</label><input id="impFilterValues" placeholder="comma-separated, e.g. andrzej, arek">
+          <label>Accepted values</label><input id="impFilterValues" placeholder="blank = any value, or comma-separated e.g. andrzej, arek">
         </div>
         <label class="switch-row" style="margin:.6rem 0 0">
           <span class="switch"><input id="impFilterMissing" type="checkbox"><span class="switch-track"></span></span>
           <span>Also import books that <b>don't</b> carry this identifier at all
-            <br><small class="muted">A book passes when one of its owners is an accepted value — or, with this on, when it has no such identifier.</small>
+            <br><small class="muted">A book passes when one of its owners is an accepted value — or, with values left blank, when it simply has this identifier at all — or, with this toggle on, when it has no such identifier.</small>
           </span>
         </label>
         <p class="muted" style="margin:.5rem 0 0"><small>Multiple owners: since Calibre stores one value per identifier,
