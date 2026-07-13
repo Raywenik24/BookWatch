@@ -746,6 +746,7 @@ func (s *Server) handleReviewAccept(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	_ = importer.TrimResolvedItem(s.effectiveImportStagingDir(), it.Title)
 	writeJSON(w, http.StatusOK, map[string]any{"notes": res.Notes, "covers": res.Covers, "skipped": res.Skipped})
 }
 
@@ -772,6 +773,7 @@ func (s *Server) handleReviewReject(w http.ResponseWriter, r *http.Request) {
 	for _, f := range parseStagedFiles(it.StagedFiles) {
 		os.Remove(f)
 	}
+	_ = importer.TrimResolvedItem(s.effectiveImportStagingDir(), it.Title)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "rejected"})
 }
 
@@ -791,9 +793,11 @@ func (s *Server) handleReviewAcceptClean(w http.ResponseWriter, r *http.Request)
 	}
 	items, _ := s.st.ListImportItems(sess.ID)
 	var files []string
+	var titles []string
 	for _, it := range items {
 		if it.State == "matched" && it.DuplicateOf == "" {
 			files = append(files, noteFilesOf(parseStagedFiles(it.StagedFiles))...)
+			titles = append(titles, it.Title)
 		}
 	}
 	dest, _ := s.finalizeDest()
@@ -802,6 +806,7 @@ func (s *Server) handleReviewAcceptClean(w http.ResponseWriter, r *http.Request)
 		writeErr(w, err)
 		return
 	}
+	_ = importer.TrimResolvedItems(s.effectiveImportStagingDir(), titles)
 	refresh, _ := service.RefreshVault(s.st, ScanRoots(s.cfg, s.st))
 	s.st.LogEvent("import", "Accepted clean import notes: "+strconv.Itoa(res.Notes)+" moved")
 	s.publishImportStatus()

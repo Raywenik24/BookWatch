@@ -119,6 +119,59 @@ func WriteFinalizeReport(stagingDir, today string, res FinalizeResult, excludeHi
 	return path, nil
 }
 
+// TrimResolvedItems removes the checklist lines for the given (raw, unsanitized)
+// titles from the staging dir's import report — called as each item is
+// accepted/rejected so the report stays in sync with review decisions instead of
+// only reflecting the run/finalize snapshot (#87). A title's line is matched by
+// its wikilink prefix (`- [[title]]`), which also catches the "duplicate of"
+// variant since that still starts with the item's own link. Missing report or no
+// matching line is a no-op, not an error.
+func TrimResolvedItems(stagingDir string, titles []string) error {
+	if len(titles) == 0 {
+		return nil
+	}
+	path := filepath.Join(stagingDir, reportName)
+	full := longPath(path)
+	data, err := os.ReadFile(full)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	prefixes := make([]string, len(titles))
+	for i, t := range titles {
+		prefixes[i] = "- [[" + notes.Sanitize(t, false) + "]]"
+	}
+	lines := strings.Split(string(data), "\n")
+	out := make([]string, 0, len(lines))
+	changed := false
+	for _, l := range lines {
+		trimmed := strings.TrimSpace(l)
+		drop := false
+		for _, p := range prefixes {
+			if strings.HasPrefix(trimmed, p) {
+				drop = true
+				break
+			}
+		}
+		if drop {
+			changed = true
+			continue
+		}
+		out = append(out, l)
+	}
+	if !changed {
+		return nil
+	}
+	return vault.AtomicWrite(full, []byte(strings.Join(out, "\n")), 0o644)
+}
+
+// TrimResolvedItem is TrimResolvedItems for a single title.
+func TrimResolvedItem(stagingDir, title string) error {
+	return TrimResolvedItems(stagingDir, []string{title})
+}
+
 // appendReport appends a section to the report (long-path-safe), creating it —
 // with a title header — on first write.
 func appendReport(path, section string) error {
