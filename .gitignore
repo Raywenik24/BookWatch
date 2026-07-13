@@ -3,6 +3,7 @@ run.sh
 run.ps1
 run.bat
 build.sh
+buildport.sh
 
 # local env (real vault path + password) — keep .env.example tracked
 .env
