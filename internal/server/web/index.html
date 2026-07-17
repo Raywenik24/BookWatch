@@ -2734,16 +2734,24 @@ async function addBookLN(url){
 }
 let _addLNURL = null;
 function renderLNPreview(url, nd){
-  _addLNURL = url;
+  // The preview may have resolved a jnovels single-volume post to its aggregate
+  // series page (#89); nd.url carries that, and it's what we add/link to so the
+  // note is the series, not the lone volume the user clicked.
+  const seriesURL = nd.url || url;
+  _addLNURL = seriesURL;
   showAddModal();
   $('addCandidates').hidden = true;
   const box = $('addConfirm'); box.hidden = false;
   const footer = `<div class="row"><button class="btn" id="addSubmitBtn" onclick="submitAddBookLN()">Add light novel</button></div>`;
+  // When the preview was reached from a candidate list (the jnovels light-novel
+  // fallback, #89), offer a way back to the picker; a pasted source URL has none.
+  const headerActions = _addCandidates.length
+    ? `<button class="btn ghost" onclick="backToCandidates()">Change</button>` : '';
   // cover_data is the source cover inlined as a data: URI (the source host
   // isn't in the CSP img-src whitelist, so a direct URL <img> would be blocked).
   box.innerHTML = bookPreviewModal(
-    { cover:nd.cover_data || '', title:nd.title, link:url, volumes:nd.volumes, description:nd.description || '' },
-    { mode:'add', status:'Backlog', linkLabel:'open source ↗', footer });
+    { cover:nd.cover_data || '', title:nd.title, link:seriesURL, volumes:nd.volumes, description:nd.description || '' },
+    { mode:'add', status:'Backlog', linkLabel:'open source ↗', headerActions, footer });
 }
 async function submitAddBookLN(){
   const url = _addLNURL; if(!url) return;
@@ -2782,12 +2790,13 @@ async function searchBooks(q){
     renderCandidates(jn.map(toJnovelsCandidate));
   } catch(e){ h.update('Error: '+(e.message||'request failed'),'error'); }
 }
-// toJnovelsCandidate maps a jnovels title-search hit ({title, url}) into the
-// shared candidate shape, tagged Source:'jnovels' so the picker labels it a
-// light novel and selection routes to the LN scrape-preview (#89). OLURL is the
-// jnovels post URL — the same URL POST /api/books scrapes on confirm.
+// toJnovelsCandidate maps a jnovels title-search hit ({title, url, cover_data})
+// into the shared candidate shape, tagged Source:'jnovels' so the picker labels
+// it a light novel and selection routes to the LN scrape-preview (#89). OLURL is
+// the jnovels post URL; the cover is inlined as a data: URI by the server (the
+// search page carries no thumbnails), rendered like any other candidate cover.
 function toJnovelsCandidate(r){
-  return { Title:r.title, Author:'', CoverURL:'', OLURL:r.url,
+  return { Title:r.title, Author:'', CoverURL:r.cover_data||'', OLURL:r.url,
     WorkID:'', Year:'', Language:'Light Novel', Source:'jnovels' };
 }
 // toLCCandidate maps a Lubimyczytać search hit into the shared candidate shape
@@ -2948,6 +2957,14 @@ function patchPreviewDesc(text){
 function cancelAddConfirm(){
   _addSelected = null;
   _addDetailToken = null;
+  $('addConfirm').hidden = true; $('addConfirm').innerHTML = '';
+  if(_addCandidates.length){ $('addCandidates').hidden = false; }
+  else { closeAddModal(); }
+}
+// backToCandidates returns from the LN scrape-preview to the candidate picker it
+// was opened from (the jnovels fallback, #89), clearing the preview's URL state.
+function backToCandidates(){
+  _addLNURL = null;
   $('addConfirm').hidden = true; $('addConfirm').innerHTML = '';
   if(_addCandidates.length){ $('addCandidates').hidden = false; }
   else { closeAddModal(); }

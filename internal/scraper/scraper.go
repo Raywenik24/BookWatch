@@ -170,6 +170,46 @@ func (c *Client) NovelData(url string, rl Rules) (NovelData, error) {
 	return parseNovel(doc, rl)
 }
 
+// NovelDataResolved scrapes url like NovelData, but first follows a jnovels
+// single-volume post's "Refer to original post" link to the aggregate series
+// page — the one carrying the full volume list — so the add flow creates a
+// series note, not a lone-volume note (#89). Returns the data and the URL
+// actually scraped (the aggregate when redirected, else url) so the caller can
+// key the note on it.
+func (c *Client) NovelDataResolved(url string, rl Rules) (NovelData, string, error) {
+	doc, err := c.fetch(url)
+	if err != nil {
+		return NovelData{}, url, err
+	}
+	if orig := originalPostLink(doc); orig != "" && orig != url {
+		doc2, err := c.fetch(orig)
+		if err != nil {
+			return NovelData{}, url, err
+		}
+		nd, err := parseNovel(doc2, rl)
+		return nd, orig, err
+	}
+	nd, err := parseNovel(doc, rl)
+	return nd, url, nil
+}
+
+// originalPostLink returns the href of a jnovels single-volume post's "Refer to
+// original post" anchor (which points at the aggregate light-novel series page),
+// or "" when the page is already an aggregate — the distinguishing marker
+// between a per-volume post and the series page (#89).
+func originalPostLink(doc *goquery.Document) string {
+	var href string
+	doc.Find("a[href]").EachWithBreak(func(_ int, a *goquery.Selection) bool {
+		if strings.Contains(strings.ToLower(a.Text()), "refer to original") {
+			href, _ = a.Attr("href")
+			href = strings.TrimSpace(href)
+			return false
+		}
+		return true
+	})
+	return href
+}
+
 // ParseNovelHTML parses from raw HTML (used by tests + live-test).
 func ParseNovelHTML(html string, rl Rules) (NovelData, error) {
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
@@ -327,12 +367,69 @@ func ParseSearchHTML(html, query string) ([]SearchResult, error) {
 // the aggregate is what the matcher wants, so a single-volume hit ranks below it.
 var singleVolumeRE = regexp.MustCompile(`(?i)\bvolume\s*\d+`)
 
+var (
+	// downloadPrefixRE strips jnovels' "Download " post-title lead-in.
+	downloadPrefixRE = regexp.MustCompile(`(?i)^\s*download\s+`)
+	// formatSuffixRE strips a trailing format/type word ("Light Novel", "Epub",
+	// "Pdf", …), applied repeatedly so "… Light Novel Epub" reduces fully.
+	formatSuffixRE = regexp.MustCompile(`(?i)\s+(light novel|web novel|webnovel|epub|pdf)\s*$`)
+)
+
+// cleanSearchTitle makes a jnovels post title readable for the add-a-book picker:
+// jnovels names its posts "Download <Title> Light Novel Epub", so strip the
+// "Download" lead-in and the trailing format/type words. Display-only — the
+// created note's title still comes from scraping the page (#89).
+func cleanSearchTitle(title string) string {
+	t := downloadPrefixRE.ReplaceAllString(title, "")
+	for {
+		n := formatSuffixRE.ReplaceAllString(t, "")
+		if n == t {
+			break
+		}
+		t = n
+	}
+	return strings.TrimSpace(t)
+}
+
+// volumeSuffixRE strips a trailing "Volume N" from a cleaned title, reducing a
+// per-volume post title to its series title.
+var volumeSuffixRE = regexp.MustCompile(`(?i)\s+volume\s*\d+\s*$`)
+
+// seriesTitle reduces a cleaned post title to the series name by dropping a
+// trailing "Volume N" ("Kumo Desu ga Nani ka Volume 7" → "Kumo Desu ga Nani ka").
+func seriesTitle(clean string) string {
+	return strings.TrimSpace(volumeSuffixRE.ReplaceAllString(clean, ""))
+}
+
+// CollapseToSeries dedups ranked search results down to one entry per series.
+// jnovels lists a post per volume, all resolving to the same aggregate light-
+// novel page, so the add-a-book picker shows the series once instead of every
+// volume (#89). The best-ranked post per series is kept as the representative
+// (the add flow resolves it to the aggregate via "Refer to original post"), with
+// its Title rewritten to the series name. Input order is preserved. Kept out of
+// rankSearchResults so the #73 import matcher still sees per-volume hits.
+func CollapseToSeries(results []SearchResult) []SearchResult {
+	seen := map[string]bool{}
+	out := make([]SearchResult, 0, len(results))
+	for _, r := range results {
+		st := seriesTitle(r.Title)
+		key := strings.ToLower(st)
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, SearchResult{Title: st, URL: r.URL})
+	}
+	return out
+}
+
 // rankSearchResults reads every search-result post link (h1.post-title.entry-title
 // is a bare text node on a novel page but wraps an <a> in search results, so the
 // child-anchor requirement selects only real hits, skipping the "Search Results
-// for:" page heading). Hits are ranked by query-token overlap, then aggregate
-// before single-volume, then epub before pdf, then original page order — and
-// deduped by URL so an epub/pdf pair of the same post doesn't crowd the top slots.
+// for:" page heading). Webnovel-translation and pdf posts are dropped (BookWatch
+// wants the official epub only). Remaining hits are ranked by query-token overlap,
+// then aggregate before single-volume, then original page order — and deduped by
+// URL. Titles are cleaned for display (see cleanSearchTitle).
 func rankSearchResults(doc *goquery.Document, query string) []SearchResult {
 	want := searchTokens(query)
 	type scored struct {
@@ -350,6 +447,14 @@ func rankSearchResults(doc *goquery.Document, query string) []SearchResult {
 		if href == "" || title == "" {
 			return
 		}
+		// jnovels posts a webnovel-translation variant and a pdf twin alongside
+		// each official light-novel epub; BookWatch only ever wants the epub, so
+		// drop both — a webnovel post isn't the LN, and the add flow scrapes the
+		// epub page (pdf-only misses are excluded too, per the jnovels design).
+		low := strings.ToLower(title)
+		if strings.Contains(low, "webnovel") || strings.Contains(low, "web novel") || formatRank(title) == 1 {
+			return
+		}
 		overlap := 0
 		for tok := range searchTokens(title) {
 			if want[tok] {
@@ -359,8 +464,10 @@ func rankSearchResults(doc *goquery.Document, query string) []SearchResult {
 		if overlap == 0 {
 			return
 		}
+		// Rank on the raw title (its "volume N"/format words drive the tiebreaks),
+		// but store the cleaned title for display.
 		cands = append(cands, scored{
-			res:        SearchResult{Title: title, URL: href},
+			res:        SearchResult{Title: cleanSearchTitle(title), URL: href},
 			overlap:    overlap,
 			singleVol:  singleVolumeRE.MatchString(title),
 			formatRank: formatRank(title),

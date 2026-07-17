@@ -101,6 +101,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/ol/search", s.handleOLSearch)
 	mux.HandleFunc("GET /api/lc/search", s.handleLCSearch)
 	mux.HandleFunc("GET /api/lc/book/detail", s.handleLCBookDetail)
+	mux.HandleFunc("GET /api/jnovels/search", s.handleJnovelsSearch)
 	mux.HandleFunc("GET /api/ol/work/{id}", s.handleOLWork)
 	mux.HandleFunc("GET /api/ol/work/{id}/detail", s.handleOLWorkDetail)
 	mux.HandleFunc("GET /api/ol/works/{id}/editions", s.handleOLWorkEditions)
@@ -1533,7 +1534,11 @@ func (s *Server) handleScrapePreview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rl := sources.NewResolver(s.st).For(b.URL)
-	nd, err := s.sc.NovelData(b.URL, rl)
+	// Resolve a jnovels single-volume post to its aggregate series page (#89) so
+	// the preview — and the add that follows — describe the series, not a lone
+	// volume. resolvedURL is the aggregate when redirected, else b.URL; the
+	// frontend carries it into POST /api/books so the note is keyed on it.
+	nd, resolvedURL, err := s.sc.NovelDataResolved(b.URL, rl)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, errBody(err.Error()))
 		return
@@ -1550,6 +1555,7 @@ func (s *Server) handleScrapePreview(w http.ResponseWriter, r *http.Request) {
 		"cover_url":   nd.CoverURL,
 		"cover_data":  coverDataURI(nd.CoverURL),
 		"description": nd.Description,
+		"url":         resolvedURL,
 	})
 }
 
@@ -1719,6 +1725,75 @@ func (s *Server) handleLCBookDetail(w http.ResponseWriter, r *http.Request) {
 		"description": book.Description,
 		"released":    book.ReleaseDate,
 	}, nil)
+}
+
+// ── jnovels title search (open — the add-a-book light-novel fallback, #89) ───
+
+// handleJnovelsSearch surfaces jnovels title-search hits as add-a-book
+// candidates when both OpenLibrary and Lubimyczytać miss (issue #89). It exposes
+// the scraper's existing SearchTitle — already ranked, one guarded request — so
+// the UI can offer the results as light novels. A search that finds nothing
+// returns an empty list. This endpoint + candidate mapping is the shared
+// foundation reused by #7 (Discover) and #8 (per-volume backfill).
+func (s *Server) handleJnovelsSearch(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query().Get("q")
+	if q == "" {
+		writeJSON(w, http.StatusBadRequest, errBody("missing q"))
+		return
+	}
+	results, err := s.sc.SearchTitle(q)
+	if err != nil {
+		respond(w, nil, err)
+		return
+	}
+	// Collapse the per-volume posts down to one entry per series (they all resolve
+	// to the same aggregate page), so the picker shows the series once and only
+	// one cover is fetched per series rather than one per volume (#89).
+	respond(w, s.jnovelsHitsWithCovers(scraper.CollapseToSeries(results)), nil)
+}
+
+// jnovelsHit is a jnovels search result plus its cover inlined for the picker.
+type jnovelsHit struct {
+	Title     string `json:"title"`
+	URL       string `json:"url"`
+	CoverData string `json:"cover_data"`
+}
+
+// maxJnovelsCoverFetches bounds the concurrent per-result cover fetches so a
+// search can't fan out into an unbounded burst of requests at the source.
+const maxJnovelsCoverFetches = 5
+
+// jnovelsHitsWithCovers turns ranked search results into picker hits, fetching
+// each post's cover concurrently and inlining it as a data: URI (#89). The
+// search-results page carries no thumbnails (fallback-thumbnail placeholders),
+// so every cover needs its own post fetch — the user opted into the extra
+// requests. Cover fetch is best-effort per hit: a failure just leaves it blank.
+func (s *Server) jnovelsHitsWithCovers(results []scraper.SearchResult) []jnovelsHit {
+	hits := make([]jnovelsHit, len(results))
+	if len(results) == 0 {
+		return hits
+	}
+	// Every hit is a jnovels URL (same domain), so resolve the source rules once
+	// rather than touching the store from each goroutine.
+	rl := sources.NewResolver(s.st).For(results[0].URL)
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, maxJnovelsCoverFetches)
+	for i, res := range results {
+		hits[i] = jnovelsHit{Title: res.Title, URL: res.URL}
+		wg.Add(1)
+		go func(i int, url string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			nd, err := s.sc.NovelData(url, rl)
+			if err != nil || nd.CoverURL == "" {
+				return
+			}
+			hits[i].CoverData = coverDataURI(nd.CoverURL)
+		}(i, res.URL)
+	}
+	wg.Wait()
+	return hits
 }
 
 // handleOLWork resolves a single work by ID — the pasted-URL path in the

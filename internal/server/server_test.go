@@ -878,6 +878,15 @@ func TestLCSearchMissingQ(t *testing.T) {
 	}
 }
 
+// TestJnovelsSearchMissingQ: the jnovels light-novel fallback validates its
+// query, same as the OL and LC proxies (#89).
+func TestJnovelsSearchMissingQ(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	if rec := do(h, "GET", "/api/jnovels/search", "", ""); rec.Code != http.StatusBadRequest {
+		t.Errorf("missing q: got %d, want 400", rec.Code)
+	}
+}
+
 // TestAddBookLCValidation: the LC add path requires title, work_id and the LC
 // link (ol_url) before any network work — a missing field is a 400 (#60).
 func TestAddBookLCValidation(t *testing.T) {
