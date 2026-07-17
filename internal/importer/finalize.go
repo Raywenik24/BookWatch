@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"bookwatch/internal/vault"
 )
@@ -86,6 +87,7 @@ func Finalize(stagingDir string, d FinalizeDest) (FinalizeResult, error) {
 			return res, err
 		}
 	}
+	cleanupEmptyVolumeDirs(stagingDir)
 	return res, nil
 }
 
@@ -105,7 +107,53 @@ func FinalizeNotes(stagingDir string, notePaths []string, d FinalizeDest) (Final
 			return res, err
 		}
 	}
+	cleanupEmptyVolumeDirs(stagingDir)
 	return res, nil
+}
+
+// cleanupEmptyVolumeDirs removes now-empty `_volumes/<Series>/` directories left
+// behind once a series' volume notes have all been finalized (or rejected), plus
+// the `_volumes/` parent itself once every series under it is gone. Best-effort:
+// a dir that still has something in it (a note the reviewer hasn't dealt with
+// yet, an orphaned cover) is simply left alone.
+func cleanupEmptyVolumeDirs(stagingDir string) {
+	volumesDir := longPath(filepath.Join(stagingDir, volumesSubdir))
+	entries, err := os.ReadDir(volumesDir)
+	if err != nil {
+		return
+	}
+	allEmpty := true
+	for _, e := range entries {
+		if !e.IsDir() {
+			allEmpty = false
+			continue
+		}
+		sub := filepath.Join(volumesDir, e.Name())
+		subEntries, err := os.ReadDir(sub)
+		if err != nil || len(subEntries) > 0 {
+			allEmpty = false // still has an unhandled volume note / orphan cover — leave it
+			continue
+		}
+		removeEmptyDirWithRetry(sub)
+	}
+	if allEmpty {
+		removeEmptyDirWithRetry(volumesDir)
+	}
+}
+
+// removeEmptyDirWithRetry removes a dir just confirmed empty, retrying briefly on
+// failure. A dir the notes/covers were just moved out of is intermittently held
+// open by the OneDrive sync client right afterward, same as the write-lock
+// RenameWithRetry works around; retrying turns that into a short wait instead of
+// a permanent leftover. Only called on dirs already known to be empty, so this
+// never burns the retry budget on a dir that's genuinely still occupied.
+func removeEmptyDirWithRetry(dir string) {
+	for i := 0; i < 12; i++ {
+		if os.Remove(dir) == nil {
+			return
+		}
+		time.Sleep(time.Duration(25*(i+1)) * time.Millisecond)
+	}
 }
 
 // moveStagedNote moves one staged note (and the cover it embeds) from staging
