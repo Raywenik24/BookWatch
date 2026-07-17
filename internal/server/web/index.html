@@ -3221,6 +3221,7 @@ async function importFinalize(){
    Accept — moving just that note into the vault — or Reject it. Bulk-accept
    moves every clean note at once. All against the latest session's staged files. */
 let _review = null; // { items, staging, filters, idx, detail, moved }
+let _reviewBusy = false; // guards accept/reject/save against a double-click racing two requests for the same item
 
 // showLightbox floats an image full-screen (click / Esc to dismiss) — used by the
 // reviewer's click-to-enlarge cover.
@@ -3398,7 +3399,11 @@ async function reviewSave(silent){
   if(!silent) toast('Saved.','success');
   return true;
 }
-async function reviewSaveOnly(){ if(await reviewSave(false)) renderReviewItem(); }
+async function reviewSaveOnly(){
+  if(_reviewBusy) return;
+  _reviewBusy = true;
+  try { if(await reviewSave(false)) renderReviewItem(); } finally { _reviewBusy = false; }
+}
 async function sendReviewCover(id, pending){
   const url = '/api/import/calibre/review/cover?id=' + id;
   if(pending.file){
@@ -3435,24 +3440,32 @@ async function reviewPullSource(what){
   renderReviewItem();
 }
 async function reviewAccept(){
+  if(_reviewBusy) return;
   const id = reviewCurrentId(); if(!id) return;
-  if(!await reviewSave(true)) return;
-  const r = await send('POST','/api/import/calibre/review/accept', { id });
-  if(need(r)) return;
-  if(!r.ok) return toast('Accept failed: '+(r.data.error||r.status),'error');
-  const skipped = r.data.skipped || [];
-  if(skipped.length && !r.data.notes){ toast('Skipped — a note with that name already exists in the vault.','info'); }
-  else { toast('Moved into the vault.','success'); _review.moved += (r.data.notes||0); }
-  reviewDrop(id);
+  _reviewBusy = true;
+  try {
+    if(!await reviewSave(true)) return;
+    const r = await send('POST','/api/import/calibre/review/accept', { id });
+    if(need(r)) return;
+    if(!r.ok) return toast('Accept failed: '+(r.data.error||r.status),'error');
+    const skipped = r.data.skipped || [];
+    if(skipped.length && !r.data.notes){ toast('Skipped — a note with that name already exists in the vault.','info'); }
+    else { toast('Moved into the vault.','success'); _review.moved += (r.data.notes||0); }
+    reviewDrop(id);
+  } finally { _reviewBusy = false; }
 }
 async function reviewReject(){
+  if(_reviewBusy) return;
   const id = reviewCurrentId(); if(!id) return;
   if(!await showConfirm('Delete this staged note (and its cover)? It won’t be imported. Your existing vault notes are untouched.', {confirmLabel:'Delete'})) return;
-  const r = await send('POST','/api/import/calibre/review/reject', { id });
-  if(need(r)) return;
-  if(!r.ok) return toast('Reject failed: '+(r.data.error||r.status),'error');
-  toast('Rejected.','info');
-  reviewDrop(id);
+  _reviewBusy = true;
+  try {
+    const r = await send('POST','/api/import/calibre/review/reject', { id });
+    if(need(r)) return;
+    if(!r.ok) return toast('Reject failed: '+(r.data.error||r.status),'error');
+    toast('Rejected.','info');
+    reviewDrop(id);
+  } finally { _reviewBusy = false; }
 }
 function reviewDrop(id){
   _review.items = (_review.items||[]).filter(x => x.id !== id);
