@@ -170,29 +170,29 @@
   #themeTip.show { opacity: 1; }
   .cover-x { position: absolute; top: .3rem; right: .3rem; width: 1.5rem; height: 1.5rem; padding: 0;
         border: 0; border-radius: 50%; cursor: pointer; font-size: 1.05rem; line-height: 1; opacity: 0;
-        background: color-mix(in srgb, var(--crust) 78%, transparent); color: var(--text); transition: opacity .15s; }
+        background: var(--crust); color: var(--text); box-shadow: 0 1px 4px rgba(0,0,0,.4); transition: opacity .15s; }
   .cover-card:hover .cover-x, .cover-x:focus { opacity: 1; }
   .cover-x:hover { background: var(--red); color: var(--crust); }
   .cover-x:disabled { opacity: .5; cursor: default; }
   /* "add to reading" corner button on a cover card (#64), mirroring cover-x */
   .cover-read { position: absolute; top: .3rem; left: .3rem; width: 1.5rem; height: 1.5rem; padding: 0;
         border: 0; border-radius: 50%; cursor: pointer; font-size: 1rem; line-height: 1; opacity: 0;
-        background: color-mix(in srgb, var(--crust) 78%, transparent); color: var(--text); transition: opacity .15s; }
+        background: var(--crust); color: var(--text); box-shadow: 0 1px 4px rgba(0,0,0,.4); transition: opacity .15s; }
   /* reading-tile corner actions (#64): ✓ Done / ▶ Start share the top-left
      green affordance with Books' cover-read; Remove reuses cover-x. All are
      hover-revealed, matching the Books grid. */
   .cover-done, .cover-start { position: absolute; top: .3rem; left: .3rem; width: 1.5rem; height: 1.5rem; padding: 0;
         border: 0; border-radius: 50%; cursor: pointer; font-size: .95rem; line-height: 1; opacity: 0;
         display: inline-flex; align-items: center; justify-content: center;
-        background: color-mix(in srgb, var(--crust) 78%, transparent); color: var(--text); transition: opacity .15s; }
+        background: var(--crust); color: var(--text); box-shadow: 0 1px 4px rgba(0,0,0,.4); transition: opacity .15s; }
   .cover-card:hover .cover-read, .cover-read:focus,
   .cover-card:hover .cover-done, .cover-done:focus,
   .cover-card:hover .cover-start, .cover-start:focus { opacity: 1; }
   .cover-read:hover, .cover-done:hover, .cover-start:hover { background: var(--green); color: var(--crust); }
-  /* the ✓/▶ action shares the top-left corner with the volume badge, so fade the
-     badge out on hover (reading lists only — Books keeps its badge). */
-  #readingNowList .cover-vol, #readingQueueList .cover-vol { transition: opacity .15s; }
-  #readingNowList .cover-card:hover .cover-vol, #readingQueueList .cover-card:hover .cover-vol { opacity: 0; }
+  /* the ✓/▶/＋ action shares the top-left corner with the volume badge, so where a
+     badge is rendered the action drops below it rather than sitting on top (#88).
+     The badge is the immediately-preceding sibling, so no badge = no shift. */
+  .cover-vol + .cover-read, .cover-vol + .cover-done, .cover-vol + .cover-start { top: 2.05rem; }
   .cover-card[draggable="true"] { cursor: grab; }
   .cover-card.dragging { opacity: .45; }
   .cover-card.dragover { border-color: var(--mauve); border-style: dashed; }
@@ -427,7 +427,7 @@
         </div>
       </div>
       <div class="row">
-        <input id="bookFilter" placeholder="search title…" autocomplete="off" spellcheck="false" oninput="renderBooks(this.value)">
+        <input id="bookFilter" placeholder="search title…" autocomplete="off" spellcheck="false" oninput="renderBooks(this.value)" onkeydown="escBlur(event)">
         <div class="viewtoggle">
           <button id="sortBtn" class="btn ghost" tabindex="-1" onclick="toggleSort()">↑ A–Z</button>
           <button id="viewTable" class="btn ghost" tabindex="-1" onclick="setBookView('table')">Table</button>
@@ -436,7 +436,7 @@
       </div>
       <div class="row" id="authorFilterRow">
         <div id="authorSelectMount" style="min-width:200px"></div>
-        <input id="authorQueryInput" placeholder="fuzzy search by author…" autocomplete="off" spellcheck="false" oninput="setAuthorQuery(this.value)">
+        <input id="authorQueryInput" placeholder="fuzzy search by author…" autocomplete="off" spellcheck="false" oninput="setAuthorQuery(this.value)" onkeydown="escBlur(event)">
       </div>
       <div class="row filter-bar">
         <button class="btn ghost filter-btn active" data-f="" tabindex="-1" onclick="setStatusFilter('')">All</button>
@@ -859,6 +859,9 @@ const lsGet = k => { try { return localStorage.getItem(k); } catch(e){ return nu
 const lsSet = (k,v) => { try { localStorage.setItem(k,v); } catch(e){} };
 const token = () => lsGet('pw_token') || '';
 function esc(s){ return String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+/* escBlur: onkeydown hook that lets Esc release a search field, the same as
+   clicking outside it (#19). Stops there so it can't also close a modal. */
+function escBlur(e){ if(e.key === 'Escape'){ e.preventDefault(); e.stopPropagation(); e.target.blur(); } }
 
 /* ── themed tooltip: shared #themeTip div, positioned per-trigger on hover/focus
    of any element carrying data-tip. Delegated on document so it works for
@@ -978,7 +981,9 @@ function fuzzySelect(mount, opts){
   }
   function openList(){ open = true; list.hidden = false; render(''); active = filtered.findIndex(it=>it.value===value); if(active<0)active=0; render(''); }
   function closeList(){ open = false; list.hidden = true; showLabel(); }
-  function pick(i){ const it = filtered[i]; if(!it) return; value = it.value; onChange(value, it); closeList(); }
+  // picking is done, so drop focus rather than leaving the label selected for
+  // editing — a re-focus is what re-opens the list (#19).
+  function pick(i){ const it = filtered[i]; if(!it) return; value = it.value; onChange(value, it); closeList(); input.blur(); }
 
   input.addEventListener('focus', () => { input.select(); openList(); });
   input.addEventListener('input', () => { open = true; list.hidden = false; active = 0; render(input.value.trim()); });
@@ -986,7 +991,10 @@ function fuzzySelect(mount, opts){
     if(e.key === 'ArrowDown'){ e.preventDefault(); if(!open){openList();return;} active = Math.min(active+1, filtered.length-1); render(input.value.trim()); scrollActive(); }
     else if(e.key === 'ArrowUp'){ e.preventDefault(); active = Math.max(active-1, 0); render(input.value.trim()); scrollActive(); }
     else if(e.key === 'Enter'){ if(open){ e.preventDefault(); pick(active); } }
-    else if(e.key === 'Escape'){ if(open){ e.preventDefault(); closeList(); } }
+    // Esc unwinds innermost-first, like the modal ladder: open list closes, then a
+    // second Esc lets go of the field (#19). Kept off the document handler so it
+    // can't also close an enclosing modal in one press.
+    else if(e.key === 'Escape'){ e.preventDefault(); e.stopPropagation(); if(open) closeList(); else input.blur(); }
   });
   list.addEventListener('mousedown', e => { const li = e.target.closest('.fz-opt'); if(li){ e.preventDefault(); pick(+li.dataset.i); } });
   document.addEventListener('mousedown', e => { if(open && !el.contains(e.target)) closeList(); });
@@ -1514,7 +1522,9 @@ let _coverPending = null;   // { file } | { url } | null
 async function openNoteModal(id){
   const book = booksData.find(b => b.id === id);
   let n;
-  try { n = await getJSON('/api/books/' + id + '/note'); }
+  // reading state comes along for the ride: ＋ Read hides for a book that's
+  // already reading/queued (#18), and the Reading tab may never have been opened.
+  try { [n] = await Promise.all([getJSON('/api/books/' + id + '/note'), refreshReadingState()]); }
   catch(e){ return toast('Could not read the note.','error'); }
   if(!n || n.error){ return toast('Could not read the note' + (n && n.error ? ': ' + n.error : '') + '.','error'); }
   _noteModal = { id, kind: n.kind || (book ? bookKind(book) : 'book'), note: n };
@@ -1530,7 +1540,9 @@ function noteCoverSrc(){
 
 function renderNoteView(){
   const n = _noteModal.note, isBook = _noteModal.kind === 'book';
-  const headerActions = `<button class="btn ghost" onclick="readFromNoteModal(${_noteModal.id})" title="Start reading / add to queue">＋ Read</button>
+  const readBtn = isReadingOrQueued(_noteModal.id) ? ''
+    : `<button class="btn ghost" onclick="readFromNoteModal(${_noteModal.id})" title="Start reading / add to queue">＋ Read</button>`;
+  const headerActions = `${readBtn}
     <button class="btn ghost" onclick="startNoteEdit()">Edit</button>`;
   $('previewModalBody').innerHTML = bookPreviewModal(
     { cover: noteCoverSrc(), title: n.title, author: n.author,
@@ -1921,12 +1933,25 @@ let _readingState = { reading: [], queue: [] };
 let _readingReads = [];        // parsed _Read.md rows (Completed list + ×N badges)
 let _readingConfigured = false;
 
+// refreshReadingState reloads currently-reading + queue into _readingState. Split
+// out of loadReading so entry points outside the Reading tab can get fresh state
+// (the note modal's ＋ Read, #18). Never rejects.
+async function refreshReadingState(){
+  const state = await getJSON('/api/reading/queue').catch(() => ({ reading:[], queue:[] }));
+  _readingState = { reading: state.reading || [], queue: state.queue || [] };
+}
+// isReadingOrQueued answers whether a book already sits in one of the two lists,
+// so "add to reading" affordances can hide for it (#18).
+function isReadingOrQueued(bookId){
+  return _readingState.reading.some(x => x.book_id === bookId)
+      || _readingState.queue.some(x => x.book_id === bookId);
+}
+
 async function loadReading(){
-  const [state, completed] = await Promise.all([
-    getJSON('/api/reading/queue').catch(() => ({ reading:[], queue:[] })),
+  const [, completed] = await Promise.all([
+    refreshReadingState(),
     getJSON('/api/reading/completed').catch(() => ({ configured:false, reads:[] })),
   ]);
-  _readingState = { reading: state.reading || [], queue: state.queue || [] };
   _readingReads = completed.reads || [];
   _readingConfigured = !!completed.configured;
   $('readingNoLog').hidden = _readingConfigured;
@@ -2747,10 +2772,23 @@ async function searchBooks(q){
     // add path routes to LC's own identity.
     h.update('Nothing on OpenLibrary — trying Lubimyczytać…','busy');
     const lc = await getJSON('/api/lc/search?q='+encodeURIComponent(q));
-    if(!lc || !lc.length){ h.update('No matches on OpenLibrary or Lubimyczytać.','error'); return; }
+    if(lc && lc.length){ h.close(); renderCandidates(lc.map(toLCCandidate)); return; }
+    // OL and LC both miss — fall back to a jnovels title search and offer the
+    // hits as light novels (#89). Selecting one routes to the LN scrape-preview.
+    h.update('Nothing on Lubimyczytać — trying jnovels…','busy');
+    const jn = await getJSON('/api/jnovels/search?q='+encodeURIComponent(q));
+    if(!jn || !jn.length){ h.update('No matches on OpenLibrary, Lubimyczytać or jnovels.','error'); return; }
     h.close();
-    renderCandidates(lc.map(toLCCandidate));
+    renderCandidates(jn.map(toJnovelsCandidate));
   } catch(e){ h.update('Error: '+(e.message||'request failed'),'error'); }
+}
+// toJnovelsCandidate maps a jnovels title-search hit ({title, url}) into the
+// shared candidate shape, tagged Source:'jnovels' so the picker labels it a
+// light novel and selection routes to the LN scrape-preview (#89). OLURL is the
+// jnovels post URL — the same URL POST /api/books scrapes on confirm.
+function toJnovelsCandidate(r){
+  return { Title:r.title, Author:'', CoverURL:'', OLURL:r.url,
+    WorkID:'', Year:'', Language:'Light Novel', Source:'jnovels' };
 }
 // toLCCandidate maps a Lubimyczytać search hit into the shared candidate shape
 // the picker/preview render, tagged Source:'lc' so selection, detail-fetch and
@@ -2831,11 +2869,13 @@ function renderCandidates(list){
   _addCandidates = list;
   showAddModal();
   const box = $('addCandidates'); box.hidden = false;
-  // Label the source when the results came from the Lubimyczytać fallback (#60)
-  // so it's clear these aren't OpenLibrary hits.
-  const fromLC = list.length && list[0].Source === 'lc';
-  const lead = fromLC
+  // Label the source when the results came from a fallback provider (Lubimyczytać
+  // #60, jnovels #89) so it's clear these aren't OpenLibrary hits.
+  const src = list.length && list[0].Source;
+  const lead = src === 'lc'
     ? 'No OpenLibrary match — from <strong>Lubimyczytać</strong>. Pick the right one:'
+    : src === 'jnovels'
+    ? 'No OpenLibrary or Lubimyczytać match — <strong>Light Novel</strong> results from jnovels. Pick the right one:'
     : 'Multiple matches — pick the right one:';
   box.innerHTML = `<small class="muted">${lead}</small>`
     + `<input id="candFilter" class="cand-filter" type="text" autocomplete="off" spellcheck="false"
@@ -2859,7 +2899,7 @@ function renderCandList(q){
     const img = c.CoverURL
       ? `<img class="cand-cover" src="${esc(c.CoverURL)}" loading="lazy" onerror="this.remove()">`
       : '<div class="cand-cover"></div>';
-    const linkLabel = c.Source === 'lc' ? 'LC ↗' : 'OL ↗';
+    const linkLabel = c.Source === 'lc' ? 'LC ↗' : c.Source === 'jnovels' ? 'jnovels ↗' : 'OL ↗';
     return `<div class="cand-row" onclick="selectCandidateIdx(${i})">${img}
       <div class="cand-meta"><div class="cand-title">${fzHighlight(c.Title || '', q)}</div><div class="cand-sub">${esc(sub)}</div></div>
       <a class="cand-link" href="${esc(c.OLURL)}" target="_blank" onclick="event.stopPropagation()">${linkLabel}</a>
@@ -2869,6 +2909,10 @@ function renderCandList(q){
 function selectCandidateIdx(i){ selectCandidate(_addCandidates[i]); }
 function selectCandidate(c){
   _addSelected = c;
+  // A jnovels hit is a light novel — route to the LN scrape-preview, which
+  // scrapes the post and confirms via the existing LN path (#89), rather than
+  // the catalog confirm card.
+  if(c.Source === 'jnovels'){ addBookLN(c.OLURL); return; }
   showAddModal();
   $('addCandidates').hidden = true;
   renderAddConfirm();
