@@ -101,8 +101,9 @@ func TestParseSearchHTML_selectorAndDedup(t *testing.T) {
 }
 
 // A jnovels single-volume post carries a "Refer to original post" link to the
-// aggregate series page; originalPostLink must surface it (and return "" for a
-// page without one) so the add flow resolves to the series (#89).
+// aggregate series page; parseOriginalPost must surface it (and return "" for a
+// page without one) so the add flow resolves to the series (#89). The parser is
+// shared with the Discover resolve path (#91).
 func TestOriginalPostLink(t *testing.T) {
 	vol, err := goquery.NewDocumentFromReader(strings.NewReader(
 		`<!doctype html><html><body><p>Single volume — ` +
@@ -110,17 +111,17 @@ func TestOriginalPostLink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := originalPostLink(vol)
+	got := parseOriginalPost(vol)
 	want := "https://jnovels.com/kumo-desu-ga-nani-ka-light-novel-epub/"
 	if got != want {
-		t.Errorf("originalPostLink = %q, want %q", got, want)
+		t.Errorf("parseOriginalPost = %q, want %q", got, want)
 	}
 
 	noLink, err := goquery.NewDocumentFromReader(strings.NewReader(`<!doctype html><html><body><a href="/x">Home</a></body></html>`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := originalPostLink(noLink); got != "" {
+	if got := parseOriginalPost(noLink); got != "" {
 		t.Errorf("expected no link on an aggregate page, got %q", got)
 	}
 }

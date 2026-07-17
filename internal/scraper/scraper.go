@@ -181,7 +181,7 @@ func (c *Client) NovelDataResolved(url string, rl Rules) (NovelData, string, err
 	if err != nil {
 		return NovelData{}, url, err
 	}
-	if orig := originalPostLink(doc); orig != "" && orig != url {
+	if orig := parseOriginalPost(doc); orig != "" && orig != url {
 		doc2, err := c.fetch(orig)
 		if err != nil {
 			return NovelData{}, url, err
@@ -191,23 +191,6 @@ func (c *Client) NovelDataResolved(url string, rl Rules) (NovelData, string, err
 	}
 	nd, err := parseNovel(doc, rl)
 	return nd, url, nil
-}
-
-// originalPostLink returns the href of a jnovels single-volume post's "Refer to
-// original post" anchor (which points at the aggregate light-novel series page),
-// or "" when the page is already an aggregate — the distinguishing marker
-// between a per-volume post and the series page (#89).
-func originalPostLink(doc *goquery.Document) string {
-	var href string
-	doc.Find("a[href]").EachWithBreak(func(_ int, a *goquery.Selection) bool {
-		if strings.Contains(strings.ToLower(a.Text()), "refer to original") {
-			href, _ = a.Attr("href")
-			href = strings.TrimSpace(href)
-			return false
-		}
-		return true
-	})
-	return href
 }
 
 // ParseNovelHTML parses from raw HTML (used by tests + live-test).

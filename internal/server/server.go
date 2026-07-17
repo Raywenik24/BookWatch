@@ -67,6 +67,15 @@ type Server struct {
 	importMu    sync.Mutex
 	importBusy  bool
 	importTitle string
+
+	// discover caches the jnovels Discover feeds (#91). Latest changes slowly, so
+	// both feeds are served from cache with a TTL; the Refresh/Reroll buttons
+	// force a fresh scrape past the cache. Guarded by discoverMu.
+	discoverMu       sync.Mutex
+	discoverLatest   []scraper.Release
+	discoverLatestAt time.Time
+	discoverPicks    []scraper.Release
+	discoverPicksAt  time.Time
 }
 
 // coverIdxTTL is how long the vault-wide cover index is reused before a rebuild,
@@ -102,6 +111,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/lc/search", s.handleLCSearch)
 	mux.HandleFunc("GET /api/lc/book/detail", s.handleLCBookDetail)
 	mux.HandleFunc("GET /api/jnovels/search", s.handleJnovelsSearch)
+	mux.HandleFunc("GET /api/discover/latest", s.handleDiscoverLatest)
+	mux.HandleFunc("GET /api/discover/find-new", s.handleDiscoverFindNew)
+	mux.HandleFunc("GET /api/discover/resolve", s.handleDiscoverResolve)
+	mux.HandleFunc("GET /api/discover/cover", s.handleDiscoverCover)
 	mux.HandleFunc("GET /api/ol/work/{id}", s.handleOLWork)
 	mux.HandleFunc("GET /api/ol/work/{id}/detail", s.handleOLWorkDetail)
 	mux.HandleFunc("GET /api/ol/works/{id}/editions", s.handleOLWorkEditions)

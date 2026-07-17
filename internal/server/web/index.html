@@ -356,6 +356,7 @@
       <button data-s="books">Books</button>
       <button data-s="reading">Reading</button>
       <button data-s="randomize">Randomizer</button>
+      <button data-s="discover">Discover</button>
       <button data-s="sources">Sources</button>
       <button data-s="import">Import</button>
       <button data-s="settings">Settings</button>
@@ -471,6 +472,29 @@
         </div>
       </div>
       <div id="randomizeGrid" class="cover-grid"></div>
+    </section>
+
+    <!-- DISCOVER (#91) — browse new light novels on jnovels: Latest releases and
+         a spoiler-safe Find-new randomizer. Separate from the library Randomizer. -->
+    <section id="discover">
+      <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:.4rem">
+        <h2 style="margin:0">Discover light novels</h2>
+        <button class="btn" id="discoverActionBtn" onclick="reloadDiscover()">Refresh</button>
+      </div>
+      <div class="row">
+        <div class="viewtoggle" id="discoverModeToggle">
+          <button class="btn ghost active" data-m="latest" tabindex="-1" onclick="setDiscoverMode('latest')">Latest</button>
+          <button class="btn ghost" data-m="find-new" tabindex="-1" onclick="setDiscoverMode('find-new')">Find new</button>
+        </div>
+        <span class="muted" id="discoverHint" style="align-self:center"></span>
+      </div>
+      <div id="discoverGrid" class="cover-grid"></div>
+      <div id="discoverModalBackdrop" class="modal-backdrop" hidden onclick="if(event.target===this)closeDiscoverModal()">
+        <div class="modal">
+          <button class="modal-close" onclick="closeDiscoverModal()" aria-label="Close">&times;</button>
+          <div id="discoverModalBody"></div>
+        </div>
+      </div>
     </section>
 
     <!-- READING (#64) — currently-reading, queue, recently-completed -->
@@ -1187,7 +1211,7 @@ function sseConnect(url, { headers = {}, onEvent, onOpen, onFatal } = {}){
    the matching tab. The section ids match the data-s values; only Randomizer's
    path differs (section id "randomize" ↔ path "randomizer"). */
 const TAB_TO_PATH = { updates:'updates', books:'books', reading:'reading', randomize:'randomizer',
-  sources:'sources', import:'import', settings:'settings', logs:'logs', about:'about' };
+  discover:'discover', sources:'sources', import:'import', settings:'settings', logs:'logs', about:'about' };
 const PATH_TO_TAB = Object.fromEntries(Object.entries(TAB_TO_PATH).map(([t,p]) => [p,t]));
 
 // showTab activates a tab's nav button + section, no history change. Unknown ids
@@ -1199,6 +1223,7 @@ function showTab(tab){
   if(tab === 'randomize') rerollRandomize();
   if(tab === 'reading') loadReading();
   if(tab === 'import') loadImport();
+  if(tab === 'discover') loadDiscover();
   return tab;
 }
 
@@ -1922,6 +1947,137 @@ function renderRandomizeGrid(){
       ${vol}
     </div>`;
   }).join('') : `<div class="empty-state">${randomizeEmptyMessage()}</div>`;
+}
+
+/* ── Discover tab (#91): browse new light novels on jnovels ───────────────
+   Two feeds, both cached server-side with a TTL: Latest (newest epub releases,
+   titles shown) and Find-new (jnovels' /randomizer/, cover-only to stay
+   spoiler-safe). Opening a pick resolves the series page via the volume's
+   "Refer to original post" link and shows the volume-1 cover + description.
+   Add reuses the normal light-novel add path (POST /api/books with the resolved
+   series URL); Open on jnovels opens the picked volume page in a new tab. */
+let discoverMode = lsGet('discover_mode') === 'find-new' ? 'find-new' : 'latest';
+const discoverCache = { latest:[], 'find-new':[] };
+const discoverLoaded = { latest:false, 'find-new':false };
+
+function setDiscoverMode(m){
+  discoverMode = (m === 'find-new') ? 'find-new' : 'latest';
+  lsSet('discover_mode', discoverMode);
+  document.querySelectorAll('#discoverModeToggle button').forEach(b => b.classList.toggle('active', b.dataset.m === discoverMode));
+  $('discoverActionBtn').textContent = discoverMode === 'find-new' ? 'Reroll' : 'Refresh';
+  $('discoverHint').textContent = discoverMode === 'find-new'
+    ? 'Random picks you don’t already track — covers hidden-title to avoid spoilers.'
+    : 'The newest epub releases on jnovels.';
+  loadDiscover();
+}
+
+// loadDiscover fetches the current feed unless it's already loaded (so tab
+// switches don't re-scrape); reloadDiscover forces a fresh fetch past the cache.
+function loadDiscover(){ if(!discoverLoaded[discoverMode]) fetchDiscover(false); else renderDiscoverGrid(); }
+function reloadDiscover(){ fetchDiscover(true); }
+
+async function fetchDiscover(force){
+  const mode = discoverMode;
+  const path = mode === 'find-new' ? '/api/discover/find-new' : '/api/discover/latest';
+  $('discoverGrid').innerHTML = `<div class="empty-state">Loading from jnovels…</div>`;
+  try {
+    const data = await getJSON(path + (force ? '?refresh=1' : ''));
+    if(mode !== discoverMode) return; // user switched tabs mid-request
+    if(data && data.error){ $('discoverGrid').innerHTML = `<div class="empty-state">Couldn’t reach jnovels: ${esc(data.error)}</div>`; return; }
+    discoverCache[mode] = (data && data.releases) || [];
+    discoverLoaded[mode] = true;
+    renderDiscoverGrid();
+  } catch(e){
+    $('discoverGrid').innerHTML = `<div class="empty-state">Couldn’t reach jnovels: ${esc(e.message || 'request failed')}</div>`;
+  }
+}
+
+function discoverCoverSrc(url){ return '/api/discover/cover?u=' + encodeURIComponent(url); }
+
+function renderDiscoverGrid(){
+  const spoilerSafe = discoverMode === 'find-new';
+  const items = discoverCache[discoverMode];
+  if(!items.length){
+    $('discoverGrid').innerHTML = `<div class="empty-state">Nothing to show right now — try ${spoilerSafe ? 'Reroll' : 'Refresh'}.</div>`;
+    return;
+  }
+  $('discoverGrid').innerHTML = items.map((x, i) => {
+    const img = x.cover_url
+      ? `<img class="cover-img" src="${discoverCoverSrc(x.cover_url)}" alt="" loading="lazy" onerror="this.closest('.cover-card').classList.add('nocover');this.remove();">`
+      : '';
+    // Find-new hides the title (it can spoil which volume/arc a series is on);
+    // Latest shows it — surfacing new releases is the whole point.
+    const label = spoilerSafe ? '<span class="cover-title muted">Mystery pick</span>' : `<span class="cover-title">${esc(x.title)}</span>`;
+    return `<div class="cover-card${x.cover_url ? '' : ' nocover'}">
+      <a class="cover-link" href="#" tabindex="-1" onclick="openDiscoverPick(${i});return false" title="Preview">
+        ${img}${label}</a>
+    </div>`;
+  }).join('');
+}
+
+function closeDiscoverModal(){ $('discoverModalBackdrop').hidden = true; $('discoverModalBody').innerHTML = ''; }
+
+// openDiscoverPick resolves the picked volume URL to its spoiler-safe series page
+// (title, volume-1 cover, description) and renders the Add / Open-on-jnovels modal.
+async function openDiscoverPick(i){
+  const item = discoverCache[discoverMode][i];
+  if(!item) return;
+  const back = $('discoverModalBackdrop');
+  back.hidden = false;
+  $('discoverModalBody').innerHTML = `<div class="empty-state">Loading preview…</div>`;
+  try {
+    const data = await getJSON('/api/discover/resolve?url=' + encodeURIComponent(item.url));
+    if(back.hidden) return; // closed while loading
+    if(data && data.error){ $('discoverModalBody').innerHTML = `<div class="empty-state">Couldn’t load this one: ${esc(data.error)}</div>`; return; }
+    renderDiscoverModal(item, data);
+  } catch(e){
+    $('discoverModalBody').innerHTML = `<div class="empty-state">Couldn’t load this one: ${esc(e.message || 'request failed')}</div>`;
+  }
+}
+
+function renderDiscoverModal(item, d){
+  const cover = d.cover_data
+    ? `<img src="${d.cover_data}" alt="" style="max-width:180px;border-radius:8px">`
+    : '';
+  const spoilerNote = discoverMode === 'find-new'
+    ? `<p class="muted" style="margin:.2rem 0 .8rem">To avoid spoilers, this shows the series’ <b>volume 1</b> cover and description, not the volume that was drawn.</p>`
+    : '';
+  const vols = d.volumes ? `<p class="muted" style="margin:.2rem 0">${d.volumes} volume${d.volumes === 1 ? '' : 's'} listed</p>` : '';
+  $('discoverModalBody').innerHTML = `
+    <h3 style="margin-top:0">${esc(d.title || 'Light novel')}</h3>
+    ${spoilerNote}
+    <div class="row" style="align-items:flex-start;gap:1rem">
+      ${cover}
+      <div style="flex:1;min-width:0">
+        ${vols}
+        <p style="white-space:pre-wrap">${esc(d.description || 'No description available.')}</p>
+      </div>
+    </div>
+    <div class="row" style="margin-top:1rem">
+      <button class="btn" id="discoverAddBtn" onclick="addDiscoverPick('${encodeURIComponent(d.series_url)}')">Add to library</button>
+      <a class="btn ghost" href="${esc(item.url)}" target="_blank" rel="noopener">Open on jnovels ↗</a>
+    </div>`;
+}
+
+// addDiscoverPick creates the note via the normal light-novel add path, so the
+// pick behaves exactly like pasting the series link (and picks up the per-volume
+// backfill once #90 lands).
+async function addDiscoverPick(encodedSeriesURL){
+  const url = decodeURIComponent(encodedSeriesURL);
+  const btn = $('discoverAddBtn'); if(btn) btn.disabled = true;
+  const h = toast('Adding… (scraping the page)','busy');
+  try {
+    const r = await send('POST','/api/books',{url, status:'Backlog'});
+    if(need(r, h)) return;
+    if(r.status === 409){ h.update('Already tracked — this one’s in your list.','error'); return; }
+    if(!r.ok){ h.update('Error: ' + (r.data.error || r.status),'error'); if(btn) btn.disabled = false; return; }
+    h.update(`Added: ${r.data.title} (${r.data.volumes} vol)`,'success');
+    closeDiscoverModal();
+    loadBooks(); loadEvents();
+  } catch(e){
+    h.update('Error: ' + (e.message || 'request failed'),'error');
+    if(btn) btn.disabled = false;
+  }
 }
 
 /* ── Reading tab (#64): currently-reading, queue, recently-completed ──────
@@ -4157,6 +4313,13 @@ $('sortBtn').textContent = bookSort === 'asc' ? '↑ A–Z' : '↓ Z–A';
 setBookView(bookView);
 setKindView(kindView);
 document.querySelectorAll('#randomizeKindToggle button').forEach(b => b.classList.toggle('active', b.dataset.k === randomizeKindView));
+// Sync the Discover mode toggle/label to the restored mode without fetching —
+// the feed loads only when the tab is shown (showTab → loadDiscover).
+document.querySelectorAll('#discoverModeToggle button').forEach(b => b.classList.toggle('active', b.dataset.m === discoverMode));
+$('discoverActionBtn').textContent = discoverMode === 'find-new' ? 'Reroll' : 'Refresh';
+$('discoverHint').textContent = discoverMode === 'find-new'
+  ? 'Random picks you don’t already track — covers hidden-title to avoid spoilers.'
+  : 'The newest epub releases on jnovels.';
 setLogTab(logTab);
 setSrcTab(srcTab);
 setUpdatesKind(updatesKind); // syncs the toggle buttons to the restored kind and loads
