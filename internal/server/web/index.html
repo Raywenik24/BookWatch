@@ -191,6 +191,9 @@
         border: 0; border-radius: 50%; cursor: pointer; font-size: .95rem; line-height: 1; opacity: 0;
         display: inline-flex; align-items: center; justify-content: center;
         background: var(--crust); color: var(--text); box-shadow: 0 1px 4px rgba(0,0,0,.4); transition: opacity .15s; }
+  /* ✓ Done on a currently-reading tile sits on the right, tucked under the ✗
+     remove button, rather than in the top-left green corner (#97). */
+  .cover-done { top: 2.05rem; left: auto; right: .3rem; }
   .cover-card:hover .cover-read, .cover-read:focus,
   .cover-card:hover .cover-done, .cover-done:focus,
   .cover-card:hover .cover-start, .cover-start:focus { opacity: 1; }
@@ -198,7 +201,7 @@
   /* the ✓/▶/＋ action shares the top-left corner with the volume badge, so where a
      badge is rendered the action drops below it rather than sitting on top (#88).
      The badge is the immediately-preceding sibling, so no badge = no shift. */
-  .cover-vol + .cover-read, .cover-vol + .cover-done, .cover-vol + .cover-start { top: 2.05rem; }
+  .cover-vol + .cover-read, .cover-vol + .cover-start { top: 2.05rem; }
   .cover-card[draggable="true"] { cursor: grab; }
   .cover-card.dragging { opacity: .45; }
   .cover-card.dragover { border-color: var(--mauve); border-style: dashed; }
@@ -2297,7 +2300,7 @@ document.addEventListener('click', e => {
 function rdVolBadge(it){ return it.volume ? `<span class="cover-vol" title="Volume ${esc(it.volume)}">Vol ${esc(it.volume)}</span>` : ''; }
 // rdTileInner is the shared cover-link + badges of a reading tile. extraSub is an
 // optional pre-escaped snippet appended to the sub line (e.g. "since <date>").
-function rdTileInner(it, extraSub){
+function rdTileInner(it, extraSub, noTip){
   // An LN volume asks for the volume's own cover (?vol=N) — the server serves the
   // #LNVolume note's cover, falling back to the series cover when it's missing
   // (backfill still running, or an unresolved volume) (#90).
@@ -2306,7 +2309,7 @@ function rdTileInner(it, extraSub){
     ? `<img class="cover-img" src="${coverURL}" alt="" draggable="false" loading="lazy" onerror="this.closest('.cover-card').classList.add('nocover');this.remove();">`
     : '';
   const sub = [readingUnitSub(it), extraSub].filter(Boolean).join(' · ');
-  return `<a class="cover-link" href="#" tabindex="-1" onclick="openNoteModal(${it.book_id});return false" title="View / edit note">
+  return `<a class="cover-link" href="#" tabindex="-1" onclick="openNoteModal(${it.book_id});return false"${noTip ? '' : ' title="View / edit note"'}>
       ${img}<span class="cover-title">${esc(it.title)}</span>
       ${sub ? `<div class="cover-title" style="padding-top:0"><small class="muted">${sub}</small></div>` : ''}
     </a>${rdVolBadge(it)}`;
@@ -2319,11 +2322,27 @@ function renderReadingNow(){
     const since = it.start_date ? 'since ' + esc(it.start_date) : '';
     return `<div class="cover-card${it.cover ? '' : ' nocover'}" draggable="true" data-id="${it.id}"
          ondragstart="rdDragStart(event,${it.id},'reading')" ondragend="rdDragEnd(event)">
-      ${rdTileInner(it, since)}
+      ${rdTileInner(it, since, true)}
       <button class="cover-done" title="Mark completed" aria-label="Mark completed" tabindex="-1" onclick="openCompletionForm(${it.id})">✓</button>
       <button class="cover-x" title="Remove from currently reading" aria-label="Remove" tabindex="-1" onclick="removeReadingItem(${it.id})">&times;</button>
     </div>`;
-  }).join('') : `<div class="empty-state">Nothing in progress — start a book from the Books tab or your queue below.</div>`;
+  }).join('') : readingNowEmptyState();
+}
+
+// Empty-state for Currently reading: a nudge plus quick jumps to where the user
+// would pick something to read. Go to Randomizer only appears when there's a
+// backlog to randomize from (#97).
+function readingNowEmptyState(){
+  const hasBacklog = booksData.some(x => (x.status||'').toLowerCase() === 'backlog');
+  const rand = hasBacklog
+    ? `<button class="btn" onclick="gotoTab('randomize')">Go to Randomizer</button>` : '';
+  return `<div class="empty-state">
+      <p style="margin:0 0 1rem">Nothing in progress — start a book from the Books tab or your queue below.</p>
+      <div style="display:flex;gap:.6rem;justify-content:center;flex-wrap:wrap">
+        <button class="btn" onclick="gotoTab('discover')">Go to Discover</button>
+        ${rand}
+      </div>
+    </div>`;
 }
 
 function renderReadingQueue(){
