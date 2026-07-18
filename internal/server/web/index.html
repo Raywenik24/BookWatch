@@ -303,6 +303,11 @@
   /* in-app confirm() replacement (#84) — stacks above any other open modal */
   #confirmModalBackdrop { z-index: 60; }
   #confirmModalBackdrop .modal { max-width: 420px; }
+  /* book/note preview modal (#98 / #12): wider than the shared 600px form modals
+     so the cover + description have room. The LN series variant is wider still
+     (#8 sizing) to fit the per-volume grid. */
+  #previewModal { max-width: 760px; }
+  #previewModal.modal--ln { max-width: 980px; }
   #confirmModalBody p { margin: 0 0 1rem; }
   /* note view/edit modal (#55) */
   .note-open { color: var(--text); text-decoration: none; cursor: pointer; }
@@ -845,7 +850,7 @@
        no status picker. Lives outside the tab sections so it can open from the
        Updates tab (a modal nested in a hidden section never shows). -->
   <div id="previewModalBackdrop" class="modal-backdrop" hidden onclick="if(event.target===this)closeRelPreview()">
-    <div class="modal">
+    <div class="modal" id="previewModal">
       <button class="modal-close" onclick="closeRelPreview()" aria-label="Close">&times;</button>
       <div id="previewModalBody"></div>
     </div>
@@ -1485,6 +1490,7 @@ function openRelPreview(id){
       link:'https://openlibrary.org/works/' + x.work_id, workId:x.work_id,
       description: cached ? cached.description : null }, // null → spinner until fetched
     { mode:'read-only' });
+  $('previewModal').classList.remove('modal--ln');
   $('previewModalBackdrop').hidden = false;
   if(!cached){
     fetchReleaseDetail(x).then(d => {
@@ -1547,6 +1553,7 @@ async function openNotePreview(id){
     { cover: n.cover ? '/api/cover/' + id + '?t=' + Date.now() : '', title:n.title, author:n.author,
       volumes: n.kind === 'book' ? 0 : n.volumes, description:n.description },
     { mode:'read-only' });
+  $('previewModal').classList.remove('modal--ln');
   $('previewModalBackdrop').hidden = false;
 }
 
@@ -1591,6 +1598,8 @@ function renderNoteView(){
       released: isBook ? n.released_en : '', link: n.link, workId: n.work_id,
       volumes: isBook ? 0 : n.volumes, description: n.description },
     { mode:'read-only', linkLabel: isBook ? 'open on OL ↗' : 'open source ↗', headerActions });
+  // LN series with volumes get the wider modal (#98 #8) — room for the volume grid.
+  $('previewModal').classList.toggle('modal--ln', !isBook && !!n.volumes);
   if(!isBook && n.volumes){
     $('previewModalBody').insertAdjacentHTML('beforeend', `<div id="volPanel" class="card" style="margin-top:.7rem"></div>`);
     loadVolumePanel();
