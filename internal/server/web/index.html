@@ -420,7 +420,7 @@
         <input id="addField" placeholder="Light-novel URL, a book title, or an openlibrary.org/works/... link" autocomplete="off" spellcheck="false" onkeydown="if(event.key==='Enter')startAdd()">
         <button class="btn" id="addBtn" onclick="startAdd()">Add</button>
       </div>
-      <div id="addModalBackdrop" class="modal-backdrop" hidden onclick="if(event.target===this)closeAddModal()">
+      <div id="addModalBackdrop" class="modal-backdrop" hidden>
         <div class="modal">
           <button class="modal-close" onclick="closeAddModal()" aria-label="Close">&times;</button>
           <div id="addCandidates"></div>
@@ -3041,7 +3041,7 @@ function renderLNPreview(url, nd){
   // When the preview was reached from a candidate list (the jnovels light-novel
   // fallback, #89), offer a way back to the picker; a pasted source URL has none.
   const headerActions = _addCandidates.length
-    ? `<button class="btn ghost" onclick="backToCandidates()">Change</button>` : '';
+    ? `<button class="btn ghost" onclick="backToCandidates()">← Back to results</button>` : '';
   // cover_data is the source cover inlined as a data: URI (the source host
   // isn't in the CSP img-src whitelist, so a direct URL <img> would be blocked).
   box.innerHTML = bookPreviewModal(
@@ -3276,7 +3276,7 @@ function renderAddConfirm(){
   const box = $('addConfirm'); box.hidden = false;
   const langOpts = CATALOG_LANGS.map(([v,l]) => `<option value="${v}"${v==='eng'?' selected':''}>${l}</option>`).join('');
   const headerActions = _addCandidates.length
-    ? `<button class="btn ghost" onclick="cancelAddConfirm()">Change</button>` : '';
+    ? `<button class="btn ghost" onclick="cancelAddConfirm()">← Back to results</button>` : '';
   // Author-watch is OpenLibrary-only (it needs an OL author id) — a Lubimyczytać
   // book has none, so the LC footer is just the status picker + Add (#60).
   const footer = isLC
