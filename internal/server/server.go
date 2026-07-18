@@ -3,6 +3,7 @@
 package server
 
 import (
+	"context"
 	"crypto/subtle"
 	"embed"
 	"encoding/base64"
@@ -117,6 +118,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/status", s.handleStatus)
 	mux.HandleFunc("GET /api/stream", s.auth(s.stream.ServeHTTP))
 	mux.HandleFunc("GET /api/version", s.handleVersion)
+	mux.HandleFunc("GET /api/update-check", s.handleUpdateCheck)
 	mux.HandleFunc("GET /api/sources", s.handleSources)
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	mux.HandleFunc("GET /api/cover/{id}", s.handleCover)
@@ -336,6 +338,114 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 		"commit":  buildinfo.Commit,
 		"date":    buildinfo.Date,
 	})
+}
+
+// releasesURL points at the GitHub releases page — the manual-download target,
+// since we never self-modify the binary (notify-only, #104).
+const releasesURL = "https://github.com/Raywenik24/BookWatch/releases"
+
+// handleUpdateCheck proxies the GitHub "latest release" for this repo and
+// compares its tag to the running build. Notify-only: on a newer release we
+// hand back the tag, notes, and a link for the user to download/replace the
+// exe themselves (#104). A "dev" build can't be compared, so it just links out.
+// Open, like the other read proxies — no secrets, only public release data.
+func (s *Server) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
+	out := map[string]any{
+		"current":      buildinfo.Version,
+		"releases_url": releasesURL,
+	}
+
+	// Unstamped local builds have no comparable version — just point at releases.
+	if buildinfo.Version == "dev" || buildinfo.Version == "" {
+		out["dev"] = true
+		writeJSON(w, http.StatusOK, out)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		"https://api.github.com/repos/Raywenik24/BookWatch/releases/latest", nil)
+	if err != nil {
+		out["error"] = err.Error()
+		writeJSON(w, http.StatusOK, out)
+		return
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", "BookWatch")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		out["error"] = "could not reach GitHub: " + err.Error()
+		writeJSON(w, http.StatusOK, out)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		out["error"] = fmt.Sprintf("GitHub returned %d", resp.StatusCode)
+		writeJSON(w, http.StatusOK, out)
+		return
+	}
+
+	var rel struct {
+		TagName string `json:"tag_name"`
+		Name    string `json:"name"`
+		HTMLURL string `json:"html_url"`
+		Body    string `json:"body"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&rel); err != nil {
+		out["error"] = "could not parse GitHub response"
+		writeJSON(w, http.StatusOK, out)
+		return
+	}
+
+	latest := strings.TrimPrefix(rel.TagName, "v")
+	out["latest"] = latest
+	out["name"] = rel.Name
+	out["notes"] = rel.Body
+	if rel.HTMLURL != "" {
+		out["html_url"] = rel.HTMLURL
+	}
+	out["update_available"] = compareVersions(latest, strings.TrimPrefix(buildinfo.Version, "v")) > 0
+	writeJSON(w, http.StatusOK, out)
+}
+
+// compareVersions does a dotted-numeric semver compare: >0 if a is newer than
+// b, <0 if older, 0 if equal. Each part keeps only its leading digits (so a
+// "1.2.0-rc1" suffix is ignored), and missing trailing parts count as 0, so
+// "1.2" and "1.2.0" compare equal.
+func compareVersions(a, b string) int {
+	as, bs := strings.Split(a, "."), strings.Split(b, ".")
+	n := len(as)
+	if len(bs) > n {
+		n = len(bs)
+	}
+	for i := 0; i < n; i++ {
+		var ai, bi int
+		if i < len(as) {
+			ai = leadingInt(as[i])
+		}
+		if i < len(bs) {
+			bi = leadingInt(bs[i])
+		}
+		if ai != bi {
+			if ai > bi {
+				return 1
+			}
+			return -1
+		}
+	}
+	return 0
+}
+
+// leadingInt reads the leading run of digits in s as an int; "12-rc1" → 12,
+// "" or a non-numeric part → 0.
+func leadingInt(s string) int {
+	end := 0
+	for end < len(s) && s[end] >= '0' && s[end] <= '9' {
+		end++
+	}
+	n, _ := strconv.Atoi(s[:end])
+	return n
 }
 
 func (s *Server) handleSources(w http.ResponseWriter, r *http.Request) {

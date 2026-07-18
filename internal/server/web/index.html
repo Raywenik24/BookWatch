@@ -838,7 +838,12 @@
       <h2>About BookWatch</h2>
       <div class="card">
         <div class="rule-grid" style="grid-template-columns:160px 1fr">
-          <label>Version</label><div id="aboutVersion">loading…</div>
+          <label>Version</label>
+          <div>
+            <span id="aboutVersion">loading…</span>
+            <button id="updateCheckBtn" class="btn ghost" style="margin-left:.6rem" onclick="checkForUpdates()">Check for updates</button>
+            <div id="updateCheckResult" style="margin-top:.5rem"></div>
+          </div>
           <label>Repository</label><div><a href="https://github.com/Raywenik24/BookWatch" target="_blank" rel="noopener">github.com/Raywenik24/BookWatch</a></div>
           <label>License</label><div>MIT</div>
           <label>Issues &amp; ideas</label><div><a href="https://github.com/Raywenik24/BookWatch/issues" target="_blank" rel="noopener">Report an issue / suggest an idea</a></div>
@@ -4543,6 +4548,41 @@ async function loadVersion(){
   if(v.commit) text += ` (${v.commit.slice(0,7)})`;
   if(v.date) text += ` — built ${v.date}`;
   $('aboutVersion').textContent = text;
+}
+
+// checkForUpdates hits the server-side GitHub proxy (#104). Notify-only: we
+// never touch the running exe — on a newer release we surface the tag, notes,
+// and a download link; the user replaces the binary themselves.
+async function checkForUpdates(){
+  const btn = $('updateCheckBtn'), out = $('updateCheckResult');
+  btn.disabled = true;
+  out.innerHTML = '<span class="muted">Checking…</span>';
+  try {
+    const r = await getJSON('/api/update-check');
+    const rel = r.releases_url || 'https://github.com/Raywenik24/BookWatch/releases';
+    if(r.error){
+      out.innerHTML = `<span class="muted">Couldn't check for updates (${esc(r.error)}). `
+        + `<a href="${esc(rel)}" target="_blank" rel="noopener">See releases</a>.</span>`;
+    } else if(r.dev){
+      out.innerHTML = `<span class="muted">This is a local <code>dev</code> build — nothing to compare against. `
+        + `<a href="${esc(rel)}" target="_blank" rel="noopener">See the latest releases</a>.</span>`;
+    } else if(r.update_available){
+      const link = r.html_url || rel;
+      let html = `<strong>Update available:</strong> v${esc(r.latest)} `
+        + `(you have v${esc(r.current)}). `
+        + `<a href="${esc(link)}" target="_blank" rel="noopener">Download &amp; replace the exe</a>.`;
+      if(r.notes) html += `<details style="margin-top:.4rem"><summary class="muted">Release notes</summary>`
+        + `<pre style="white-space:pre-wrap;margin:.4rem 0 0">${esc(r.notes)}</pre></details>`;
+      out.innerHTML = html;
+    } else {
+      out.innerHTML = `<span class="muted">You're up to date (v${esc(r.current)}).</span>`;
+    }
+  } catch(e){
+    out.innerHTML = `<span class="muted">Couldn't check for updates. `
+      + `<a href="https://github.com/Raywenik24/BookWatch/releases" target="_blank" rel="noopener">See releases</a>.</span>`;
+  } finally {
+    btn.disabled = false;
+  }
 }
 </script>
 </body>
