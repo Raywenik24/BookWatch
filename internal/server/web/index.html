@@ -659,11 +659,11 @@
         <div class="rule-grid" style="grid-template-columns:160px 1fr">
           <label>Password</label>
           <div class="row" style="margin:0">
-            <input id="token" type="password" placeholder="password (for write actions)">
+            <input id="token" name="bw-write-token" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" style="-webkit-text-security:disc;text-security:disc" placeholder="password (for write actions)">
             <button class="btn ghost" onclick="saveToken()">Save token</button>
           </div>
         </div>
-        <p class="muted"><small>Stored on this device. Needed for Books/Sources write actions and Run check.</small></p>
+        <p class="muted"><small>Stored on this device. Needed for Books/Sources write actions and Run check. The browser won't offer to save it — but if it saved one earlier, remove that entry in the browser's own password settings.</small></p>
       </div>
 
       <div class="card">
