@@ -788,6 +788,58 @@ func TestDeleteBook_hardDeletesNoteAndCover(t *testing.T) {
 	}
 }
 
+// Hard-deleting an LN series also wipes its whole _volumes/<Series>/ folder and
+// each volume note's cover attachment (#100). The soft untrack path leaves them.
+func TestDeleteBook_hardWipesVolumeNotesAndCovers(t *testing.T) {
+	h, st, vaultDir := newTestServer(t)
+	attach := filepath.Join(vaultDir, "_attachments")
+	if err := os.MkdirAll(attach, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	series := "Kumo Desu ga Nani ka"
+	seriesCover := notes.CoverName(series, ".jpg")
+	seriesNote := filepath.Join(vaultDir, series+".md")
+	if err := os.WriteFile(seriesNote, []byte("---\ntags:\n  - \"#LightNovel\"\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(attach, seriesCover), []byte("SERIES"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Volume 1 has a cover; volume 2 is a hand-edited placeholder with none.
+	volDir := notes.VolumeDir(seriesNote)
+	if err := os.MkdirAll(volDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	vol1Cover := filepath.Join(attach, "cover_kumo_vol1.jpg")
+	if err := os.WriteFile(vol1Cover, []byte("VOL1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	vol1 := notes.BuildLNVolumeNote(series, 1, 2, "eng", "https://jnovels.com/k1/", "cover_kumo_vol1.jpg", "", "Blurb.", "2026-07-17", false)
+	if err := os.WriteFile(filepath.Join(volDir, "Kumo Desu ga Nani ka Volume 1.md"), []byte(vol1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	vol2 := notes.BuildLNVolumeNote(series, 2, 2, "eng", "", "", "", "", "2026-07-17", true)
+	if err := os.WriteFile(filepath.Join(volDir, "Kumo Desu ga Nani ka Volume 2.md"), []byte(vol2), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	id, _ := st.UpsertBook(series, "https://x/kumo", seriesNote, 2, seriesCover, "Backlog", nil, "ln", "")
+
+	if rec := do(h, "DELETE", fmt.Sprintf("/api/books/%d?hard=1", id), "secret", ""); rec.Code != http.StatusOK {
+		t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(volDir); !os.IsNotExist(err) {
+		t.Errorf("_volumes/<Series>/ folder not wiped: %v", err)
+	}
+	if _, err := os.Stat(vol1Cover); !os.IsNotExist(err) {
+		t.Errorf("volume cover not deleted: %v", err)
+	}
+	if _, err := os.Stat(seriesNote); !os.IsNotExist(err) {
+		t.Errorf("series note not deleted: %v", err)
+	}
+}
+
 func TestWriteBody_sizeCapped(t *testing.T) {
 	h, _, _ := newTestServer(t)
 	big := `{"url":"` + strings.Repeat("a", 2<<20) + `"}` // > 1 MiB cap
@@ -1028,7 +1080,7 @@ func TestFillVolumeManual_andStatus(t *testing.T) {
 	os.WriteFile(seriesNote, []byte("---\ntags:\n  - \"#LightNovel\"\nVolumes: 2\n---\n### "+series+"\n"), 0o644)
 	o := notes.Options{VaultDir: vaultDir, NewNoteDir: "", AttachmentsDir: "_attachments"}
 	notes.CreateLNVolume(o, series, 1, 2, "eng", "https://jnovels.com/t1/", "", "", "Blurb.", false) // resolved
-	notes.CreateLNVolume(o, series, 2, 2, "eng", "", "", "", "", true)                                // incomplete
+	notes.CreateLNVolume(o, series, 2, 2, "eng", "", "", "", "", true)                               // incomplete
 	id, _ := st.UpsertBook(series, "https://jnovels.com/t/", seriesNote, 2, "", "Backlog", nil, "ln", "")
 
 	// Before: volume 2 counts toward the attention badge.

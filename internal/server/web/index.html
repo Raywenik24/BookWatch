@@ -2718,8 +2718,12 @@ let _deleteModal = null; // { id, title }
 function openDeleteModal(id){
   const book = booksData.find(b => b.id === id);
   _deleteModal = { id, title: book ? book.title : '' };
+  const isLN = book && bookKind(book) === 'ln';
+  const warn = isLN
+    ? 'Untrack this session, or delete the note, its cover, and every per-volume note (including hand-edited ones) from the vault for good?'
+    : 'Untrack this session, or delete the note (and its cover) from the vault for good?';
   $('deleteModalBody').innerHTML = `<h3 style="margin-top:0">${esc(_deleteModal.title)}</h3>
-    <p class="muted">Untrack this session, or delete the note (and its cover) from the vault for good?</p>
+    <p class="muted">${esc(warn)}</p>
     <div class="row" style="margin-top:1rem; justify-content:flex-end; gap:.5rem">
       <button class="btn ghost" onclick="closeDeleteModal()">Cancel</button>
       <button class="btn ghost" onclick="untrack(false)">Untrack (this session)</button>

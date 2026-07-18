@@ -1014,12 +1014,44 @@ func (s *Server) handleDeleteBookHard(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	s.deleteVolumeArtifacts(ref)
 	if err := s.st.DeleteBook(ref.ID); err != nil {
 		writeErr(w, err)
 		return
 	}
 	s.st.LogEvent("delete", fmt.Sprintf("Deleted %q (note + cover)", ref.Title))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// deleteVolumeArtifacts wipes an LN series' entire `_volumes/<Series>/` folder on
+// a hard delete (#100) — every #LNVolume note, including hand-edited ones — plus
+// each volume note's cover attachment, which live in the shared attachments dir
+// beside the series cover. Only #LightNovel series have a volumes subtree, so
+// this is a no-op for #Book notes. Best-effort and non-fatal: a hard delete is
+// permanent and the vault's version history (OneDrive) is the safety net, so a
+// stray leftover shouldn't block untracking the series.
+func (s *Server) deleteVolumeArtifacts(ref store.BookRef) {
+	if ref.Kind != "ln" {
+		return
+	}
+	volDir := notes.VolumeDir(ref.Path)
+	entries, err := os.ReadDir(longPathServer(volDir))
+	if err != nil {
+		return // no _volumes/<Series>/ folder — nothing to wipe
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(strings.ToLower(e.Name()), ".md") {
+			continue
+		}
+		n, err := vault.ReadNote(longPathServer(filepath.Join(volDir, e.Name())))
+		if err != nil || n.Cover == "" {
+			continue
+		}
+		if p := s.resolveCover(n.Cover); p != "" {
+			os.Remove(longPathServer(p))
+		}
+	}
+	os.RemoveAll(longPathServer(volDir))
 }
 
 // ── reading log (#63) ─────────────────────────────────────────
