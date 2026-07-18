@@ -443,7 +443,6 @@
       </div>
       <div class="row" id="authorFilterRow">
         <div id="authorSelectMount" style="min-width:200px"></div>
-        <input id="authorQueryInput" placeholder="fuzzy search by author…" autocomplete="off" spellcheck="false" oninput="setAuthorQuery(this.value)" onkeydown="escBlur(event)">
       </div>
       <div class="row filter-bar">
         <button class="btn ghost filter-btn active" data-f="" tabindex="-1" onclick="setStatusFilter('')">All</button>
@@ -1606,7 +1605,7 @@ async function loadVolumePanel(){
       <small class="muted">${filled}/${data.states.length} filled${data.running ? ' · backfilling…' : ''}</small>
     </div>`;
   if(!pending.length){
-    el.innerHTML = header + `<div class="muted" style="margin-top:.4rem">Every volume note is filled.</div>`;
+    el.innerHTML = '';
     return;
   }
   const rows = pending.map(s => `
@@ -1900,7 +1899,6 @@ let statusFilter = '';
 let bookSort = lsGet('book_sort') || 'asc';
 let kindView = lsGet('book_kind_view') || '';
 let authorFilter = '';
-let authorQuery = '';
 function bookKind(x){ return x.kind === 'book' ? 'book' : 'ln'; }
 function setKindView(k){
   kindView = (k === 'ln' || k === 'book') ? k : '';
@@ -1936,10 +1934,6 @@ function updateAuthorOptions(){
     if(!items.some(it => it.value === authorFilter)){ authorFilter = ''; authorPicker.setValue(''); }
   }
 }
-function setAuthorQuery(v){
-  authorQuery = v.trim();
-  renderBooks($('bookFilter') ? $('bookFilter').value : '');
-}
 function setBookView(v){
   bookView = (v === 'grid') ? 'grid' : 'table';
   lsSet('book_view', bookView);
@@ -1970,7 +1964,6 @@ function statusFilterLabel(){
 }
 function booksEmptyMessage(q){
   if(q) return 'No matches for “' + esc(q) + '”.';
-  if(authorQuery) return 'No authors match “' + esc(authorQuery) + '”.';
   if(authorFilter) return 'No books by ' + esc(authorFilter) + '.';
   if(statusFilter === 'validate') return 'No books need validating.';
   if(statusFilter) return 'No books with status “' + esc(statusFilterLabel()) + '” yet.';
@@ -1981,12 +1974,10 @@ function booksEmptyMessage(q){
    prefs (kind, table/grid, sort). Drives the "Clear filters" button (#48). */
 function anyBookFilterActive(){
   const q = $('bookFilter') ? $('bookFilter').value.trim() : '';
-  return !!(q || authorFilter || authorQuery || statusFilter);
+  return !!(q || authorFilter || statusFilter);
 }
 function clearBookFilters(){
   if($('bookFilter')) $('bookFilter').value = '';
-  if($('authorQueryInput')) $('authorQueryInput').value = '';
-  authorQuery = '';
   authorFilter = '';
   if(authorPicker) authorPicker.setValue('');
   setStatusFilter(''); // resets the status buttons and re-renders (also hides this button)
@@ -1998,8 +1989,6 @@ function renderBooks(q){
   if(q) list = list.map(x => ({x, s: fzScore(q, x.title)})).filter(e => e.s >= 0)
                    .sort((a,b) => b.s - a.s).map(e => e.x);
   if(authorFilter) list = list.filter(x => x.author === authorFilter);
-  if(authorQuery) list = list.map(x => ({x, s: fzScore(authorQuery, x.author||'')})).filter(e => e.s >= 0)
-                             .sort((a,b) => b.s - a.s).map(e => e.x);
   if(statusFilter === 'validate'){
     list = list.filter(x => x.read_volumes != null && x.read_volumes > x.volumes);
   } else if(statusFilter){
@@ -2287,8 +2276,6 @@ function readingUnitSub(it){ return authorLinkHTML(it.author); }
 function filterBooksByAuthor(name){
   gotoTab('books');
   if($('bookFilter')) $('bookFilter').value = '';
-  if($('authorQueryInput')) $('authorQueryInput').value = '';
-  authorQuery = '';
   setKindView(''); // an author may span kinds; show all so nothing's hidden
   authorFilter = name;
   updateAuthorOptions();
@@ -3567,7 +3554,7 @@ async function importRetry(){
   connectStatusStream();
 }
 async function importStartOver(){
-  if(!confirm('Discard the current import session and every note the app staged for it? Your own edits to other notes are untouched.')) return;
+  if(!await showConfirm('Discard the current import session and every note the app staged for it? Your own edits to other notes are untouched.', {confirmLabel:'Discard'})) return;
   const r = await send('POST','/api/import/calibre/start-over'); if(need(r)) return;
   if(r.status===409) return toast('Stop the running import first.','info');
   toast(r.ok?'Import session discarded.':'Error: '+(r.data.error||r.status), r.ok?'success':'error');

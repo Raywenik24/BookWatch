@@ -193,7 +193,7 @@ func DownloadCover(coverURL, dest string) error {
 		return fmt.Errorf("status %d", resp.StatusCode)
 	}
 	if ct := resp.Header.Get("Content-Type"); ct != "" && !strings.HasPrefix(ct, "image/") {
-		return fmt.Errorf("that URL is not an image (Content-Type: %s)", ct)
+		return fmt.Errorf("that URL is not an image")
 	}
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return err
