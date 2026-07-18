@@ -153,6 +153,12 @@
   .cover-vol { position: absolute; top: .4rem; left: .4rem; font-size: .72rem; font-weight: 600; padding: .1rem .4rem;
         border-radius: 4px; border: 1px solid var(--mauve); color: var(--mauve);
         background: color-mix(in srgb, var(--crust) 90%, transparent); }
+  /* attention badge (#90): an LN series with incomplete/missing volume notes to
+     back-fill. Bottom-right so it clears the vol badge + hover corner buttons. */
+  .cover-attn { position: absolute; bottom: .4rem; right: .4rem; z-index: 2; min-width: 1.4rem; height: 1.4rem;
+        padding: 0 .35rem; display: inline-flex; align-items: center; justify-content: center;
+        font-size: .74rem; font-weight: 700; border-radius: 999px; cursor: help;
+        background: var(--yellow); color: var(--crust); box-shadow: 0 1px 4px rgba(0,0,0,.45); }
   /* unverified-cover marker (#41): a cover borrowed by ISBN alone, author unmatched */
   .unsafe-mark { position: absolute; top: .4rem; left: .4rem; z-index: 2; width: 1.4rem; height: 1.4rem;
         display: inline-flex; align-items: center; justify-content: center; font-size: .82rem; font-weight: 700;
@@ -1567,13 +1573,134 @@ function renderNoteView(){
   const n = _noteModal.note, isBook = _noteModal.kind === 'book';
   const readBtn = isReadingOrQueued(_noteModal.id) ? ''
     : `<button class="btn ghost" onclick="readFromNoteModal(${_noteModal.id})" title="Start reading / add to queue">＋ Read</button>`;
-  const headerActions = `${readBtn}
+  // LN series get a "Backfill volumes" action (#90 phase 2): fetch each volume's
+  // own cover + description from jnovels into per-volume notes.
+  const backfillBtn = (isBook || !n.volumes) ? ''
+    : `<button class="btn ghost" onclick="backfillVolumes(${_noteModal.id})" title="Fetch per-volume covers & descriptions from jnovels">Backfill volumes</button>`;
+  const headerActions = `${readBtn}${backfillBtn}
     <button class="btn ghost" onclick="startNoteEdit()">Edit</button>`;
   $('previewModalBody').innerHTML = bookPreviewModal(
     { cover: noteCoverSrc(), title: n.title, author: n.author,
       released: isBook ? n.released_en : '', link: n.link, workId: n.work_id,
       volumes: isBook ? 0 : n.volumes, description: n.description },
     { mode:'read-only', linkLabel: isBook ? 'open on OL ↗' : 'open source ↗', headerActions });
+  if(!isBook && n.volumes){
+    $('previewModalBody').insertAdjacentHTML('beforeend', `<div id="volPanel" class="card" style="margin-top:.7rem"></div>`);
+    loadVolumePanel();
+  }
+}
+
+// loadVolumePanel fills the note modal's per-volume status panel: how many volume
+// notes are filled, and a paste-a-link row for each still-incomplete/missing one.
+async function loadVolumePanel(){
+  const el = $('volPanel');
+  if(!el || !_noteModal) return;
+  const id = _noteModal.id;
+  let data;
+  try { data = await getJSON('/api/books/' + id + '/volumes'); } catch(e){ el.innerHTML = ''; return; }
+  if(!data || !Array.isArray(data.states) || !data.states.length){ el.innerHTML = ''; return; }
+  const pending = data.states.filter(s => s.state !== 'resolved');
+  const filled = data.states.length - pending.length;
+  const header = `<div class="row" style="justify-content:space-between;align-items:center">
+      <b>Volumes</b>
+      <small class="muted">${filled}/${data.states.length} filled${data.running ? ' · backfilling…' : ''}</small>
+    </div>`;
+  if(!pending.length){
+    el.innerHTML = header + `<div class="muted" style="margin-top:.4rem">Every volume note is filled.</div>`;
+    return;
+  }
+  const rows = pending.map(s => `
+    <div class="vol-item" data-vol="${s.volume}" style="margin-top:.5rem">
+      <div class="vol-row" style="display:flex;gap:.4rem;align-items:center">
+        <span class="badge ${s.state === 'incomplete' ? 'pending' : ''}" style="min-width:4rem;text-align:center">Vol ${s.volume}</span>
+        <span class="muted" style="min-width:5rem">${s.state}</span>
+        <input type="text" class="vol-url" placeholder="paste jnovels volume link" spellcheck="false" style="flex:1;min-width:0">
+        <button class="btn ghost" onclick="resolveVolume(${id}, ${s.volume}, this)">Fill</button>
+        <button class="btn ghost" onclick="toggleVolManual(this)" title="Fill in the details by hand">✎</button>
+      </div>
+      <div class="vol-manual" hidden style="margin-top:.4rem;padding:.55rem;border:1px solid var(--surface0);border-radius:6px">
+        <textarea class="vm-desc" rows="4" placeholder="Description" spellcheck="false" style="width:100%;box-sizing:border-box"></textarea>
+        <div class="row" style="gap:.4rem;margin-top:.4rem;flex-wrap:wrap">
+          <input type="text" class="vm-cover" placeholder="Cover image URL (optional)" spellcheck="false" style="flex:1;min-width:12rem">
+          <input type="text" class="vm-released" placeholder="Released (optional)" spellcheck="false" style="width:9rem">
+        </div>
+        <div class="row" style="gap:.4rem;margin-top:.4rem;align-items:center;flex-wrap:wrap">
+          <input type="file" class="vm-file" accept="image/*">
+          <input type="text" class="vm-link" placeholder="Source link (optional)" spellcheck="false" style="flex:1;min-width:10rem">
+        </div>
+        <div class="row" style="gap:.4rem;margin-top:.5rem;justify-content:flex-end">
+          <button class="btn ghost" onclick="toggleVolManual(this)">Cancel</button>
+          <button class="btn" onclick="fillVolumeManual(${id}, ${s.volume}, this)">Save</button>
+        </div>
+      </div>
+    </div>`).join('');
+  el.innerHTML = header + rows +
+    `<div class="muted" style="margin-top:.5rem;font-size:.85em">Missing volumes are kept as <code>#LNVolume/incomplete</code> notes. Retry them all with “Backfill volumes”, paste a jnovels link, or use <b>✎</b> to fill the details by hand.</div>`;
+}
+
+// toggleVolManual shows/hides a volume's by-hand fill form (the ✎ / Cancel).
+function toggleVolManual(btn){
+  const item = btn.closest('.vol-item'); if(!item) return;
+  const form = item.querySelector('.vol-manual');
+  form.hidden = !form.hidden;
+}
+
+// fillVolumeManual saves a volume note from the by-hand form — description, an
+// optional cover (uploaded file or URL), released, and source link — for a volume
+// that doesn't exist on jnovels.
+async function fillVolumeManual(id, vol, btn){
+  const item = btn.closest('.vol-item'); if(!item) return;
+  const q = sel => item.querySelector(sel);
+  const desc = q('.vm-desc').value.trim();
+  const coverUrl = q('.vm-cover').value.trim();
+  const released = q('.vm-released').value.trim();
+  const link = q('.vm-link').value.trim();
+  const file = q('.vm-file').files[0];
+  if(!desc && !coverUrl && !file && !link && !released)
+    return toast('Add a description or cover first.','info');
+  btn.disabled = true;
+  let r;
+  try {
+    if(file){
+      const fd = new FormData();
+      fd.append('cover', file);
+      fd.append('description', desc); fd.append('released', released); fd.append('link', link);
+      const resp = await fetch(`/api/books/${id}/volumes/${vol}/fill`, {
+        method:'POST', headers:{ 'X-BookWatch-Token': token() }, body: fd });
+      r = { ok:resp.ok, status:resp.status, data: await resp.json().catch(()=>({})) };
+    } else {
+      r = await send('POST', `/api/books/${id}/volumes/${vol}/fill`,
+        { description: desc, cover_url: coverUrl, released, link });
+    }
+  } finally { btn.disabled = false; }
+  if(need(r)) return;
+  if(!r.ok) return toast(r.data.error || ('Error: ' + r.status), r.status === 409 ? 'info' : 'error');
+  toast(`Volume ${vol} filled.`,'success');
+  loadVolumePanel(); loadBackfillStatus();
+}
+
+async function backfillVolumes(id){
+  const r = await send('POST', '/api/books/' + id + '/backfill-volumes');
+  if(need(r)) return;
+  if(r.status === 409) return toast('A backfill is already running.','info');
+  if(!r.ok) return toast('Error: ' + (r.data.error || r.status), 'error');
+  // Progress + completion come from the SSE `backfill` stream (onBackfill shows a
+  // per-series toast that finishes on its own) — no lingering busy toast here.
+  toast('Backfill started.','info');
+  loadVolumePanel();
+}
+
+async function resolveVolume(id, vol, btn){
+  const row = btn.closest('.vol-row');
+  const url = (row.querySelector('.vol-url').value || '').trim();
+  if(!url) return toast('Paste the jnovels volume link first.','info');
+  btn.disabled = true;
+  const r = await send('POST', `/api/books/${id}/volumes/${vol}/resolve`, { url });
+  btn.disabled = false;
+  if(need(r)) return;
+  if(!r.ok) return toast(r.data.error || ('Error: ' + r.status), r.status === 409 ? 'info' : 'error');
+  toast(`Volume ${vol} filled.`,'success');
+  loadVolumePanel(); loadBackfillStatus();
 }
 
 // readFromNoteModal closes the note modal and opens the start/queue form for the
@@ -1737,6 +1864,7 @@ async function sendCover(id, pending){
   return send('POST', url, { url: pending.url });
 }
 let booksData = [];
+let _backfillStatus = {}; // book id → count of incomplete/missing volumes (#90)
 async function loadBooks(){
   booksData = await getJSON('/api/books') || [];
   updateAuthorOptions();
@@ -1744,6 +1872,19 @@ async function loadBooks(){
   // A /randomizer deep-link (#62) can activate the tab before books arrive —
   // re-roll once they do so it isn't stuck on the empty state.
   if($('randomize').classList.contains('active')) rerollRandomize();
+  loadBackfillStatus();
+}
+// loadBackfillStatus fetches which LN series still have volumes to back-fill and
+// re-renders the grid so their covers get the attention badge. Non-blocking — the
+// grid shows first, badges appear once the (cached) scan returns.
+async function loadBackfillStatus(){
+  try { _backfillStatus = await getJSON('/api/books/backfill-status') || {}; }
+  catch(e){ _backfillStatus = {}; }
+  // Always re-render when the Books grid is showing — this both adds badges and,
+  // crucially, *clears* them once a series is fully back-filled (an empty status
+  // must still repaint, or a stale badge lingers until the next manual refresh).
+  if($('books').classList.contains('active'))
+    renderBooks($('bookFilter') ? $('bookFilter').value : '');
 }
 let logTab = lsGet('log_tab') || 'activity';
 function setLogTab(t){
@@ -1891,13 +2032,15 @@ function renderBooksGrid(list, q){
       : '';
     const isBook = bookKind(x) === 'book';
     const vol = (!isBook && x.volumes) ? `<span class="cover-vol" title="${x.volumes} volume${x.volumes===1?'':'s'}">${x.volumes}</span>` : '';
+    const nBackfill = _backfillStatus[x.id] || 0;
+    const attn = (!isBook && nBackfill) ? `<span class="cover-attn tip" data-tip="${nBackfill} volume${nBackfill===1?'':'s'} need back-filling — open the note to fix">⚠ ${nBackfill}</span>` : '';
     const meta = isBook
       ? `<div class="cover-title" style="padding-top:0"><small class="muted">${esc([x.author, x.status].filter(Boolean).join(' · '))}</small></div>`
       : '';
     return `<div class="cover-card${x.cover ? '' : ' nocover'}">
       <a class="cover-link" href="#" tabindex="-1" onclick="openNoteModal(${x.id});return false" title="View / edit note">
         ${img}<span class="cover-title">${fzHighlight(x.title, q)}</span>${meta}</a>
-      ${vol}
+      ${vol}${attn}
       <button class="cover-read" title="Start reading / add to queue" aria-label="Start reading / add to queue" tabindex="-1" onclick="openReadingAdd(${x.id})">＋</button>
       <button class="cover-x" title="${esc(UNTRACK_TIP)}" aria-label="Untrack" tabindex="-1" onclick="openDeleteModal(${x.id})">&times;</button>
     </div>`;
@@ -2163,8 +2306,12 @@ function rdVolBadge(it){ return it.volume ? `<span class="cover-vol" title="Volu
 // rdTileInner is the shared cover-link + badges of a reading tile. extraSub is an
 // optional pre-escaped snippet appended to the sub line (e.g. "since <date>").
 function rdTileInner(it, extraSub){
+  // An LN volume asks for the volume's own cover (?vol=N) — the server serves the
+  // #LNVolume note's cover, falling back to the series cover when it's missing
+  // (backfill still running, or an unresolved volume) (#90).
+  const coverURL = `/api/cover/${it.book_id}` + (it.volume ? `?vol=${encodeURIComponent(it.volume)}` : '');
   const img = it.cover
-    ? `<img class="cover-img" src="/api/cover/${it.book_id}" alt="" draggable="false" loading="lazy" onerror="this.closest('.cover-card').classList.add('nocover');this.remove();">`
+    ? `<img class="cover-img" src="${coverURL}" alt="" draggable="false" loading="lazy" onerror="this.closest('.cover-card').classList.add('nocover');this.remove();">`
     : '';
   const sub = [readingUnitSub(it), extraSub].filter(Boolean).join(' · ');
   return `<a class="cover-link" href="#" tabindex="-1" onclick="openNoteModal(${it.book_id});return false" title="View / edit note">
@@ -2742,6 +2889,7 @@ function connectStatusStream(){
     onEvent: (name, data) => {
       if(name==='status'){ try { onStatus(JSON.parse(data)); } catch(e){} }
       else if(name==='import'){ try { onImportStatus(JSON.parse(data)); } catch(e){} }
+      else if(name==='backfill'){ try { onBackfill(JSON.parse(data)); } catch(e){} }
     },
     onFatal: () => { statusStream = null; }, // 401 (no/blank token) — stop, don't hammer
   });
@@ -3271,6 +3419,33 @@ async function saveImportSettings(){
 
 // onImportStatus paints the whole Import view from one status frame. Called from
 // the SSE `import` handler and from the seed read in loadImport.
+// onBackfill drives a per-series toast for the LN volume-note backfill (#90):
+// progress while it runs, a summary when it finishes. On completion it refreshes
+// the Reading tab (so the freshly-fetched volume covers appear) and busts nothing
+// else — volume notes are untracked, so Books is unaffected.
+const _backfillToasts = {};
+function onBackfill(b){
+  b = b || {};
+  const key = b.series || '';
+  if(!key) return;
+  if(b.state === 'running'){
+    const label = `Fetching volume covers for “${b.series}”… ${b.done||0}/${b.total||0}`;
+    if(_backfillToasts[key]) _backfillToasts[key].update(label, 'busy');
+    else _backfillToasts[key] = toast(label, 'busy');
+    return;
+  }
+  // done
+  const resolved = b.resolved||0, incomplete = b.incomplete||0;
+  const msg = `“${b.series}” volumes: ${resolved} fetched` + (incomplete ? `, ${incomplete} to fill later` : '');
+  if(_backfillToasts[key]) _backfillToasts[key].update(msg, incomplete ? 'info' : 'success');
+  else toast(msg, incomplete ? 'info' : 'success');
+  delete _backfillToasts[key];
+  if($('reading') && $('reading').classList.contains('active')) loadReading();
+  // Refresh the note-modal volume panel if it's open for this series.
+  if($('volPanel')) loadVolumePanel();
+  loadBackfillStatus(); // update the Books-grid attention badges
+}
+
 function onImportStatus(s){
   s = s || {};
   const state = s.state || 'idle';

@@ -139,6 +139,36 @@ func TestParseNovelHTML_inlineLabelParagraphFallback(t *testing.T) {
 	}
 }
 
+// jnovels' newer per-volume posts wrap the synopsis in a Kobo collapsible widget:
+// the blurb sits as a bare text node inside a *nested* div.synopsis-description
+// (no <p> to find), and an outer div.synopsis-description wraps the widget. The
+// old ".First() + <p>-only" extraction returned "" here (verified live on
+// who-killed-the-hero-tale-of-the-prophecy-volume-2); the directText fallback
+// must recover the blurb.
+const novelPageKoboWidget = `<!doctype html><html><body>
+<h1 class="post-title entry-title">Who Killed the Hero Volume 2 Epub</h1>
+<div class="featured-media"><img src="/covers/w.jpg"></div>
+<div class="synopsis-description">
+  <div id="synopsis" class="item-synopsis">
+    <div class="collapsible-synopsis" data-kobo-gizmo="Collapsible.Synopsis">
+      <div class="synopsis-description">Tasked with assigning a Hero to defeat the Demon Lord is an ambiguous figure known as the Prophet.</div>
+    </div>
+  </div>
+</div>
+<ol><li>VOLUME 01 Epub</li></ol>
+</body></html>`
+
+func TestParseNovelHTML_koboWidgetSynopsis(t *testing.T) {
+	nd, err := ParseNovelHTML(novelPageKoboWidget, DefaultRules())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "Tasked with assigning a Hero to defeat the Demon Lord is an ambiguous figure known as the Prophet."
+	if nd.Description != want {
+		t.Errorf("desc %q, want %q", nd.Description, want)
+	}
+}
+
 func TestParseNovelHTML_missingTitle(t *testing.T) {
 	if _, err := ParseNovelHTML(`<html><body><ol><li>VOLUME 1</li></ol></body></html>`, DefaultRules()); err == nil {
 		t.Error("expected error on missing title")

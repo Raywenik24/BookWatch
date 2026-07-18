@@ -22,6 +22,21 @@ func TestCoverName(t *testing.T) {
 	}
 }
 
+func TestSanitize_allVolumes(t *testing.T) {
+	cases := map[string]string{
+		"Download Kumo Desu ga Nani ka all volumes Epub": "Kumo Desu ga Nani ka", // full jnovels aggregate title
+		"Kumo Desu ga Nani ka all volumes":               "Kumo Desu ga Nani ka",
+		"Kumo Desu ga Nani ka ALL VOLUMES":               "Kumo Desu ga Nani ka", // case-insensitive
+		"Overlord":                                       "Overlord",             // no-op
+		"The All Volumes Society":                        "The All Volumes Society", // only a trailing tag is stripped
+	}
+	for in, want := range cases {
+		if got := Sanitize(in, false); got != want {
+			t.Errorf("Sanitize(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func writeBookNote(t *testing.T, dir, base string) string {
 	t.Helper()
 	p := filepath.Join(dir, base+".md")

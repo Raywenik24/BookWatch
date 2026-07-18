@@ -37,7 +37,12 @@ const maxCoverBytes = 16 << 20 // 16 MiB
 var (
 	dlPrefixRE = regexp.MustCompile(`(?i)^Download\s+`)
 	epubSufRE  = regexp.MustCompile(`(?i)\s*(Light Novel )?Epub$`)
-	badCharRE  = regexp.MustCompile(`[<>"/\\|?*]`)
+	// allVolSufRE strips jnovels' " all volumes" aggregate-page tag from a scraped
+	// title ("Kumo Desu ga Nani ka all volumes" → "Kumo Desu ga Nani ka"), the same
+	// way the "Download" lead-in and the format suffix are dropped. Applied after
+	// the format suffix so "… all volumes Epub" reduces fully.
+	allVolSufRE = regexp.MustCompile(`(?i)\s+all volumes$`)
+	badCharRE   = regexp.MustCompile(`[<>"/\\|?*]`)
 )
 
 // DupChecker is the slice of the store this package needs (optional).
@@ -70,6 +75,7 @@ func IsValidURL(u string) bool {
 func Sanitize(title string, removeSpaces bool) string {
 	title = dlPrefixRE.ReplaceAllString(title, "")
 	title = epubSufRE.ReplaceAllString(title, "")
+	title = allVolSufRE.ReplaceAllString(title, "")
 	title = strings.ReplaceAll(title, ":", " -")
 	title = badCharRE.ReplaceAllString(title, "")
 	title = strings.TrimSpace(title)

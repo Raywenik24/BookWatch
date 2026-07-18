@@ -907,3 +907,159 @@ func TestCSPAllowsLCCovers(t *testing.T) {
 		t.Errorf("CSP img-src missing lubimyczytac.pl: %q", csp)
 	}
 }
+
+// The reading tile for an LN volume requests that volume's own cover via ?vol=N
+// (#90): the server serves the #LNVolume note's cover, and falls back to the
+// series cover when the volume note is missing or coverless.
+func TestCover_volumeOverride(t *testing.T) {
+	h, st, vaultDir := newTestServer(t)
+	attach := filepath.Join(vaultDir, "_attachments")
+	if err := os.MkdirAll(attach, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Distinct bytes so we can tell which cover was served.
+	if err := os.WriteFile(filepath.Join(attach, "cover_series.jpg"), []byte("SERIES-COVER"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(attach, "cover_vol3.jpg"), []byte("VOLUME-3-COVER"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	seriesNote := filepath.Join(vaultDir, "Kumo Desu ga Nani ka.md")
+	if err := os.WriteFile(seriesNote, []byte("---\nSeries: Kumo Desu ga Nani ka\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// One resolved volume note (index 3, has a cover) under _volumes/<Series>/.
+	volDir := notes.VolumeDir(seriesNote)
+	if err := os.MkdirAll(volDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	vol3 := notes.BuildLNVolumeNote("Kumo Desu ga Nani ka", 3, 10, "eng", "https://jnovels.com/kumo-vol-3-epub/", "cover_vol3.jpg", "", "Blurb.", "2026-07-17", false)
+	if err := os.WriteFile(filepath.Join(volDir, "Kumo Desu ga Nani ka Volume 3.md"), []byte(vol3), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	id, _ := st.UpsertBook("Kumo Desu ga Nani ka", "https://x/kumo", seriesNote, 10, "cover_series.jpg", "Backlog", nil, "ln", "")
+
+	// ?vol=3 → the volume's own cover.
+	if rec := do(h, "GET", fmt.Sprintf("/api/cover/%d?vol=3", id), "", ""); rec.Body.String() != "VOLUME-3-COVER" {
+		t.Errorf("?vol=3 served %q, want the volume-3 cover", rec.Body.String())
+	}
+	// ?vol=7 (no such volume note) → falls back to the series cover.
+	if rec := do(h, "GET", fmt.Sprintf("/api/cover/%d?vol=7", id), "", ""); rec.Body.String() != "SERIES-COVER" {
+		t.Errorf("?vol=7 served %q, want the series cover fallback", rec.Body.String())
+	}
+	// No ?vol → the series cover.
+	if rec := do(h, "GET", fmt.Sprintf("/api/cover/%d", id), "", ""); rec.Body.String() != "SERIES-COVER" {
+		t.Errorf("no vol served %q, want the series cover", rec.Body.String())
+	}
+}
+
+// The volume-status endpoint reports resolved/incomplete/missing per volume so
+// the note-modal reviewer can list what still needs filling (#90 phase 2).
+func TestVolumeStatesEndpoint(t *testing.T) {
+	h, st, vaultDir := newTestServer(t)
+	series := "Kumo Desu ga Nani ka"
+	seriesNote := filepath.Join(vaultDir, series+".md")
+	if err := os.WriteFile(seriesNote, []byte("---\ntags:\n  - \"#LightNovel\"\nVolumes: 3\n---\n### "+series+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	o := notes.Options{VaultDir: vaultDir, NewNoteDir: "", AttachmentsDir: "_attachments"}
+	if _, err := notes.CreateLNVolume(o, series, 1, 3, "eng", "https://jnovels.com/k1/", "", "", "Blurb.", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := notes.CreateLNVolume(o, series, 2, 3, "eng", "", "", "", "", true); err != nil {
+		t.Fatal(err)
+	}
+	id, _ := st.UpsertBook(series, "https://jnovels.com/kumo/", seriesNote, 3, "", "Backlog", nil, "ln", "")
+
+	rec := do(h, "GET", fmt.Sprintf("/api/books/%d/volumes", id), "", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET volumes: %d", rec.Code)
+	}
+	var out struct {
+		Volumes int `json:"volumes"`
+		States  []struct {
+			Volume int    `json:"volume"`
+			State  string `json:"state"`
+		} `json:"states"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &out)
+	if out.Volumes != 3 || len(out.States) != 3 {
+		t.Fatalf("got volumes=%d states=%d, want 3/3", out.Volumes, len(out.States))
+	}
+	want := []string{"resolved", "incomplete", "missing"}
+	for i, w := range want {
+		if out.States[i].State != w {
+			t.Errorf("volume %d = %q, want %q", i+1, out.States[i].State, w)
+		}
+	}
+}
+
+// The backfill + resolve endpoints reject non-LN books and bad input before any
+// network work.
+func TestBackfillEndpoints_guards(t *testing.T) {
+	h, st, vaultDir := newTestServer(t)
+	bookNote := filepath.Join(vaultDir, "A Regular Book.md")
+	os.WriteFile(bookNote, []byte("---\ntags:\n  - \"#Book\"\n---\n"), 0o644)
+	bookID, _ := st.UpsertBook("A Regular Book", "https://x/1", bookNote, 0, "", "Backlog", nil, "book", "Auth")
+
+	// Non-LN → 400.
+	if rec := do(h, "POST", fmt.Sprintf("/api/books/%d/backfill-volumes", bookID), "secret", ""); rec.Code != http.StatusBadRequest {
+		t.Errorf("backfill on a #Book: got %d, want 400", rec.Code)
+	}
+	// Resolve with a bad URL → 400 (before any scrape).
+	if rec := do(h, "POST", fmt.Sprintf("/api/books/%d/volumes/1/resolve", bookID), "secret", `{"url":"not a url"}`); rec.Code != http.StatusBadRequest {
+		t.Errorf("resolve bad url: got %d, want 400", rec.Code)
+	}
+	// Write routes need auth.
+	if rec := do(h, "POST", fmt.Sprintf("/api/books/%d/backfill-volumes", bookID), "", ""); rec.Code != http.StatusUnauthorized {
+		t.Errorf("backfill without token: got %d, want 401", rec.Code)
+	}
+}
+
+// Manual fill writes a resolved volume note from typed values (the reviewer's
+// fallback for a volume that isn't on jnovels), and the backfill-status endpoint
+// then drops it from the attention counts.
+func TestFillVolumeManual_andStatus(t *testing.T) {
+	h, st, vaultDir := newTestServer(t)
+	series := "Test Series"
+	seriesNote := filepath.Join(vaultDir, series+".md")
+	os.WriteFile(seriesNote, []byte("---\ntags:\n  - \"#LightNovel\"\nVolumes: 2\n---\n### "+series+"\n"), 0o644)
+	o := notes.Options{VaultDir: vaultDir, NewNoteDir: "", AttachmentsDir: "_attachments"}
+	notes.CreateLNVolume(o, series, 1, 2, "eng", "https://jnovels.com/t1/", "", "", "Blurb.", false) // resolved
+	notes.CreateLNVolume(o, series, 2, 2, "eng", "", "", "", "", true)                                // incomplete
+	id, _ := st.UpsertBook(series, "https://jnovels.com/t/", seriesNote, 2, "", "Backlog", nil, "ln", "")
+
+	// Before: volume 2 counts toward the attention badge.
+	rec := do(h, "GET", "/api/books/backfill-status", "", "")
+	var status map[string]int
+	json.Unmarshal(rec.Body.Bytes(), &status)
+	if status[fmt.Sprint(id)] != 1 {
+		t.Fatalf("pre-fill status = %v, want {%d:1}", status, id)
+	}
+
+	// Fill volume 2 by hand (description only, no cover).
+	rec = do(h, "POST", fmt.Sprintf("/api/books/%d/volumes/2/fill", id), "secret", `{"description":"Hand-written blurb."}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("fill: %d — %s", rec.Code, rec.Body.String())
+	}
+	// The note is now a resolved #LNVolume with the typed description.
+	data, _ := os.ReadFile(filepath.Join(vaultDir, "_volumes", series, "Test Series Volume 2.md"))
+	if !strings.Contains(string(data), "Hand-written blurb.") || strings.Contains(string(data), "#LNVolume/incomplete") {
+		t.Errorf("filled note wrong:\n%s", data)
+	}
+
+	// After: the status cache was busted and volume 2 no longer counts.
+	rec = do(h, "GET", "/api/books/backfill-status", "", "")
+	var after map[string]int
+	json.Unmarshal(rec.Body.Bytes(), &after)
+	if _, still := after[fmt.Sprint(id)]; still {
+		t.Errorf("post-fill status still flags the series: %v", after)
+	}
+
+	// Filling an already-resolved volume is refused.
+	if rec := do(h, "POST", fmt.Sprintf("/api/books/%d/volumes/1/fill", id), "secret", `{"description":"x"}`); rec.Code != http.StatusConflict {
+		t.Errorf("fill resolved volume: got %d, want 409", rec.Code)
+	}
+}

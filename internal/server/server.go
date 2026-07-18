@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -68,6 +69,21 @@ type Server struct {
 	importBusy  bool
 	importTitle string
 
+	// backfillActive tracks which LN series currently have a per-volume backfill
+	// job running (#90), keyed by series title, so a second add/backfill of the
+	// same series can't fan out a duplicate burst of jnovels requests. Guarded by
+	// backfillMu.
+	backfillMu     sync.Mutex
+	backfillActive map[string]bool
+
+	// bfStatus caches the per-LN-series count of incomplete/missing volumes (a
+	// _volumes scan) so the Books grid can badge covers wanting a backfill without
+	// re-scanning on every render. Rebuilt on TTL or when a backfill/resolve/fill
+	// changes a volume note. Guarded by bfStatusMu.
+	bfStatusMu sync.Mutex
+	bfStatus   map[string]int
+	bfStatusAt time.Time
+
 	// discover caches the jnovels Discover feeds (#91). Latest changes slowly, so
 	// both feeds are served from cache with a TTL; the Refresh/Reroll buttons
 	// force a fresh scrape past the cache. Guarded by discoverMu.
@@ -84,7 +100,7 @@ type Server struct {
 var coverIdxTTL = 5 * time.Minute
 
 func New(cfg config.Config, st *store.Store, sc *scraper.Client, sched *scheduler.Scheduler, ol provider.Provider, gb *provider.GBClient, gr *provider.GRClient, lc *provider.LCClient) *Server {
-	s := &Server{cfg: cfg, st: st, sc: sc, sched: sched, ol: ol, gb: gb, gr: gr, lc: lc, stream: sse.New()}
+	s := &Server{cfg: cfg, st: st, sc: sc, sched: sched, ol: ol, gb: gb, gr: gr, lc: lc, stream: sse.New(), backfillActive: map[string]bool{}}
 	// Push a fresh status frame on every scheduler state change (start, each
 	// book, finish) so subscribers see progress the instant it moves.
 	sched.OnChange(func() { s.stream.Publish("status", s.statusPayload()) })
@@ -143,6 +159,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/books/{id}/note", s.handleReadNote)
 	mux.HandleFunc("PUT /api/books/{id}/note", s.auth(s.handleEditNote))
 	mux.HandleFunc("POST /api/books/{id}/cover", s.authLimited(s.handleSetCover, maxCoverUploadBytes))
+	mux.HandleFunc("GET /api/books/backfill-status", s.handleBackfillStatus)
+	mux.HandleFunc("GET /api/books/{id}/volumes", s.handleVolumeStates)
+	mux.HandleFunc("POST /api/books/{id}/backfill-volumes", s.auth(s.handleBackfillVolumes))
+	mux.HandleFunc("POST /api/books/{id}/volumes/{n}/resolve", s.auth(s.handleResolveVolume))
+	mux.HandleFunc("POST /api/books/{id}/volumes/{n}/fill", s.authLimited(s.handleFillVolume, maxCoverUploadBytes))
 	mux.HandleFunc("DELETE /api/books/{id}", s.auth(s.handleDeleteBook))
 	mux.HandleFunc("POST /api/sources", s.auth(s.handleUpsertSource))
 	mux.HandleFunc("DELETE /api/sources/{id}", s.auth(s.handleDeleteSource))
@@ -330,14 +351,14 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"effective": map[string]string{
-			"vault_dir":            s.effective("vault_dir", s.cfg.VaultDir),
-			"scan_root":            s.effective("scan_root", s.cfg.ScanRoot),
-			"new_note_dir":         s.effective("new_note_dir", s.cfg.NewNoteDir),
-			"attachments_dir":      s.effective("attachments_dir", s.cfg.AttachmentsDir),
-			"book_scan_root":       s.effectiveBookScanRoot(),
-			"book_new_note_dir":    s.effectiveBookNewNoteDir(),
-			"book_attachments_dir": s.effectiveBookAttachmentsDir(),
-			"reading_log_path":     s.effective("reading_log_path", s.cfg.ReadingLogPath),
+			"vault_dir":                     s.effective("vault_dir", s.cfg.VaultDir),
+			"scan_root":                     s.effective("scan_root", s.cfg.ScanRoot),
+			"new_note_dir":                  s.effective("new_note_dir", s.cfg.NewNoteDir),
+			"attachments_dir":               s.effective("attachments_dir", s.cfg.AttachmentsDir),
+			"book_scan_root":                s.effectiveBookScanRoot(),
+			"book_new_note_dir":             s.effectiveBookNewNoteDir(),
+			"book_attachments_dir":          s.effectiveBookAttachmentsDir(),
+			"reading_log_path":              s.effective("reading_log_path", s.cfg.ReadingLogPath),
 			"ln_check_cron":                 s.effective("ln_check_cron", s.cfg.CheckCron),
 			"tracker_check_cron":            s.effective("tracker_check_cron", s.cfg.TrackerCron),
 			"calibre_library_path":          s.effective("calibre_library_path", s.cfg.CalibreLibraryPath),
@@ -358,6 +379,17 @@ func (s *Server) handleCover(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errBody("bad id"))
 		return
 	}
+	// A reading tile for an LN volume asks for that volume's own cover via ?vol=N
+	// (#90): the untracked #LNVolume note under _volumes/<Series>/ carries it. When
+	// the volume has no note or no cover yet (backfill still running, or a miss),
+	// fall through to the series cover so the tile is never blank.
+	if vol := strings.TrimSpace(r.URL.Query().Get("vol")); vol != "" {
+		if p := s.volumeCoverPath(id, vol); p != "" {
+			s.serveCoverFile(w, r, p)
+			return
+		}
+	}
+
 	cover, err := s.st.BookCover(id)
 	if err != nil {
 		writeErr(w, err)
@@ -372,7 +404,12 @@ func (s *Server) handleCover(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	f, err := os.Open(p)
+	s.serveCoverFile(w, r, p)
+}
+
+// serveCoverFile streams a cover image file with its content type.
+func (s *Server) serveCoverFile(w http.ResponseWriter, r *http.Request, p string) {
+	f, err := os.Open(longPathServer(p))
 	if err != nil {
 		http.NotFound(w, r)
 		return
@@ -384,6 +421,35 @@ func (s *Server) handleCover(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", ct)
 	io.Copy(w, f)
+}
+
+// volumeCoverPath resolves the on-disk cover of an LN series' volume note — the
+// #LNVolume note under _volumes/<Series>/ whose `Series Index` equals vol (#90).
+// Returns "" when the book isn't an LN series, the volume note doesn't exist yet,
+// or it carries no cover, so the caller can fall back to the series cover.
+func (s *Server) volumeCoverPath(id int64, vol string) string {
+	b, ok, err := s.st.BookByID(id)
+	if err != nil || !ok || b.Kind != "ln" || strings.TrimSpace(b.Path) == "" {
+		return ""
+	}
+	volDir := notes.VolumeDir(b.Path)
+	entries, err := os.ReadDir(longPathServer(volDir))
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(strings.ToLower(e.Name()), ".md") {
+			continue
+		}
+		n, err := vault.ReadNote(longPathServer(filepath.Join(volDir, e.Name())))
+		if err != nil {
+			continue
+		}
+		if strings.TrimSpace(n.SeriesIndex) == vol && n.Cover != "" {
+			return s.resolveCover(n.Cover)
+		}
+	}
+	return ""
 }
 
 // ── write handlers ────────────────────────────────────────────
@@ -412,6 +478,7 @@ func (s *Server) handleVaultRefresh(w http.ResponseWriter, r *http.Request) {
 	if res.Added > 0 || res.Removed > 0 {
 		s.st.LogEvent("refresh", fmt.Sprintf("Refreshed vault info: +%d added, -%d removed", res.Added, res.Removed))
 	}
+	s.bustBackfillStatus() // the tracked-book set changed → recompute badge counts
 	writeJSON(w, http.StatusOK, res)
 }
 
@@ -608,8 +675,14 @@ func (s *Server) handleAddBook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.st.LogEvent("add", fmt.Sprintf("Added %q (%s)", res.Title, body.URL))
+	s.bustBackfillStatus() // a new LN series → badge counts will change once it backfills
+	// Kick off the per-volume note backfill in the background (#90): one #LNVolume
+	// note per volume, each with its own cover, so the Reading tab can show the
+	// read volume's cover. Best-effort — the add itself has already succeeded.
+	s.startVolumeBackfill(res.Title, body.URL, res.Volumes, "")
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"title": res.Title, "volumes": res.Volumes, "path": res.Path,
+		"backfilling": res.Volumes > 0,
 	})
 }
 
@@ -1434,6 +1507,25 @@ func (s *Server) handleSetCover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, n)
+}
+
+// longPathServer prefixes an absolute Windows path with the `\\?\` extended-length
+// marker so reads of a deep `_volumes/<Series>/<title>.md` (or its cover) past the
+// 260-char MAX_PATH limit succeed — the same guard the note writer uses. No-op off
+// Windows, on an already-prefixed path, or when the path can't be made absolute.
+func longPathServer(p string) string {
+	if runtime.GOOS != "windows" || p == "" || strings.HasPrefix(p, `\\?\`) {
+		return p
+	}
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return p
+	}
+	abs = filepath.Clean(abs)
+	if strings.HasPrefix(abs, `\\`) {
+		return `\\?\UNC\` + strings.TrimPrefix(abs, `\\`)
+	}
+	return `\\?\` + abs
 }
 
 // bustCoverIndex forces the vault-wide cover index to rebuild on next lookup, so

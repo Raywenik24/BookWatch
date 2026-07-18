@@ -229,7 +229,7 @@ func extractDescription(doc *goquery.Document, rl Rules) string {
 		if sel == "" {
 			continue
 		}
-		if s := paragraphs(doc.Find(sel).First()); s != "" {
+		if s := describeSelection(doc.Find(sel)); s != "" {
 			return s
 		}
 	}
@@ -296,6 +296,36 @@ func descriptionFromLabelPrefixParagraph(doc *goquery.Document) string {
 		return true
 	})
 	return result
+}
+
+// describeSelection returns the best blurb text from a description-container
+// selection. It prefers <p> paragraphs (the classic jnovels synopsis layout), but
+// falls back to the container's own text when there are none — jnovels' newer
+// Kobo-widget synopsis puts the blurb as a bare text node inside a nested
+// `div.synopsis-description`, with no <p> to find. The longest candidate across
+// all matched containers wins, so a wrapper holding only boilerplate loses to the
+// one holding the actual synopsis.
+func describeSelection(sel *goquery.Selection) string {
+	best := ""
+	sel.Each(func(_ int, s *goquery.Selection) {
+		cand := paragraphs(s)
+		if cand == "" {
+			cand = directText(s)
+		}
+		if len(cand) > len(best) {
+			best = cand
+		}
+	})
+	return best
+}
+
+// directText returns a container's whitespace-collapsed text with obvious
+// non-synopsis children removed (scripts, styles, links like "Continue Reading",
+// and buttons) — the fallback when a synopsis container carries no <p> paragraphs.
+func directText(sel *goquery.Selection) string {
+	c := sel.Clone()
+	c.Find("script, style, a, button, noscript").Remove()
+	return strings.Join(strings.Fields(c.Text()), " ")
 }
 
 func paragraphs(container *goquery.Selection) string {
