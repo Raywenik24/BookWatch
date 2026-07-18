@@ -661,7 +661,15 @@ func (s *Server) handleAddBook(w http.ResponseWriter, r *http.Request) {
 		AttachmentsDir: s.effective("attachments_dir", s.cfg.AttachmentsDir),
 	}
 	rl := sources.NewResolver(s.st).For(body.URL)
-	res, err := notes.Create(opts, s.sc, s.st, rl, body.URL, body.Status)
+	// Mirror BuildNote's empty-status → "Backlog" default so the store row carries
+	// the same status the note file gets. Without this the row lands with an empty
+	// status until the next vault re-scan, so status-filtered views (the Randomizer,
+	// #99) skip the freshly-added series until "Refresh vault info" is clicked.
+	status := body.Status
+	if status == "" {
+		status = "Backlog"
+	}
+	res, err := notes.Create(opts, s.sc, s.st, rl, body.URL, status)
 	if err != nil {
 		code := http.StatusBadRequest
 		if errors.Is(err, notes.ErrDuplicate) || errors.Is(err, notes.ErrNoteExists) {
@@ -670,7 +678,7 @@ func (s *Server) handleAddBook(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, code, errBody(err.Error()))
 		return
 	}
-	if _, err := s.st.UpsertBook(res.Title, body.URL, res.Path, res.Volumes, res.Cover, "", nil, "ln", ""); err != nil {
+	if _, err := s.st.UpsertBook(res.Title, body.URL, res.Path, res.Volumes, res.Cover, status, nil, "ln", ""); err != nil {
 		writeErr(w, err)
 		return
 	}
