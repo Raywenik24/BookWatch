@@ -418,6 +418,7 @@
       <h2>Add a book</h2>
       <div class="row">
         <input id="addField" placeholder="Light-novel URL, a book title, or an openlibrary.org/works/... link" autocomplete="off" spellcheck="false" onkeydown="if(event.key==='Enter')startAdd()">
+        <select id="addSource" title="Search this source first (others stay as fallbacks)" style="flex:0 0 auto" onchange="setAddSource(this.value)"></select>
         <button class="btn" id="addBtn" onclick="startAdd()">Add</button>
       </div>
       <div id="addModalBackdrop" class="modal-backdrop" hidden>
@@ -3065,24 +3066,36 @@ async function submitAddBookLN(){
     btn.disabled = false;
   }
 }
+// The add-a-book search sources, in the default cascade order (#95). searchBooks
+// runs the user-chosen primary first, then the rest in this order as fallbacks.
+// map() adapts each source's raw hits into the shared candidate shape the picker
+// renders (OL is already in shape; LC/jnovels tag their own identity for routing).
+const ADD_SOURCES = [
+  { id:'ol',      label:'OpenLibrary',  path:'/api/ol/search?q=',      map:d => d },
+  { id:'lc',      label:'Lubimyczytać', path:'/api/lc/search?q=',      map:d => d.map(toLCCandidate) },
+  { id:'jnovels', label:'jnovels',      path:'/api/jnovels/search?q=', map:d => d.map(toJnovelsCandidate) },
+];
+let addSearchSrc = ADD_SOURCES.some(s => s.id === lsGet('add_source')) ? lsGet('add_source') : 'ol';
+function setAddSource(v){
+  addSearchSrc = ADD_SOURCES.some(s => s.id === v) ? v : 'ol';
+  lsSet('add_source', addSearchSrc);
+}
 async function searchBooks(q){
-  const h = toast('Searching OpenLibrary…','busy');
+  // Search the chosen primary source first; the other two stay as fallbacks in
+  // the default OL → LC → jnovels order, tried only if the primary is empty (#95).
+  const primary = ADD_SOURCES.find(s => s.id === addSearchSrc) || ADD_SOURCES[0];
+  const cascade = [primary, ...ADD_SOURCES.filter(s => s !== primary)];
+  const h = toast('Searching ' + cascade[0].label + '…','busy');
   try {
-    const data = await getJSON('/api/ol/search?q='+encodeURIComponent(q));
-    if(data && data.length){ h.close(); renderCandidates(data); return; }
-    // OpenLibrary has nothing — fall back to Lubimyczytać for Polish titles it
-    // doesn't carry (#60). LC hits are shown in the same picker, tagged so the
-    // add path routes to LC's own identity.
-    h.update('Nothing on OpenLibrary — trying Lubimyczytać…','busy');
-    const lc = await getJSON('/api/lc/search?q='+encodeURIComponent(q));
-    if(lc && lc.length){ h.close(); renderCandidates(lc.map(toLCCandidate)); return; }
-    // OL and LC both miss — fall back to a jnovels title search and offer the
-    // hits as light novels (#89). Selecting one routes to the LN scrape-preview.
-    h.update('Nothing on Lubimyczytać — trying jnovels…','busy');
-    const jn = await getJSON('/api/jnovels/search?q='+encodeURIComponent(q));
-    if(!jn || !jn.length){ h.update('No matches on OpenLibrary, Lubimyczytać or jnovels.','error'); return; }
-    h.close();
-    renderCandidates(jn.map(toJnovelsCandidate));
+    for(let i = 0; i < cascade.length; i++){
+      const s = cascade[i];
+      if(i > 0) h.update('Nothing on ' + cascade[i-1].label + ' — trying ' + s.label + '…','busy');
+      const data = await getJSON(s.path + encodeURIComponent(q));
+      if(data && data.length){ h.close(); renderCandidates(s.map(data)); return; }
+    }
+    const names = cascade.map(s => s.label);
+    const list = names.length > 1 ? names.slice(0,-1).join(', ') + ' or ' + names[names.length-1] : names[0];
+    h.update('No matches on ' + list + '.','error');
   } catch(e){ h.update('Error: '+(e.message||'request failed'),'error'); }
 }
 // toJnovelsCandidate maps a jnovels title-search hit ({title, url, cover_data})
@@ -4479,6 +4492,7 @@ $('sortBtn').textContent = bookSort === 'asc' ? '↑ A–Z' : '↓ Z–A';
 setBookView(bookView);
 setKindView(kindView);
 document.querySelectorAll('#randomizeKindToggle button').forEach(b => b.classList.toggle('active', b.dataset.k === randomizeKindView));
+$('addSource').innerHTML = ADD_SOURCES.map(s => `<option value="${s.id}"${s.id === addSearchSrc ? ' selected' : ''}>${s.label}</option>`).join('');
 // Sync the Discover mode toggle/label to the restored mode without fetching —
 // the feed loads only when the tab is shown (showTab → loadDiscover).
 document.querySelectorAll('#discoverModeToggle button').forEach(b => b.classList.toggle('active', b.dataset.m === discoverMode));
