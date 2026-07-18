@@ -441,12 +441,31 @@ func (s *Server) handleReviewPull(w http.ResponseWriter, r *http.Request) {
 	s.reviewDetail(w, it, np, map[string]any{"pull_found": found})
 }
 
-// sourceCoverURL returns a book's cover image URL from a resolved link
-// (Lubimyczytać book pages carry one; OL work detail does not). "" when none.
+// sourceCoverURL returns a book's cover image URL from a resolved link —
+// Lubimyczytać book pages carry one directly; an OpenLibrary work resolves to
+// its own cover (via WorkByID), falling back to the first edition cover when
+// the work record has none. "" when nothing is found.
 func (s *Server) sourceCoverURL(url string) string {
 	if strings.Contains(url, "lubimyczytac.pl") && s.lc != nil {
 		if b, err := s.lc.BookDetail(url); err == nil {
 			return b.CoverURL
+		}
+		return ""
+	}
+	if i := strings.Index(url, "/works/"); i >= 0 && s.ol != nil {
+		id := strings.Trim(url[i+len("/works/"):], "/")
+		if id == "" {
+			return ""
+		}
+		if c, err := s.ol.WorkByID(id); err == nil && c.CoverURL != "" {
+			return c.CoverURL
+		}
+		if eds, err := s.ol.WorkEditions(id); err == nil {
+			for _, e := range eds {
+				if e.CoverURL != "" {
+					return e.CoverURL
+				}
+			}
 		}
 	}
 	return ""

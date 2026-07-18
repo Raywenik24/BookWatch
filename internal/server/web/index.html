@@ -313,8 +313,12 @@
   .ne-grid input:focus, .ne-grid select:focus, .ne-grid textarea:focus, .cover-picker-controls input:focus {
         outline: none; border-color: var(--mauve);
         box-shadow: 0 0 0 3px color-mix(in srgb, var(--mauve) 30%, transparent); }
+  /* max-width caps the picker so, in a flex row (the Calibre reviewer, #93), the
+     "can't preview here" status can't stretch this column and squeeze the form
+     fields; overflow-wrap keeps a long URL/status from forcing it wider. */
   .cover-picker { display: flex; gap: .7rem; align-items: flex-start; border: 1px dashed var(--surface1);
-        border-radius: 8px; padding: .5rem; transition: border-color .15s, background .15s; }
+        border-radius: 8px; padding: .5rem; transition: border-color .15s, background .15s;
+        max-width: 260px; overflow-wrap: anywhere; }
   .cover-picker.drag { border-color: var(--mauve); background: var(--surface0); }
   .cover-picker-controls { display: flex; flex-direction: column; gap: .4rem; flex: 1; min-width: 0; }
   .cover-picker-controls input[type="url"] { width: 100%; background: var(--mantle); color: var(--text);
