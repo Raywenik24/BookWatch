@@ -59,12 +59,16 @@ func noteIncomplete(n vault.Note) bool {
 	return false
 }
 
-// VolumeState reports one volume's backfill status for the reviewer UI.
+// VolumeState reports one volume's backfill status for the reviewer UI. Cover
+// (whether the volume note carries its own cover — served via /api/cover/{id}?vol=N)
+// and Description feed the note modal's per-volume cover grid + in-app enlarge (#8).
 type VolumeState struct {
-	Volume int    `json:"volume"`
-	Title  string `json:"title"`
-	State  string `json:"state"` // "resolved" | "incomplete" | "missing"
-	Link   string `json:"link"`
+	Volume      int    `json:"volume"`
+	Title       string `json:"title"`
+	State       string `json:"state"` // "resolved" | "incomplete" | "missing"
+	Link        string `json:"link"`
+	HasCover    bool   `json:"has_cover"`
+	Description string `json:"description"`
 }
 
 // VolumeStates reports the status of volumes 1..volumes for a series: a
@@ -81,10 +85,30 @@ func VolumeStates(seriesNotePath, series string, volumes int) []VolumeState {
 				vs.State = "resolved"
 			}
 			vs.Link = n.Link
+			vs.HasCover = strings.TrimSpace(n.Cover) != ""
+			vs.Description = stripVolumeNav(n.Description)
 		}
 		out = append(out, vs)
 	}
 	return out
+}
+
+// stripVolumeNav drops the trailing reading-nav footer (a `---` rule followed by
+// only `Previous:`/`Next:` wikilink lines, added by writeVolumeNav) from a volume
+// note's body, so the modal's cover-enlarge shows just the description (#8). A body
+// with no such footer is returned trimmed and unchanged.
+func stripVolumeNav(desc string) string {
+	i := strings.LastIndex(desc, "\n---\n")
+	if i < 0 {
+		return strings.TrimSpace(desc)
+	}
+	for _, ln := range strings.Split(strings.TrimSpace(desc[i+len("\n---\n"):]), "\n") {
+		ln = strings.TrimSpace(ln)
+		if ln != "" && !strings.HasPrefix(ln, "Previous:") && !strings.HasPrefix(ln, "Next:") {
+			return strings.TrimSpace(desc) // not a nav footer — leave the body intact
+		}
+	}
+	return strings.TrimSpace(desc[:i])
 }
 
 // VolumeStateOf reports one volume's status: "resolved", "incomplete", or

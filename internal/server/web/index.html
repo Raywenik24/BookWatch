@@ -154,11 +154,16 @@
         border-radius: 4px; border: 1px solid var(--mauve); color: var(--mauve);
         background: color-mix(in srgb, var(--crust) 90%, transparent); }
   /* attention badge (#90): an LN series with incomplete/missing volume notes to
-     back-fill. Bottom-right so it clears the vol badge + hover corner buttons. */
-  .cover-attn { position: absolute; bottom: .4rem; right: .4rem; z-index: 2; min-width: 1.4rem; height: 1.4rem;
-        padding: 0 .35rem; display: inline-flex; align-items: center; justify-content: center;
-        font-size: .74rem; font-weight: 700; border-radius: 999px; cursor: help;
-        background: var(--yellow); color: var(--crust); box-shadow: 0 1px 4px rgba(0,0,0,.45); }
+     back-fill. Pinned to the top-right corner (sitting on the tile edge) + slightly
+     rotated (#18), mauve so it reads at a glance, clickable → opens the note modal to
+     fix. On hover the ✕ untrack button drops below it so the two never overlap. */
+  .cover-attn { position: absolute; top: .15rem; right: .15rem; z-index: 4; min-width: 1.5rem; height: 1.5rem;
+        padding: 0 .4rem; display: inline-flex; align-items: center; justify-content: center;
+        font-size: .76rem; font-weight: 700; border-radius: 999px; cursor: pointer; border: 1px solid var(--crust);
+        transform: rotate(10deg); transform-origin: center; transition: transform .15s;
+        background: var(--mauve); color: var(--crust); box-shadow: 0 2px 6px rgba(0,0,0,.5); }
+  .cover-attn:hover { transform: rotate(10deg) scale(1.12); }
+  .cover-attn ~ .cover-x { top: 2rem; right: .3rem; }
   /* unverified-cover marker (#41): a cover borrowed by ISBN alone, author unmatched */
   .unsafe-mark { position: absolute; top: .4rem; left: .4rem; z-index: 2; width: 1.4rem; height: 1.4rem;
         display: inline-flex; align-items: center; justify-content: center; font-size: .82rem; font-weight: 700;
@@ -200,8 +205,9 @@
   .cover-read:hover, .cover-done:hover, .cover-start:hover { background: var(--green); color: var(--crust); }
   /* the ✓/▶/＋ action shares the top-left corner with the volume badge, so where a
      badge is rendered the action drops below it rather than sitting on top (#88).
-     The badge is the immediately-preceding sibling, so no badge = no shift. */
-  .cover-vol + .cover-read, .cover-vol + .cover-start { top: 2.05rem; }
+     A general sibling combinator (not adjacent) so the top-right attention badge
+     (#18) sitting between cover-vol and cover-read doesn't break the shift. */
+  .cover-vol ~ .cover-read, .cover-vol ~ .cover-start { top: 2.05rem; }
   .cover-card[draggable="true"] { cursor: grab; }
   .cover-card.dragging { opacity: .45; }
   .cover-card.dragover { border-color: var(--mauve); border-style: dashed; }
@@ -264,6 +270,12 @@
   .cand-filter { width: 100%; margin: .5rem 0 .1rem; }
   /* reusable book-preview card (bookPreviewModal, #51) */
   .bp-head { align-items: flex-start; gap: .9rem; }
+  /* preview-modal header cover: the shared 64×96, but much larger in the wide LN
+     series modal so the series art has real presence above the volume grid. */
+  .bp-cover { width: 64px; height: 96px; }
+  #previewModal.modal--ln .bp-cover { width: 172px; height: 258px; }
+  /* description sits beside the tall LN cover, so give it more height before it scrolls */
+  #previewModal.modal--ln .bp-desc { max-height: 16rem; }
   .bp-meta { font-size: .78rem; color: var(--subtext); margin-top: .3rem; }
   .bp-meta code { color: var(--subtext); background: var(--mantle); padding: 0 .25rem; border-radius: 3px; }
   .bp-desc { margin-top: .75rem; font-size: .9rem; line-height: 1.5; white-space: pre-wrap;
@@ -308,6 +320,41 @@
      (#8 sizing) to fit the per-volume grid. */
   #previewModal { max-width: 760px; }
   #previewModal.modal--ln { max-width: 980px; }
+  /* LN volume cover grid (#8): a responsive tile per volume inside the note modal.
+     Resolved tiles show the volume's own cover (click → enlarge); pending tiles are
+     a ＋ placeholder that expands full-width to the fill affordance. */
+  .volg { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
+        gap: .5rem; margin-top: .55rem; }
+  .volg-tile { position: relative; border: 1px solid var(--surface0); border-radius: 7px;
+        overflow: hidden; background: var(--mantle); aspect-ratio: 2 / 3; }
+  .volg-tile.filled { cursor: pointer; transition: border-color .15s, transform .15s, box-shadow .15s; }
+  .volg-tile.filled:hover, .volg-tile.filled:focus-visible { border-color: var(--mauve);
+        transform: translateY(-2px); box-shadow: 0 5px 16px rgba(0,0,0,.4); outline: none; }
+  .volg-cover { width: 100%; height: 100%; object-fit: cover; display: block; background: var(--surface0); }
+  .volg-tile.nocover .volg-cover { display: none; }
+  .volg-label { position: absolute; bottom: 0; left: 0; right: 0; padding: .2rem .3rem;
+        font-size: .72rem; font-weight: 600; text-align: center; color: var(--text);
+        background: color-mix(in srgb, var(--crust) 82%, transparent); }
+  .volg-tile.pending { border-style: dashed; }
+  .volg-ph { position: absolute; inset: 0; width: 100%; height: 100%; display: flex;
+        flex-direction: column; align-items: center; justify-content: center; gap: .15rem;
+        border: 0; background: transparent; color: var(--subtext); cursor: pointer; font: inherit; }
+  .volg-ph:hover { background: var(--surface0); color: var(--text); }
+  .volg-plus { font-size: 1.3rem; line-height: 1; }
+  .volg-ph .volg-label { position: static; background: transparent; padding: 0; }
+  .volg-state { font-size: .66rem; color: var(--subtext); }
+  /* an expanded pending tile spans the whole grid row to hold the fill form */
+  .volg-tile.expanded { grid-column: 1 / -1; aspect-ratio: auto; border-style: solid; padding: .55rem; }
+  .volg-tile.expanded .volg-ph { position: static; inset: auto; height: auto; flex-direction: row;
+        justify-content: flex-start; gap: .4rem; padding: 0 0 .5rem; }
+  .volg-tile.expanded .volg-plus { transform: rotate(45deg); }
+  .vol-fill[hidden] { display: none; }
+  /* volume cover enlarge lightbox (#8): stacks above the note modal */
+  #volEnlargeBackdrop { z-index: 55; }
+  #volEnlargeModal { max-width: 560px; }
+  .vol-enlarge-cover { display: block; max-width: 320px; width: 100%; margin: 0 auto .8rem;
+        border-radius: 8px; box-shadow: 0 6px 24px rgba(0,0,0,.5); }
+  .vol-enlarge-meta .cand-title { text-align: center; margin-bottom: .5rem; }
   #confirmModalBody p { margin: 0 0 1rem; }
   /* note view/edit modal (#55) */
   .note-open { color: var(--text); text-decoration: none; cursor: pointer; }
@@ -858,6 +905,14 @@
     <div class="modal" id="previewModal">
       <button class="modal-close" onclick="closeRelPreview()" aria-label="Close">&times;</button>
       <div id="previewModalBody"></div>
+    </div>
+  </div>
+  <!-- LN volume cover enlarge (#8): a resolved volume's own cover + description,
+       stacked above the note modal so clicking a cover never jumps to Obsidian. -->
+  <div id="volEnlargeBackdrop" class="modal-backdrop" hidden onclick="if(event.target===this)closeVolEnlarge()">
+    <div class="modal" id="volEnlargeModal">
+      <button class="modal-close" onclick="closeVolEnlarge()" aria-label="Close">&times;</button>
+      <div id="volEnlargeBody"></div>
     </div>
   </div>
   <!-- untrack-vs-delete choice (#58) -->
@@ -1602,7 +1657,8 @@ function renderNoteView(){
     { cover: noteCoverSrc(), title: n.title, author: n.author,
       released: isBook ? n.released_en : '', link: n.link, workId: n.work_id,
       volumes: isBook ? 0 : n.volumes, description: n.description },
-    { mode:'read-only', linkLabel: isBook ? 'open on OL ↗' : 'open source ↗', headerActions });
+    { mode:'read-only', linkLabel: isBook ? 'open on OL ↗' : 'open source ↗', headerActions,
+      descAside: !isBook && !!n.volumes });
   // LN series with volumes get the wider modal (#98 #8) — room for the volume grid.
   $('previewModal').classList.toggle('modal--ln', !isBook && !!n.volumes);
   if(!isBook && n.volumes){
@@ -1611,8 +1667,15 @@ function renderNoteView(){
   }
 }
 
-// loadVolumePanel fills the note modal's per-volume status panel: how many volume
-// notes are filled, and a paste-a-link row for each still-incomplete/missing one.
+// _volStates caches the last-loaded per-volume states (keyed by volume number) so
+// the in-app cover enlarge (#8) can read a volume's title/description without a
+// re-fetch. Reset on every loadVolumePanel.
+let _volStates = {};
+
+// loadVolumePanel fills the note modal's per-volume cover grid (#8): a tile per
+// volume — resolved volumes show their own cover (click to enlarge), while
+// incomplete/missing ones show a placeholder that expands to the fill affordance
+// (paste a jnovels link, or ✎ fill the details by hand).
 async function loadVolumePanel(){
   const el = $('volPanel');
   if(!el || !_noteModal) return;
@@ -1620,44 +1683,90 @@ async function loadVolumePanel(){
   let data;
   try { data = await getJSON('/api/books/' + id + '/volumes'); } catch(e){ el.innerHTML = ''; return; }
   if(!data || !Array.isArray(data.states) || !data.states.length){ el.innerHTML = ''; return; }
+  _volStates = {};
+  data.states.forEach(s => { _volStates[s.volume] = s; });
   const pending = data.states.filter(s => s.state !== 'resolved');
   const filled = data.states.length - pending.length;
   const header = `<div class="row" style="justify-content:space-between;align-items:center">
       <b>Volumes</b>
       <small class="muted">${filled}/${data.states.length} filled${data.running ? ' · backfilling…' : ''}</small>
     </div>`;
-  if(!pending.length){
-    el.innerHTML = '';
-    return;
-  }
-  const rows = pending.map(s => `
-    <div class="vol-item" data-vol="${s.volume}" style="margin-top:.5rem">
-      <div class="vol-row" style="display:flex;gap:.4rem;align-items:center">
-        <span class="badge ${s.state === 'incomplete' ? 'pending' : ''}" style="min-width:4rem;text-align:center">Vol ${s.volume}</span>
-        <span class="muted" style="min-width:5rem">${s.state}</span>
-        <input type="text" class="vol-url" placeholder="paste jnovels volume link" spellcheck="false" style="flex:1;min-width:0">
-        <button class="btn ghost" onclick="resolveVolume(${id}, ${s.volume}, this)">Fill</button>
-        <button class="btn ghost" onclick="toggleVolManual(this)" title="Fill in the details by hand">✎</button>
-      </div>
-      <div class="vol-manual" hidden style="margin-top:.4rem;padding:.55rem;border:1px solid var(--surface0);border-radius:6px">
-        <textarea class="vm-desc" rows="4" placeholder="Description" spellcheck="false" style="width:100%;box-sizing:border-box"></textarea>
-        <div class="row" style="gap:.4rem;margin-top:.4rem;flex-wrap:wrap">
-          <input type="text" class="vm-cover" placeholder="Cover image URL (optional)" spellcheck="false" style="flex:1;min-width:12rem">
-          <input type="text" class="vm-released" placeholder="Released (optional)" spellcheck="false" style="width:9rem">
-        </div>
-        <div class="row" style="gap:.4rem;margin-top:.4rem;align-items:center;flex-wrap:wrap">
-          <input type="file" class="vm-file" accept="image/*">
-          <input type="text" class="vm-link" placeholder="Source link (optional)" spellcheck="false" style="flex:1;min-width:10rem">
-        </div>
-        <div class="row" style="gap:.4rem;margin-top:.5rem;justify-content:flex-end">
-          <button class="btn ghost" onclick="toggleVolManual(this)">Cancel</button>
-          <button class="btn" onclick="fillVolumeManual(${id}, ${s.volume}, this)">Save</button>
-        </div>
-      </div>
-    </div>`).join('');
-  el.innerHTML = header + rows +
-    `<div class="muted" style="margin-top:.5rem;font-size:.85em">Missing volumes are kept as <code>#LNVolume/incomplete</code> notes. Retry them all with “Backfill volumes”, paste a jnovels link, or use <b>✎</b> to fill the details by hand.</div>`;
+  const tiles = data.states.map(s => volTile(id, s)).join('');
+  el.innerHTML = header + `<div class="volg">${tiles}</div>` +
+    (pending.length
+      ? `<div class="muted" style="margin-top:.5rem;font-size:.85em">Missing volumes are kept as <code>#LNVolume/incomplete</code> notes. Retry them all with “Backfill volumes”, click a <b>＋</b> tile to paste a jnovels link, or use <b>✎</b> to fill the details by hand.</div>`
+      : '');
 }
+
+// volTile renders one volume's grid tile. A resolved volume gets its cover
+// (served by /api/cover/{id}?vol=N, which falls back to the series cover when the
+// volume note has none) and opens the in-app enlarge on click; an incomplete/missing
+// one gets a ＋ placeholder that expands to the paste-link + by-hand fill form.
+function volTile(id, s){
+  if(s.state === 'resolved'){
+    return `<div class="volg-tile filled" data-vol="${s.volume}" tabindex="0"
+        onclick="openVolEnlarge(${s.volume})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openVolEnlarge(${s.volume})}"
+        title="${esc(s.title)} — click to enlarge">
+      <img class="volg-cover" src="/api/cover/${id}?vol=${s.volume}" alt="" loading="lazy"
+        onerror="this.closest('.volg-tile').classList.add('nocover');this.remove()">
+      <span class="volg-label">Vol ${s.volume}</span>
+    </div>`;
+  }
+  return `<div class="volg-tile pending vol-item" data-vol="${s.volume}">
+      <button type="button" class="volg-ph" onclick="toggleVolFillTile(this)" title="Fill volume ${s.volume}">
+        <span class="volg-plus">＋</span>
+        <span class="volg-label">Vol ${s.volume}</span>
+        <span class="volg-state">${esc(s.state)}</span>
+      </button>
+      <div class="vol-fill" hidden>
+        <div class="vol-row" style="display:flex;gap:.4rem;align-items:center;flex-wrap:wrap">
+          <input type="text" class="vol-url" placeholder="paste jnovels volume link" spellcheck="false" style="flex:1;min-width:12rem">
+          <button class="btn ghost" onclick="resolveVolume(${id}, ${s.volume}, this)">Fill</button>
+          <button class="btn ghost" onclick="toggleVolManual(this)" title="Fill in the details by hand">✎</button>
+        </div>
+        <div class="vol-manual" hidden style="margin-top:.4rem;padding:.55rem;border:1px solid var(--surface0);border-radius:6px">
+          <textarea class="vm-desc" rows="4" placeholder="Description" spellcheck="false" style="width:100%;box-sizing:border-box"></textarea>
+          <div class="row" style="gap:.4rem;margin-top:.4rem;flex-wrap:wrap">
+            <input type="text" class="vm-cover" placeholder="Cover image URL (optional)" spellcheck="false" style="flex:1;min-width:12rem">
+            <input type="text" class="vm-released" placeholder="Released (optional)" spellcheck="false" style="width:9rem">
+          </div>
+          <div class="row" style="gap:.4rem;margin-top:.4rem;align-items:center;flex-wrap:wrap">
+            <input type="file" class="vm-file" accept="image/*">
+            <input type="text" class="vm-link" placeholder="Source link (optional)" spellcheck="false" style="flex:1;min-width:10rem">
+          </div>
+          <div class="row" style="gap:.4rem;margin-top:.5rem;justify-content:flex-end">
+            <button class="btn ghost" onclick="toggleVolManual(this)">Cancel</button>
+            <button class="btn" onclick="fillVolumeManual(${id}, ${s.volume}, this)">Save</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+}
+
+// toggleVolFillTile expands a pending volume tile to full grid width, revealing its
+// fill affordance (paste-link + ✎ by-hand), and collapses it again on a second click.
+function toggleVolFillTile(btn){
+  const tile = btn.closest('.volg-tile'); if(!tile) return;
+  const open = tile.classList.toggle('expanded');
+  const fill = tile.querySelector('.vol-fill');
+  if(fill) fill.hidden = !open;
+  if(open){ const u = tile.querySelector('.vol-url'); if(u) u.focus(); }
+}
+
+// openVolEnlarge shows a resolved volume's cover + description in an in-app
+// lightbox (#8) — stacked above the note modal, never a jump to Obsidian.
+function openVolEnlarge(vol){
+  const s = _volStates[vol]; if(!s || !_noteModal) return;
+  const desc = (s.description || '').trim();
+  $('volEnlargeBody').innerHTML = `
+    <img class="vol-enlarge-cover" src="/api/cover/${_noteModal.id}?vol=${vol}" alt="" onerror="this.remove()">
+    <div class="vol-enlarge-meta">
+      <div class="cand-title">${esc(s.title)}</div>
+      <div class="bp-desc${desc ? '' : ' muted'}" style="max-height:60vh">${desc ? esc(desc) : 'No description.'}</div>
+    </div>`;
+  $('volEnlargeBackdrop').hidden = false;
+}
+function closeVolEnlarge(){ $('volEnlargeBackdrop').hidden = true; $('volEnlargeBody').innerHTML = ''; }
 
 // toggleVolManual shows/hides a volume's by-hand fill form (the ✎ / Cancel).
 function toggleVolManual(btn){
@@ -2044,7 +2153,7 @@ function renderBooksGrid(list, q){
     const isBook = bookKind(x) === 'book';
     const vol = (!isBook && x.volumes) ? `<span class="cover-vol" title="${x.volumes} volume${x.volumes===1?'':'s'}">${x.volumes}</span>` : '';
     const nBackfill = _backfillStatus[x.id] || 0;
-    const attn = (!isBook && nBackfill) ? `<span class="cover-attn tip" data-tip="${nBackfill} volume${nBackfill===1?'':'s'} need back-filling — open the note to fix">⚠ ${nBackfill}</span>` : '';
+    const attn = (!isBook && nBackfill) ? `<button type="button" class="cover-attn tip" data-tip="${nBackfill} volume${nBackfill===1?'':'s'} need back-filling — click to fix" aria-label="${nBackfill} volumes need back-filling" onclick="event.stopPropagation();openNoteModal(${x.id})">⚠ ${nBackfill}</button>` : '';
     const meta = isBook
       ? `<div class="cover-title" style="padding-top:0"><small class="muted">${esc([x.author, x.status].filter(Boolean).join(' · '))}</small></div>`
       : '';
@@ -3011,6 +3120,7 @@ document.addEventListener('keydown', e => {
   if(!$('confirmModalBackdrop').hidden) return _confirmModalResolve(false); // stacked above everything else
   if(!$('reviewModalBackdrop').hidden) return closeReview();
   if(!$('readingModalBackdrop').hidden) return closeReadingModal();
+  if(!$('volEnlargeBackdrop').hidden) return closeVolEnlarge(); // stacked above the note modal
   if(!$('previewModalBackdrop').hidden) return closeRelPreview();
   if(!$('deleteModalBackdrop').hidden) return closeDeleteModal();
   if(!$('addModalBackdrop').hidden) closeAddModal();
@@ -3183,8 +3293,8 @@ function bookPreviewModal(data, opts){
   const mode = opts.mode || 'read-only';
   const d = data || {};
   const img = d.cover
-    ? `<img class="cand-cover" style="width:64px;height:96px" src="${esc(d.cover)}" onerror="this.remove()">`
-    : '<div class="cand-cover" style="width:64px;height:96px"></div>';
+    ? `<img class="cand-cover bp-cover" src="${esc(d.cover)}" onerror="this.remove()">`
+    : '<div class="cand-cover bp-cover"></div>';
   const sub = [d.author, d.released].filter(Boolean).map(x => esc(String(x))).join(' · ');
   const metaBits = [];
   if(d.workId) metaBits.push(`Work ID: <code>${esc(d.workId)}</code>`);
@@ -3200,14 +3310,32 @@ function bookPreviewModal(data, opts){
            BOOK_STATUSES.map(s => `<option value="${s}"${s === (opts.status || 'Completed') ? ' selected' : ''}>${s}</option>`).join('')
          }</select>
        </div>` : '';
+  const titleBlock = `<div class="cand-title">${esc(d.title || '')}</div>
+      ${sub ? `<div class="cand-sub">${sub}</div>` : ''}
+      ${metaBits.length ? `<div class="bp-meta">${metaBits.join(' · ')}</div>` : ''}`;
+  // descAside (the wide LN series modal): the tall cover would otherwise leave a big
+  // blank gap, so the title/actions/meta and the description all stack in a column to
+  // the right of the cover instead of the description dropping full-width below it.
+  if(opts.descAside){
+    return `<div class="card">
+      <div class="row bp-head">
+        ${img}
+        <div class="bp-body" style="flex:1; min-width:0">
+          <div class="row" style="justify-content:space-between; align-items:flex-start; gap:.7rem">
+            <div style="min-width:0">${titleBlock}</div>
+            ${opts.headerActions ? `<div class="row" style="gap:.5rem; flex:0 0 auto">${opts.headerActions}</div>` : ''}
+          </div>
+          ${descBlock}
+          ${picker}
+        </div>
+      </div>
+      ${opts.footer || ''}
+    </div>`;
+  }
   return `<div class="card">
     <div class="row bp-head">
       ${img}
-      <div style="flex:1; min-width:0">
-        <div class="cand-title">${esc(d.title || '')}</div>
-        ${sub ? `<div class="cand-sub">${sub}</div>` : ''}
-        ${metaBits.length ? `<div class="bp-meta">${metaBits.join(' · ')}</div>` : ''}
-      </div>
+      <div style="flex:1; min-width:0">${titleBlock}</div>
       ${opts.headerActions || ''}
     </div>
     ${descBlock}

@@ -164,6 +164,14 @@ func TestVolumeStatesAndRemoveIncomplete(t *testing.T) {
 	if states[0].Link != "https://jnovels.com/k1/" {
 		t.Errorf("resolved volume should carry its link, got %q", states[0].Link)
 	}
+	// The cover grid + enlarge (#8) need the resolved volume's description; vol 1
+	// was created without a cover, so HasCover must be false.
+	if states[0].Description != "Blurb." {
+		t.Errorf("resolved volume should carry its description (nav footer stripped), got %q", states[0].Description)
+	}
+	if states[0].HasCover {
+		t.Error("resolved volume created without a cover should report HasCover=false")
+	}
 	if VolumeStateOf(seriesNote, series, 2) != "incomplete" {
 		t.Error("VolumeStateOf should report volume 2 incomplete")
 	}
