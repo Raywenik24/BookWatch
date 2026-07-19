@@ -10,11 +10,28 @@ import (
 	"testing"
 	"time"
 
+	"bookwatch/internal/notes"
 	"bookwatch/internal/provider"
 	"bookwatch/internal/scraper"
 	"bookwatch/internal/store"
 	"bookwatch/internal/vault"
 )
+
+// writeVolumeNote drops a backfilled #LNVolume note next to a series note (in
+// the `_volumes/<Series>/` layout MarkCompleted looks in), starting at
+// Status: Backlog. Returns its path.
+func writeVolumeNote(t *testing.T, seriesNotePath, series string, volume int) string {
+	t.Helper()
+	p := notes.VolumePath(seriesNotePath, series, volume)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := notes.BuildLNVolumeNote(series, volume, 5, "EN", "", "", "", "", "2026-07-01", false)
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
 
 func init() { scraper.AllowPrivateHosts = true } // httptest binds to loopback
 
@@ -167,6 +184,40 @@ func TestMarkCompleted_lnAbandonedSetsDroppedNoBump(t *testing.T) {
 	}
 	if res.NextVolume != "" {
 		t.Errorf("NextVolume = %q, want none — abandoning shouldn't queue anything", res.NextVolume)
+	}
+}
+
+// Completing a volume also flips that volume's own note → Completed (#102),
+// alongside the existing series-note Read Volumes bump.
+func TestMarkCompleted_lnFlipsVolumeNoteStatus(t *testing.T) {
+	dir := t.TempDir()
+	notePath := writeLNNote(t, dir, "Series V", 5, 2, "reading")
+	volPath := writeVolumeNote(t, notePath, "Series V", 3)
+	logPath := filepath.Join(dir, "_Read.md")
+	os.WriteFile(logPath, []byte(sampleLog), 0o644)
+
+	if _, err := MarkCompleted(logPath, notePath, "ln", "Series V", "3", "2026-07-01", "2026-07-02", false, false); err != nil {
+		t.Fatal(err)
+	}
+	vn, err := vault.ReadNote(volPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.EqualFold(vn.Status, notes.VolumeStatusCompleted) {
+		t.Errorf("volume note Status = %q, want Completed", vn.Status)
+	}
+}
+
+// A completion for a series whose volume was never backfilled just succeeds —
+// the missing volume note is a best-effort no-op, not an error (#102).
+func TestMarkCompleted_lnMissingVolumeNoteIsNoOp(t *testing.T) {
+	dir := t.TempDir()
+	notePath := writeLNNote(t, dir, "Series W", 5, 2, "reading")
+	logPath := filepath.Join(dir, "_Read.md")
+	os.WriteFile(logPath, []byte(sampleLog), 0o644)
+
+	if _, err := MarkCompleted(logPath, notePath, "ln", "Series W", "3", "2026-07-01", "2026-07-02", false, false); err != nil {
+		t.Fatalf("completion failed on a series with no volume note: %v", err)
 	}
 }
 

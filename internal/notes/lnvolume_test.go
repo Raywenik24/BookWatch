@@ -18,6 +18,7 @@ func TestBuildLNVolumeNote(t *testing.T) {
 		"Released EN: 2021",
 		`Cover: "[[cover_KumoVol7.jpg]]"`,
 		`  - "#LNVolume"`,
+		"Status:\n  - Backlog", // new volume notes start Backlog (#102)
 		"### Kumo Desu ga Nani ka Volume 7",
 		"![[cover_KumoVol7.jpg]]",
 		"Spider survives.",
@@ -62,6 +63,39 @@ func TestBuildLNVolumeNote_incomplete(t *testing.T) {
 	}
 	if strings.Contains(got, "![[") {
 		t.Error("incomplete note must not embed a cover")
+	}
+}
+
+// SetVolumeStatus rewrites an existing volume note's Status, and is a silent
+// no-op (nil) when the volume was never backfilled (#102).
+func TestSetVolumeStatus(t *testing.T) {
+	dir := t.TempDir()
+	seriesNotePath := filepath.Join(dir, "S.md") // its VolumeDir is dir/_volumes/S/
+	volPath := VolumePath(seriesNotePath, "S", 2)
+	if err := os.MkdirAll(filepath.Dir(volPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(volPath, []byte(BuildLNVolumeNote("S", 2, 3, "", "", "", "", "", "2026-07-17", false)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := SetVolumeStatus(seriesNotePath, "S", 2, VolumeStatusReading); err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := os.ReadFile(volPath); !strings.Contains(string(data), "Status:\n  - Reading") {
+		t.Errorf("Status not flipped to Reading:\n%s", data)
+	}
+
+	if err := SetVolumeStatus(seriesNotePath, "S", 2, VolumeStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := os.ReadFile(volPath); !strings.Contains(string(data), "Status:\n  - Completed") {
+		t.Errorf("Status not flipped to Completed:\n%s", data)
+	}
+
+	// A volume with no note on disk must not error.
+	if err := SetVolumeStatus(seriesNotePath, "S", 3, VolumeStatusReading); err != nil {
+		t.Errorf("missing volume note should be a no-op, got %v", err)
 	}
 }
 

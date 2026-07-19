@@ -1216,8 +1216,25 @@ func (s *Server) handleReadingStart(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	s.markVolumeReading(ref.Kind, ref.Path, volume)
 	s.st.LogEvent("reading", fmt.Sprintf("Started reading %s", readingUnit(ref.Title, volume)))
 	writeJSON(w, http.StatusOK, map[string]any{"id": id, "status": "reading"})
+}
+
+// markVolumeReading flips a backfilled #LNVolume note → Status: Reading when a
+// light-novel volume enters currently-reading (#102). Best-effort and LN-only:
+// #Books have no volume note and an un-backfilled volume has none on disk, so
+// both are silent no-ops that never affect the reading-tab response.
+func (s *Server) markVolumeReading(kind, path, volume string) {
+	if kind != "ln" || strings.TrimSpace(path) == "" {
+		return
+	}
+	v, err := strconv.Atoi(strings.TrimSpace(volume))
+	if err != nil {
+		return
+	}
+	series := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	_ = notes.SetVolumeStatus(path, series, v, notes.VolumeStatusReading)
 }
 
 // handleReadingQueueAdd appends a tracked book/LN volume to the read-next queue.
@@ -1247,6 +1264,7 @@ func (s *Server) handleReadingItemStart(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if it, ok, _ := s.st.GetReadingItem(id); ok {
+		s.markVolumeReading(it.Kind, it.Path, it.Volume)
 		s.st.LogEvent("reading", fmt.Sprintf("Started reading %s", readingUnit(it.Title, it.Volume)))
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "reading"})

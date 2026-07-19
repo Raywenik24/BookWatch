@@ -4,11 +4,13 @@ package service
 
 import (
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 
 	"bookwatch/internal/checker"
+	"bookwatch/internal/notes"
 	"bookwatch/internal/provider"
 	"bookwatch/internal/reading"
 	"bookwatch/internal/scraper"
@@ -650,6 +652,12 @@ func syncNoteOnCompletion(notePath, kind, volume string, abandoned bool) (series
 			return false, completedVol, fmt.Errorf("set status: %w", err)
 		}
 	}
+	// Completing a volume also flips that volume's own note → Completed (#102).
+	// Best-effort: only volumes that were backfilled have a note to touch, and
+	// the series note + reading log are already written, so a volume-note glitch
+	// must not fail the completion — a missing note is a silent no-op.
+	series := strings.TrimSuffix(filepath.Base(notePath), filepath.Ext(notePath))
+	_ = notes.SetVolumeStatus(notePath, series, completedVol, notes.VolumeStatusCompleted)
 	return !completed, completedVol, nil
 }
 

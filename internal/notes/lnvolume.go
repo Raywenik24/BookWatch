@@ -46,6 +46,32 @@ func VolumePath(seriesNotePath, series string, volume int) string {
 	return filepath.Join(VolumeDir(seriesNotePath), Sanitize(LNVolumeTitle(series, volume), false)+".md")
 }
 
+// Volume-note Status vocabulary (#102): a #LNVolume note carries its own
+// Status frontmatter, moved through the reading lifecycle independently of the
+// series note.
+const (
+	VolumeStatusBacklog   = "Backlog"
+	VolumeStatusReading   = "Reading"
+	VolumeStatusCompleted = "Completed"
+)
+
+// SetVolumeStatus flips an existing #LNVolume note's Status frontmatter to
+// newStatus (Backlog/Reading/Completed) as the volume moves through the reading
+// lifecycle (#102). Best-effort: a series/volume with no backfilled note on disk
+// is a no-op (nil) — only volumes that were actually backfilled carry a note to
+// update, so the reading tab never fails just because a series was never
+// backfilled.
+func SetVolumeStatus(seriesNotePath, series string, volume int, newStatus string) error {
+	p := longPath(VolumePath(seriesNotePath, series, volume))
+	if _, err := os.Stat(p); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	return vault.UpdateStatus(p, newStatus)
+}
+
 // incompleteTag is the marker a placeholder volume note carries; noteIncomplete
 // tests for it (case-insensitively, with or without the leading '#').
 const incompleteTag = "lnvolume/incomplete"
@@ -185,6 +211,11 @@ func BuildLNVolumeNote(series string, volume, total int, language, link, coverNa
 	}
 	b.WriteString("tags:\n")
 	fmt.Fprintf(&b, "  - \"%s\"\n", tag)
+	// Status tracks the volume through the reading lifecycle (#102): every new
+	// volume note starts Backlog; StartReading flips it to Reading and a
+	// completion to Completed. List form matches vault.UpdateStatus's rewrites.
+	b.WriteString("Status:\n")
+	fmt.Fprintf(&b, "  - %s\n", VolumeStatusBacklog)
 	fmt.Fprintf(&b, "created: %s\n", today)
 	fmt.Fprintf(&b, "modified: %s\n", today)
 	b.WriteString("---\n")
