@@ -96,7 +96,17 @@ func (s *Server) runVolumeBackfill(series, seriesLink, key string, volumes int, 
 	// alias title jnovels files the volumes under, discovered from a hit whose
 	// series differs from ours ("Kumo Desu ga Nani ka" → "So I'm a Spider…").
 	for v := 1; v <= volumes; v++ {
-		if nd, url, postSeries, err := s.sc.VolumeData(series, v, rl); err == nil {
+		// #108: derive the volume's jnovels URL straight from the series slug and
+		// try it first. The title-search matcher can't tell an "Ex" spinoff from
+		// the main series, but jnovels' slug pattern is exact — so this resolves
+		// per-volume "Ex" posts the search misses. matched=false (a 404, e.g.
+		// vol 1 = the series page, or an unscrapeable page) falls through to the
+		// existing search chain unchanged.
+		if written, matched := s.deriveVolume(opts, series, seriesLink, v, volumes, language, rl); matched {
+			if written {
+				resolved++
+			}
+		} else if nd, url, postSeries, err := s.sc.VolumeData(series, v, rl); err == nil {
 			if s.writeVolume(opts, series, v, volumes, language, url, nd) {
 				resolved++
 			}
@@ -166,6 +176,45 @@ func (s *Server) runVolumeBackfill(series, seriesLink, key string, volumes int, 
 func (s *Server) writeVolume(opts notes.Options, series string, volume, total int, language, url string, nd scraper.NovelData) bool {
 	_, err := notes.CreateLNVolume(opts, series, volume, total, language, url, nd.CoverURL, "", nd.Description, false)
 	return err == nil
+}
+
+// deriveVolume implements #108's derive-URL-first attempt: it builds the volume's
+// jnovels post URL directly from the series slug (which encodes the exact series,
+// "Ex" spinoffs included, where a title search can't) and scrapes it. matched is
+// true when the derived URL is a real, scrapeable volume post — signalling the
+// caller to skip the title-search fallback; written is true only when a fresh note
+// was actually created (for the resolved counter). A 404 (e.g. vol 1, which on
+// jnovels *is* the series page) or an unscrapeable page yields matched=false, so
+// the existing search chain runs unchanged.
+func (s *Server) deriveVolume(opts notes.Options, series, seriesLink string, v, volumes int, language string, rl scraper.Rules) (written, matched bool) {
+	url := deriveVolumeURL(seriesLink, v)
+	if url == "" {
+		return false, false
+	}
+	nd, err := s.sc.NovelData(url, rl)
+	if err != nil || nd.CoverURL == "" {
+		return false, false
+	}
+	return s.writeVolume(opts, series, v, volumes, language, url, nd), true
+}
+
+// deriveVolumeURL constructs the jnovels per-volume post URL for volume v from a
+// series page URL, using the same slug jnovels keys posts on: strip the series
+// page's trailing "-light-novel"/"-epub"/"-pdf" markers (via seriesKey) and append
+// "-volume-<v>-epub". Returns "" when seriesLink carries no usable slug. jnovels'
+// slug pattern is stable and verified (#108); a series filed under a different
+// pattern just 404s the derived URL and the caller falls back to search.
+func deriveVolumeURL(seriesLink string, v int) string {
+	trimmed := strings.TrimRight(strings.TrimSpace(seriesLink), "/")
+	i := strings.LastIndex(trimmed, "/")
+	if i < 0 {
+		return ""
+	}
+	slug := seriesKey(seriesLink)
+	if slug == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s/%s-volume-%d-epub/", trimmed[:i], slug, v)
 }
 
 // publishBackfill pushes a backfill-progress frame to SSE subscribers.
