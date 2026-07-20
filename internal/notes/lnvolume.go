@@ -72,6 +72,36 @@ func SetVolumeStatus(seriesNotePath, series string, volume int, newStatus string
 	return vault.UpdateStatus(p, newStatus)
 }
 
+// SetVolumeNotes writes personalNotes into the `## Notes` section of a volume's
+// #LNVolume note (#103), best-effort like SetVolumeStatus: a series/volume with
+// no backfilled note on disk writes nothing and returns written=false, so the
+// caller can tell the user their notes had nowhere to go. A blank personalNotes
+// removes any existing section.
+func SetVolumeNotes(seriesNotePath, series string, volume int, personalNotes string) (written bool, err error) {
+	p := longPath(VolumePath(seriesNotePath, series, volume))
+	if _, err := os.Stat(p); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, vault.SetNotesSection(p, personalNotes)
+}
+
+// VolumeNotes reads the `## Notes` prose from a volume's #LNVolume note (empty
+// when the note or the section is absent). Feeds the edit-entry dialog's notes
+// textarea so re-editing loads the current text (#103).
+func VolumeNotes(seriesNotePath, series string, volume int) (string, error) {
+	p := longPath(VolumePath(seriesNotePath, series, volume))
+	if _, err := os.Stat(p); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", nil
+		}
+		return "", err
+	}
+	return vault.NotesSection(p)
+}
+
 // incompleteTag is the marker a placeholder volume note carries; noteIncomplete
 // tests for it (case-insensitively, with or without the leading '#').
 const incompleteTag = "lnvolume/incomplete"

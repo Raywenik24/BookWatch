@@ -661,6 +661,59 @@ func syncNoteOnCompletion(notePath, kind, volume string, abandoned bool) (series
 	return !completed, completedVol, nil
 }
 
+// completionNoteTarget resolves the note a completion's personal notes belong in
+// (#103): the book's own note for a #Book, or the completed volume's #LNVolume
+// note for an LN. It returns the volume number for the LN path (0 for a #Book or
+// a non-numeric volume) so the caller can address the right volume note.
+func completionNoteTarget(notePath, kind, volume string) (isVolume bool, vol int) {
+	if kind != "ln" {
+		return false, 0
+	}
+	v, err := strconv.Atoi(strings.TrimSpace(volume))
+	if err != nil {
+		return false, 0
+	}
+	return true, v
+}
+
+// WriteCompletionNotes writes personalNotes into the `## Notes` section of the
+// note a completion targets (#103). Returns whether the section was written —
+// false (no error) when an LN volume has no backfilled note to write into, so
+// the caller can warn that the notes weren't saved. A blank personalNotes
+// removes any existing section (the edit-entry dialog uses this to clear notes).
+func WriteCompletionNotes(notePath, kind, volume, personalNotes string) (written bool, err error) {
+	if notePath == "" {
+		return false, nil
+	}
+	isVolume, vol := completionNoteTarget(notePath, kind, volume)
+	if !isVolume {
+		if kind != "ln" { // #Book: the book's own note holds the notes
+			return true, vault.SetNotesSection(notePath, personalNotes)
+		}
+		return false, nil // an LN with no numeric volume — nowhere to write
+	}
+	series := strings.TrimSuffix(filepath.Base(notePath), filepath.Ext(notePath))
+	return notes.SetVolumeNotes(notePath, series, vol, personalNotes)
+}
+
+// ReadCompletionNotes reads the `## Notes` prose from the note a completion
+// targets — the mirror of WriteCompletionNotes — so the edit-entry dialog can
+// preload the current text (#103).
+func ReadCompletionNotes(notePath, kind, volume string) (string, error) {
+	if notePath == "" {
+		return "", nil
+	}
+	isVolume, vol := completionNoteTarget(notePath, kind, volume)
+	if !isVolume {
+		if kind != "ln" {
+			return vault.NotesSection(notePath)
+		}
+		return "", nil
+	}
+	series := strings.TrimSuffix(filepath.Base(notePath), filepath.Ext(notePath))
+	return notes.VolumeNotes(notePath, series, vol)
+}
+
 // ApplyResult is the outcome of applying pending updates to the vault.
 type ApplyResult struct {
 	Applied int          `json:"applied"`

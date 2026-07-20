@@ -672,6 +672,114 @@ func UpdateDescription(path, newDesc string) error {
 	return AtomicWrite(path, []byte(strings.Join(out, nl)), 0o644)
 }
 
+// notesHeading marks the personal-notes section a completion writes into the
+// body of a volume/book note (#103). H2 so it sits below the H3 note title.
+const notesHeading = "## Notes"
+
+// NotesSection returns the prose under the body's `## Notes` heading (empty when
+// the note has no such section). Read side of the completion-notes feature
+// (#103): the edit-entry dialog loads it so the text can be revised.
+func NotesSection(path string) (string, error) {
+	lines, _, closeIdx, err := loadFrontmatter(path)
+	if err != nil {
+		return "", err
+	}
+	start := notesHeadingIdx(lines, closeIdx)
+	if start == -1 {
+		return "", nil
+	}
+	return strings.TrimSpace(strings.Join(lines[start+1:notesSectionEnd(lines, start)], "\n")), nil
+}
+
+// SetNotesSection inserts or replaces the body `## Notes` section with notesText
+// (#103). The section is placed after the description and before a volume note's
+// prev/next nav footer, so re-editing replaces it in place rather than appending.
+// A blank notesText removes the section entirely.
+func SetNotesSection(path, notesText string) error {
+	lines, nl, closeIdx, err := loadFrontmatter(path)
+	if err != nil {
+		return err
+	}
+	notesText = strings.TrimSpace(strings.ReplaceAll(notesText, "\r\n", "\n"))
+
+	// Excise any existing section (and the blank separators just above it) first,
+	// so both the replace and the remove paths start from a clean body.
+	if start := notesHeadingIdx(lines, closeIdx); start != -1 {
+		end := notesSectionEnd(lines, start)
+		for start > closeIdx+1 && strings.TrimSpace(lines[start-1]) == "" {
+			start--
+		}
+		out := append([]string{}, lines[:start]...)
+		lines = append(out, lines[end:]...)
+	}
+
+	if notesText == "" {
+		return AtomicWrite(path, []byte(strings.Join(lines, nl)), 0o644)
+	}
+
+	block := append([]string{"", notesHeading, ""}, strings.Split(notesText, "\n")...)
+	var out []string
+	if ins := navFooterIdx(lines, closeIdx); ins != -1 {
+		block = append(block, "") // blank separator before the nav `---`
+		out = append(out, lines[:ins]...)
+		out = append(out, block...)
+		out = append(out, lines[ins:]...)
+	} else {
+		// No nav footer (e.g. a #Book note): append at the end, past the description.
+		end := len(lines)
+		for end > closeIdx+1 && strings.TrimSpace(lines[end-1]) == "" {
+			end--
+		}
+		out = append(out, lines[:end]...)
+		out = append(out, block...)
+		out = append(out, "") // trailing newline
+	}
+	return AtomicWrite(path, []byte(strings.Join(out, nl)), 0o644)
+}
+
+// notesHeadingIdx returns the body line index of the `## Notes` heading (after
+// the closing frontmatter fence at closeIdx), or -1 if there is none.
+func notesHeadingIdx(lines []string, closeIdx int) int {
+	for i := closeIdx + 1; i < len(lines); i++ {
+		if strings.TrimSpace(lines[i]) == notesHeading {
+			return i
+		}
+	}
+	return -1
+}
+
+// notesSectionEnd returns the exclusive end index of the `## Notes` section that
+// opens at headingIdx: it runs until the next ATX heading, a `---` rule (the
+// volume-nav footer), or EOF.
+func notesSectionEnd(lines []string, headingIdx int) int {
+	for i := headingIdx + 1; i < len(lines); i++ {
+		t := strings.TrimSpace(lines[i])
+		if t == "---" || strings.HasPrefix(t, "## ") || strings.HasPrefix(t, "### ") {
+			return i
+		}
+	}
+	return len(lines)
+}
+
+// navFooterIdx returns the index of a volume note's nav-footer `---` rule — the
+// trailing `---` whose following non-blank lines are only Previous:/Next:
+// wikilinks (written by the #LNVolume builder) — or -1 when the body has none.
+func navFooterIdx(lines []string, closeIdx int) int {
+	for i := len(lines) - 1; i > closeIdx; i-- {
+		if strings.TrimSpace(lines[i]) != "---" {
+			continue
+		}
+		for j := i + 1; j < len(lines); j++ {
+			t := strings.TrimSpace(lines[j])
+			if t != "" && !strings.HasPrefix(t, "Previous:") && !strings.HasPrefix(t, "Next:") {
+				return -1 // last rule isn't a nav footer — nothing to insert before
+			}
+		}
+		return i
+	}
+	return -1
+}
+
 // Note is the full contents of a tracked note — every frontmatter field the UI
 // shows or edits, plus the description prose from the body (the structural
 // lines — H3 title, cover embed, LN "[[Light Novel]]" link — stripped out).

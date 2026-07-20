@@ -2675,6 +2675,10 @@ function openCompletionForm(itemId){
     <label style="display:flex;align-items:center;gap:.5rem;margin-top:.6rem;color:var(--subtext)">
       <input id="cmpUnknown" type="checkbox" onchange="cmpToggleUnknown(this.checked)"> I don’t remember the dates
     </label>
+    <div class="ne-grid" style="margin-top:.6rem">
+      <label>Notes</label>
+      <textarea id="cmpNotes" rows="4" placeholder="Personal notes — saved into the note’s ## Notes section (optional)" spellcheck="false"></textarea>
+    </div>
     <div class="row" style="margin-top:1rem;justify-content:space-between;gap:.5rem">
       <button class="btn ghost danger" id="cmpAbandonBtn" onclick="submitAbandon(${itemId})" title="Log as started but not finished (----)">Abandon</button>
       <div class="row" style="gap:.5rem;margin:0">
@@ -2697,13 +2701,13 @@ async function submitCompletion(itemId){
   if(!_readingConfigured){ return toast('Set a reading log note in Settings first.', 'error'); }
   const unknown = $('cmpUnknown').checked;
   const btn = $('cmpSaveBtn'); if(btn) btn.disabled = true;
-  const body = { volume: it.volume, reading_item_id: it.id, unknown };
+  const body = { volume: it.volume, reading_item_id: it.id, unknown, notes: $('cmpNotes').value };
   if(!unknown){ body.start = _cmpStartPicker.getValue(); body.end = _cmpEndPicker.getValue(); }
   const r = await send('POST', '/api/books/' + it.book_id + '/complete', body);
   if(need(r)){ if(btn) btn.disabled = false; return; }
   if(!r.ok){ if(btn) btn.disabled = false; return toast('Error: ' + (r.data.error || r.status), 'error'); }
   closeReadingModal();
-  toast('Logged as completed.', 'success');
+  toast(r.data.notes_unsaved ? 'Logged as completed — but no volume note yet to save your notes into.' : 'Logged as completed.', r.data.notes_unsaved ? 'info' : 'success');
   loadReading();
   loadBooks(); // a #Book flip to Completed changes the Books feed
   loadEvents();
@@ -2717,13 +2721,13 @@ async function submitAbandon(itemId){
   if(!_readingConfigured){ return toast('Set a reading log note in Settings first.', 'error'); }
   const unknown = $('cmpUnknown').checked;
   const btn = $('cmpAbandonBtn'); if(btn) btn.disabled = true;
-  const body = { volume: it.volume, reading_item_id: it.id, abandoned: true };
+  const body = { volume: it.volume, reading_item_id: it.id, abandoned: true, notes: $('cmpNotes').value };
   if(!unknown) body.start = _cmpStartPicker.getValue();
   const r = await send('POST', '/api/books/' + it.book_id + '/complete', body);
   if(need(r)){ if(btn) btn.disabled = false; return; }
   if(!r.ok){ if(btn) btn.disabled = false; return toast('Error: ' + (r.data.error || r.status), 'error'); }
   closeReadingModal();
-  toast('Marked as abandoned.', 'success');
+  toast(r.data.notes_unsaved ? 'Marked as abandoned — but no volume note yet to save your notes into.' : 'Marked as abandoned.', r.data.notes_unsaved ? 'info' : 'success');
   loadReading();
   loadBooks(); // a #Book flip to Dropped changes the Books feed
   loadEvents();
@@ -2737,7 +2741,7 @@ async function submitAbandon(itemId){
 let _editStartPicker = null, _editEndPicker = null, _editIndex = null;
 // dotsToDash / normalizes a log date (2026.07.06) to the picker's yyyy-mm-dd.
 function dotsToDash(s){ return (s || '').replace(/\./g, '-'); }
-function openCompletedEdit(index){
+async function openCompletedEdit(index){
   const r = _readingReads[index];
   if(!r) return;
   _editIndex = index;
@@ -2758,6 +2762,10 @@ function openCompletedEdit(index){
     <label style="display:flex;align-items:center;gap:.5rem;margin-top:.3rem;color:var(--subtext)">
       <input id="editAbandoned" type="checkbox" ${r.abandoned ? 'checked' : ''} onchange="editToggle()"> Abandoned (started, not finished)
     </label>
+    <div class="ne-grid" style="margin-top:.6rem">
+      <label>Notes</label>
+      <textarea id="editNotes" rows="4" placeholder="Personal notes — saved into the note’s ## Notes section (optional)" spellcheck="false">loading…</textarea>
+    </div>
     <div class="row" style="margin-top:1rem;justify-content:flex-end;gap:.5rem">
       <button class="btn ghost" onclick="closeReadingModal()">Cancel</button>
       <button class="btn" id="editSaveBtn" onclick="submitCompletedEdit()">Save</button>
@@ -2767,6 +2775,11 @@ function openCompletedEdit(index){
   _editEndPicker = datePicker('editEndMount', { value: dotsToDash(r.end) });
   editToggle();
   $('readingModalBackdrop').hidden = false;
+  // Preload the current ## Notes text so it can be revised, not overwritten (#103).
+  const ta = $('editNotes'); ta.disabled = true;
+  const nr = await getJSON('/api/reading/notes?title=' + encodeURIComponent(r.title) + '&volume=' + encodeURIComponent(r.volume || '')).catch(() => ({ notes: '' }));
+  // Guard against the user having closed/reopened the modal while this was in flight.
+  if($('editNotes') === ta){ ta.value = nr.notes || ''; ta.disabled = false; }
 }
 // editToggle disables the date fields that don't apply: unknown blanks both,
 // abandoned blanks only the finish date (it becomes the ---- marker).
@@ -2780,14 +2793,14 @@ async function submitCompletedEdit(){
   const r = _readingReads[_editIndex];
   const unknown = $('editUnknown').checked, abandoned = $('editAbandoned').checked;
   const btn = $('editSaveBtn'); if(btn) btn.disabled = true;
-  const body = { index: _editIndex, title: r.title, volume: $('editVol').value.trim(), unknown, abandoned };
+  const body = { index: _editIndex, title: r.title, volume: $('editVol').value.trim(), unknown, abandoned, notes: $('editNotes').value };
   if(!unknown){ body.start = _editStartPicker.getValue(); if(!abandoned) body.end = _editEndPicker.getValue(); }
   const res = await send('PUT', '/api/reading/completed', body);
   if(need(res)){ if(btn) btn.disabled = false; return; }
   if(res.status === 409){ if(btn) btn.disabled = false; return toast(res.data.error || 'The log changed — refreshed; try again.', 'error'), loadReading(); }
   if(!res.ok){ if(btn) btn.disabled = false; return toast('Error: ' + (res.data.error || res.status), 'error'); }
   closeReadingModal();
-  toast('Entry updated.', 'success');
+  toast(res.data.notes_unsaved ? 'Entry updated — but no volume note yet to save your notes into.' : 'Entry updated.', res.data.notes_unsaved ? 'info' : 'success');
   loadReading();
   loadEvents();
 }

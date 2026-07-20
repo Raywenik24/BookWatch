@@ -31,7 +31,9 @@ is stored in a local SQLite file.
   backed entirely by SQLite (no vault writes just for queue order). Marking a
   book or light-novel volume complete appends a row to a single, vault-wide
   completed-reads log and — for light novels — auto-corrects `Status` and
-  auto-queues the next volume.
+  auto-queues the next volume. Completing (or editing a completed entry) can also
+  save personal notes into a `## Notes` section of the note — the per-volume note
+  for a light novel, or the book's own note.
 - **Randomizer** — reroll a handful of random Backlog picks, filterable by
   light novels or books, to decide what to read next.
 - **Scheduled checks** — a cron expression runs checks automatically (default:

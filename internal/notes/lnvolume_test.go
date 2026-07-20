@@ -99,6 +99,41 @@ func TestSetVolumeStatus(t *testing.T) {
 	}
 }
 
+// SetVolumeNotes writes the ## Notes section of an existing volume note and
+// reports written=false (no error) for a volume that was never backfilled (#103).
+func TestSetVolumeNotes(t *testing.T) {
+	dir := t.TempDir()
+	seriesNotePath := filepath.Join(dir, "S.md")
+	volPath := VolumePath(seriesNotePath, "S", 2)
+	if err := os.MkdirAll(filepath.Dir(volPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(volPath, []byte(BuildLNVolumeNote("S", 2, 3, "", "", "", "", "", "2026-07-17", false)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	written, err := SetVolumeNotes(seriesNotePath, "S", 2, "Best volume yet.")
+	if err != nil || !written {
+		t.Fatalf("write to existing note: written=%v err=%v", written, err)
+	}
+	if got, _ := VolumeNotes(seriesNotePath, "S", 2); got != "Best volume yet." {
+		t.Errorf("round-trip mismatch: %q", got)
+	}
+	// The notes must sit above the prev/next nav footer.
+	data, _ := os.ReadFile(volPath)
+	if strings.Index(string(data), "## Notes") > strings.Index(string(data), "Next:") {
+		t.Errorf("Notes landed below the nav footer:\n%s", data)
+	}
+
+	// A volume with no backfilled note: nothing written, no error, empty read.
+	if written, err := SetVolumeNotes(seriesNotePath, "S", 3, "orphan note"); err != nil || written {
+		t.Errorf("missing volume note should be a no-op: written=%v err=%v", written, err)
+	}
+	if got, err := VolumeNotes(seriesNotePath, "S", 3); err != nil || got != "" {
+		t.Errorf("missing volume note should read empty: got %q err %v", got, err)
+	}
+}
+
 func TestCreateLNVolume_incompleteAndCollision(t *testing.T) {
 	vaultDir := t.TempDir()
 	o := Options{VaultDir: vaultDir, NewNoteDir: "LN", AttachmentsDir: "LN/_attachments"}

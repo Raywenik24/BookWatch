@@ -142,6 +142,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/reading/completed", s.handleReadingCompleted)
 	mux.HandleFunc("GET /api/reading/queue", s.handleReadingState)
 	mux.HandleFunc("GET /api/reading/next-volume", s.handleReadingNextVolume)
+	mux.HandleFunc("GET /api/reading/notes", s.handleReadingNotes)
 
 	mux.HandleFunc("POST /api/check", s.auth(s.handleCheck))
 	mux.HandleFunc("POST /api/vault/refresh", s.auth(s.handleVaultRefresh))
@@ -1313,13 +1314,14 @@ func (s *Server) handleEditCompleted(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Index     *int   `json:"index"`
-		Title     string `json:"title"`
-		Volume    string `json:"volume"`
-		Start     string `json:"start"`
-		End       string `json:"end"`
-		Unknown   bool   `json:"unknown"`
-		Abandoned bool   `json:"abandoned"`
+		Index     *int    `json:"index"`
+		Title     string  `json:"title"`
+		Volume    string  `json:"volume"`
+		Start     string  `json:"start"`
+		End       string  `json:"end"`
+		Unknown   bool    `json:"unknown"`
+		Abandoned bool    `json:"abandoned"`
+		Notes     *string `json:"notes"` // present → rewrite the note's ## Notes section (#103)
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Index == nil || body.Title == "" {
 		writeJSON(w, http.StatusBadRequest, errBody("index and title required"))
@@ -1333,8 +1335,48 @@ func (s *Server) handleEditCompleted(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, errBody(err.Error()))
 		return
 	}
+
+	// Personal notes (#103): the edit-entry dialog sends the current ## Notes text
+	// (possibly blank, to clear it). Resolve the logged title back to its note and
+	// rewrite the section — best-effort, so it never undoes the log edit above.
+	notesUnsaved := false
+	if body.Notes != nil {
+		if ref, ok, err := s.st.BookByTitle(body.Title); err == nil && ok {
+			written, werr := service.WriteCompletionNotes(ref.Path, ref.Kind, body.Volume, *body.Notes)
+			if (werr != nil || !written) && strings.TrimSpace(*body.Notes) != "" {
+				notesUnsaved = true
+			}
+		} else if strings.TrimSpace(*body.Notes) != "" {
+			notesUnsaved = true // no tracked note for this log title
+		}
+	}
 	s.st.LogEvent("read", fmt.Sprintf("Edited log entry %s", readingUnit(body.Title, body.Volume)))
-	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+	writeJSON(w, http.StatusOK, map[string]any{"status": "updated", "notes_unsaved": notesUnsaved})
+}
+
+// handleReadingNotes serves the current ## Notes text for a completed-log entry,
+// resolved from its title (the wikilink target) + volume (#103). The edit-entry
+// dialog loads it so the text can be revised. An untracked title, or a note with
+// no such section, returns an empty string — never an error.
+func (s *Server) handleReadingNotes(w http.ResponseWriter, r *http.Request) {
+	title := r.URL.Query().Get("title")
+	volume := r.URL.Query().Get("volume")
+	if title == "" {
+		writeJSON(w, http.StatusBadRequest, errBody("title required"))
+		return
+	}
+	ref, ok, err := s.st.BookByTitle(title)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	notesText := ""
+	if ok {
+		if n, nerr := service.ReadCompletionNotes(ref.Path, ref.Kind, volume); nerr == nil {
+			notesText = n
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"notes": notesText})
 }
 
 // handleDeleteCompleted removes one row from the reading log by its file-order
@@ -1388,6 +1430,7 @@ func (s *Server) handleMarkCompleted(w http.ResponseWriter, r *http.Request) {
 		Unknown       bool   `json:"unknown"`
 		Abandoned     bool   `json:"abandoned"`       // log a `----` end marker + Drop the #Book (#64)
 		ReadingItemID int64  `json:"reading_item_id"` // optional: the currently-reading row to clear (#64)
+		Notes         string `json:"notes"`           // optional personal notes → the note's ## Notes section (#103)
 	}
 	if r.ContentLength != 0 {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -1400,6 +1443,17 @@ func (s *Server) handleMarkCompleted(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeErr(w, err)
 		return
+	}
+
+	// Personal notes → the ## Notes section of the completed note (#103). The log
+	// row is already written, so a note-side glitch never fails the completion —
+	// but if the user typed notes and the target (a not-yet-backfilled LN volume
+	// note) doesn't exist, tell them so the text isn't silently lost.
+	notesUnsaved := false
+	if strings.TrimSpace(body.Notes) != "" {
+		if written, werr := service.WriteCompletionNotes(ref.Path, ref.Kind, body.Volume, body.Notes); werr != nil || !written {
+			notesUnsaved = true
+		}
 	}
 
 	// ✓ Done / Abandon on a currently-reading item: the read is now in the log,
@@ -1429,7 +1483,7 @@ func (s *Server) handleMarkCompleted(w http.ResponseWriter, r *http.Request) {
 		verb, status = "Abandoned", "abandoned"
 	}
 	s.st.LogEvent("read", fmt.Sprintf("%s %q", verb, unit))
-	writeJSON(w, http.StatusOK, map[string]any{"status": status, "reread_count": result.RereadCount})
+	writeJSON(w, http.StatusOK, map[string]any{"status": status, "reread_count": result.RereadCount, "notes_unsaved": notesUnsaved})
 }
 
 // maxCoverUploadBytes caps an uploaded cover image (matches notes' download cap).

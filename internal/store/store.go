@@ -634,6 +634,21 @@ func (s *Store) BookByID(id int64) (BookRef, bool, error) {
 	return b, err == nil, err
 }
 
+// BookByTitle returns the note reference for a tracked book by its title (the
+// note basename / reading-log wikilink target), ok=false if no row matches. Used
+// to resolve a completed-log entry back to its note for the completion-notes
+// feature (#103), where the edit-entry dialog has only the logged title.
+func (s *Store) BookByTitle(title string) (BookRef, bool, error) {
+	var b BookRef
+	err := s.db.QueryRow(
+		`SELECT id, title, link, path, cover, kind FROM books WHERE title=? LIMIT 1`, title).
+		Scan(&b.ID, &b.Title, &b.Link, &b.Path, &b.Cover, &b.Kind)
+	if err == sql.ErrNoRows {
+		return BookRef{}, false, nil
+	}
+	return b, err == nil, err
+}
+
 // BookTitle returns a book's title (empty if no row). Used to name an untrack
 // event before the row is deleted.
 func (s *Store) BookTitle(id int64) (string, error) {
