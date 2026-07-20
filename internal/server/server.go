@@ -620,6 +620,18 @@ func (s *Server) handleApply(w http.ResponseWriter, r *http.Request) {
 	if res.Applied > 0 || res.Failed > 0 {
 		s.st.LogEvent("apply", fmt.Sprintf("Applied %d update(s) to Obsidian, %d failed", res.Applied, res.Failed))
 	}
+	// #109: applying a bump only rewrote the series note's `Volumes:` YAML — now
+	// build the #LNVolume note(s) for the newly-added volume(s) too, so the new
+	// volume shows its own cover in Reading/Queue instead of "missing". A targeted
+	// background gap-fill over [OldVolumes+1, NewVolumes] reuses the backfill job,
+	// which also fixes the prior volume's `Next:` link and grows the series list.
+	for _, u := range res.Updates {
+		if !u.Wrote || u.Path == "" || u.NewVolumes <= u.OldVolumes {
+			continue
+		}
+		series := strings.TrimSuffix(filepath.Base(u.Path), filepath.Ext(u.Path))
+		s.startVolumeBackfill(series, u.Link, u.OldVolumes+1, u.NewVolumes, "")
+	}
 	writeJSON(w, http.StatusOK, res)
 }
 
@@ -799,7 +811,7 @@ func (s *Server) handleAddBook(w http.ResponseWriter, r *http.Request) {
 	// Kick off the per-volume note backfill in the background (#90): one #LNVolume
 	// note per volume, each with its own cover, so the Reading tab can show the
 	// read volume's cover. Best-effort — the add itself has already succeeded.
-	s.startVolumeBackfill(res.Title, body.URL, res.Volumes, "")
+	s.startVolumeBackfill(res.Title, body.URL, 1, res.Volumes, "")
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"title": res.Title, "volumes": res.Volumes, "path": res.Path,
 		"backfilling": res.Volumes > 0,

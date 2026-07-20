@@ -43,22 +43,31 @@ const maxBackfillVolumes = 120
 var backfillThrottle = 800 * time.Millisecond
 
 // startVolumeBackfill launches — at most once per series at a time — a background
-// job that writes an untracked #LNVolume note per volume of series. Returns
-// immediately; progress flows over SSE. A no-op for a blank series, a
-// non-positive volume count, or a series already being backfilled.
+// job that writes an untracked #LNVolume note for each volume in the inclusive
+// range [from, to] of series (to is the series' total volume count, used for the
+// nav footers). A full backfill passes [1, volumes]; an apply-time gap-fill for a
+// newly-detected volume passes [OldVolumes+1, NewVolumes] (#109). Returns
+// immediately; progress flows over SSE. A no-op for a blank series, an empty
+// range, or a series already being backfilled.
 //
 // series must be the sanitized series-note title (the one the note file is named
 // after), so the `_volumes/<Series>/` folder the volumes land in matches what the
 // reading-view cover lookup derives from that note's path. Only the in-memory
 // dedupe key is apostrophe-normalized (jnovels' search needs that) — never the
 // on-disk name.
-func (s *Server) startVolumeBackfill(series, seriesLink string, volumes int, language string) {
+func (s *Server) startVolumeBackfill(series, seriesLink string, from, to int, language string) {
 	series = strings.TrimSpace(series)
-	if series == "" || volumes <= 0 {
+	if series == "" || to <= 0 {
 		return
 	}
-	if volumes > maxBackfillVolumes {
-		volumes = maxBackfillVolumes
+	if from < 1 {
+		from = 1
+	}
+	if to > maxBackfillVolumes {
+		to = maxBackfillVolumes
+	}
+	if from > to {
+		return
 	}
 	key := strings.ToLower(scraper.NormalizeApostrophes(series))
 
@@ -70,10 +79,10 @@ func (s *Server) startVolumeBackfill(series, seriesLink string, volumes int, lan
 	s.backfillActive[key] = true
 	s.backfillMu.Unlock()
 
-	go s.runVolumeBackfill(series, seriesLink, key, volumes, language)
+	go s.runVolumeBackfill(series, seriesLink, key, from, to, language)
 }
 
-func (s *Server) runVolumeBackfill(series, seriesLink, key string, volumes int, language string) {
+func (s *Server) runVolumeBackfill(series, seriesLink, key string, from, to int, language string) {
 	defer func() {
 		s.backfillMu.Lock()
 		delete(s.backfillActive, key)
@@ -90,24 +99,24 @@ func (s *Server) runVolumeBackfill(series, seriesLink, key string, volumes int, 
 	resolved, incomplete := 0, 0
 	alias := ""
 	var missed []int
-	s.publishBackfill(series, 0, volumes, resolved, incomplete, "running")
+	s.publishBackfill(series, from-1, to, resolved, incomplete, "running")
 
 	// Pass 1: search each volume under the series' own title. Note the localized
 	// alias title jnovels files the volumes under, discovered from a hit whose
 	// series differs from ours ("Kumo Desu ga Nani ka" → "So I'm a Spider…").
-	for v := 1; v <= volumes; v++ {
+	for v := from; v <= to; v++ {
 		// #108: derive the volume's jnovels URL straight from the series slug and
 		// try it first. The title-search matcher can't tell an "Ex" spinoff from
 		// the main series, but jnovels' slug pattern is exact — so this resolves
 		// per-volume "Ex" posts the search misses. matched=false (a 404, e.g.
 		// vol 1 = the series page, or an unscrapeable page) falls through to the
 		// existing search chain unchanged.
-		if written, matched := s.deriveVolume(opts, series, seriesLink, v, volumes, language, rl); matched {
+		if written, matched := s.deriveVolume(opts, series, seriesLink, v, to, language, rl); matched {
 			if written {
 				resolved++
 			}
 		} else if nd, url, postSeries, err := s.sc.VolumeData(series, v, rl); err == nil {
-			if s.writeVolume(opts, series, v, volumes, language, url, nd) {
+			if s.writeVolume(opts, series, v, to, language, url, nd) {
 				resolved++
 			}
 			if alias == "" && postSeries != "" && !scraper.SameSeries(series, postSeries) {
@@ -116,8 +125,8 @@ func (s *Server) runVolumeBackfill(series, seriesLink, key string, volumes int, 
 		} else {
 			missed = append(missed, v)
 		}
-		s.publishBackfill(series, v, volumes, resolved, incomplete, "running")
-		if v < volumes {
+		s.publishBackfill(series, v, to, resolved, incomplete, "running")
+		if v < to {
 			time.Sleep(backfillThrottle)
 		}
 	}
@@ -129,12 +138,12 @@ func (s *Server) runVolumeBackfill(series, seriesLink, key string, volumes int, 
 	if alias != "" && len(missed) > 0 {
 		var still []int
 		for _, v := range missed {
-			if nd, url, _, err := s.sc.VolumeData(alias, v, rl); err == nil && s.writeVolume(opts, series, v, volumes, language, url, nd) {
+			if nd, url, _, err := s.sc.VolumeData(alias, v, rl); err == nil && s.writeVolume(opts, series, v, to, language, url, nd) {
 				resolved++
 			} else {
 				still = append(still, v)
 			}
-			s.publishBackfill(series, volumes, volumes, resolved, incomplete, "running")
+			s.publishBackfill(series, to, to, resolved, incomplete, "running")
 			time.Sleep(backfillThrottle)
 		}
 		missed = still
@@ -146,27 +155,34 @@ func (s *Server) runVolumeBackfill(series, seriesLink, key string, volumes int, 
 	for _, v := range missed {
 		if v == 1 && seriesLink != "" {
 			if snd, serr := s.sc.NovelData(seriesLink, rl); serr == nil && snd.CoverURL != "" {
-				if s.writeVolume(opts, series, 1, volumes, language, seriesLink, snd) {
+				if s.writeVolume(opts, series, 1, to, language, seriesLink, snd) {
 					resolved++
 				}
 				continue
 			}
 		}
-		if _, cerr := notes.CreateLNVolume(opts, series, v, volumes, language, "", "", "", "", true); cerr == nil {
+		if _, cerr := notes.CreateLNVolume(opts, series, v, to, language, "", "", "", "", true); cerr == nil {
 			incomplete++
 		}
 	}
 
-	// Point the series note at its volume notes (idempotent), then refresh covers.
+	// A gap-fill (from > 1) adds volumes after one that used to be last: rewrite
+	// that prior volume's nav footer so it gains its `Next:` link (#109).
 	seriesNote := filepath.Join(vault.ResolvePath(opts.VaultDir, opts.NewNoteDir), notes.Sanitize(series, false)+".md")
-	if err := notes.AppendVolumeLinks(seriesNote, series, volumes); err != nil {
-		log.Printf("backfill: append volume links for %q: %v", series, err)
+	if from > 1 {
+		if err := notes.UpdateVolumeNav(seriesNote, series, from-1, to); err != nil {
+			log.Printf("backfill: fix nav for %q volume %d: %v", series, from-1, err)
+		}
+	}
+	// Point the series note at its volume notes (rebuilt to the current count), then refresh covers.
+	if err := notes.SyncVolumeLinks(seriesNote, series, to); err != nil {
+		log.Printf("backfill: sync volume links for %q: %v", series, err)
 	}
 	s.bustCoverIndex()     // so the new volume covers resolve without waiting for the TTL
 	s.bustBackfillStatus() // refresh the Books-grid attention badges
-	s.st.LogEvent("backfill", fmt.Sprintf("Volume backfill for %q: %d resolved, %d incomplete (of %d)",
-		series, resolved, incomplete, volumes))
-	s.publishBackfill(series, volumes, volumes, resolved, incomplete, "done")
+	s.st.LogEvent("backfill", fmt.Sprintf("Volume backfill for %q volumes %d–%d: %d resolved, %d incomplete",
+		series, from, to, resolved, incomplete))
+	s.publishBackfill(series, to, to, resolved, incomplete, "done")
 }
 
 // writeVolume creates a resolved #LNVolume note from a scrape. It reports true
@@ -293,7 +309,7 @@ func (s *Server) handleBackfillVolumes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	removed, _ := notes.RemoveIncompleteVolumes(b.Path)
-	s.startVolumeBackfill(series, b.Link, volumes, "")
+	s.startVolumeBackfill(series, b.Link, 1, volumes, "")
 	s.st.LogEvent("backfill", fmt.Sprintf("Retroactive volume backfill for %q (cleared %d incomplete)", series, removed))
 	writeJSON(w, http.StatusAccepted, map[string]any{"status": "started", "cleared": removed, "volumes": volumes})
 }

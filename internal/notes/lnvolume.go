@@ -261,20 +261,48 @@ func BuildLNVolumeNote(series string, volume, total int, language, link, coverNa
 	return b.String()
 }
 
-// writeVolumeNav appends the reading-navigation footer: prev/next volume links
-// (only those that exist within 1..total). The series link lives in the Series
-// frontmatter property, so it isn't repeated here.
+// volumeNavLines returns a volume's reading-nav footer lines — the prev/next
+// wikilinks that exist within 1..total (empty for a lone volume with nothing to
+// link). The series link lives in the Series frontmatter property, so it isn't
+// repeated here. Single source of truth shared by the note builder and the
+// after-the-fact nav rewrite (UpdateVolumeNav).
+func volumeNavLines(series string, volume, total int) []string {
+	var lines []string
+	if volume > 1 {
+		lines = append(lines, fmt.Sprintf("Previous: [[%s]]", Sanitize(LNVolumeTitle(series, volume-1), false)))
+	}
+	if total > 0 && volume < total {
+		lines = append(lines, fmt.Sprintf("Next: [[%s]]", Sanitize(LNVolumeTitle(series, volume+1), false)))
+	}
+	return lines
+}
+
+// writeVolumeNav appends the reading-navigation footer to a note being built.
 func writeVolumeNav(b *strings.Builder, series string, volume, total int) {
-	if volume <= 1 && (total <= 0 || volume >= total) {
+	lines := volumeNavLines(series, volume, total)
+	if len(lines) == 0 {
 		return // nothing to link (a lone volume)
 	}
 	b.WriteString("\n---\n")
-	if volume > 1 {
-		fmt.Fprintf(b, "Previous: [[%s]]\n", Sanitize(LNVolumeTitle(series, volume-1), false))
+	for _, ln := range lines {
+		b.WriteString(ln)
+		b.WriteString("\n")
 	}
-	if total > 0 && volume < total {
-		fmt.Fprintf(b, "Next: [[%s]]\n", Sanitize(LNVolumeTitle(series, volume+1), false))
+}
+
+// UpdateVolumeNav rewrites an existing #LNVolume note's nav footer for a (possibly
+// larger) total volume count, so the volume that used to be last gains its `Next:`
+// link once a gap-fill adds later volumes (#109). Best-effort: a volume with no
+// note on disk is a no-op (nil), mirroring SetVolumeStatus.
+func UpdateVolumeNav(seriesNotePath, series string, volume, total int) error {
+	p := longPath(VolumePath(seriesNotePath, series, volume))
+	if _, err := os.Stat(p); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return err
 	}
+	return vault.SetVolumeNav(p, volumeNavLines(series, volume, total))
 }
 
 // CreateLNVolume writes one #LNVolume note under the series' `_volumes/<Series>/`
@@ -340,16 +368,17 @@ func SaveLNVolume(o Options, series string, volume, total int, language, link, r
 	return Result{Path: notePath, Title: sanTitle, Volumes: volume, Cover: coverName}, nil
 }
 
-// volumeLinksHeading marks the wikilink section AppendVolumeLinks adds, and
-// doubles as the idempotency guard (a note that already has it is left alone).
+// volumeLinksHeading marks the wikilink section SyncVolumeLinks writes.
 const volumeLinksHeading = "### Volumes"
 
-// AppendVolumeLinks adds a "### Volumes" section of `[[<Series> Volume N]]`
-// wikilinks to the series note's body (after the description), so the tracked
-// series note points at each backfilled volume note. Idempotent: a note that
-// already carries the section is left untouched, so a re-run doesn't duplicate
-// it. A no-op for a non-positive volume count.
-func AppendVolumeLinks(seriesNotePath, series string, volumes int) error {
+// SyncVolumeLinks (re)writes a "### Volumes" section of `[[<Series> Volume N]]`
+// wikilinks in the series note's body (after the description), so the tracked
+// series note points at each volume note. The section is rebuilt from scratch on
+// every call: a newly-applied volume grows the list (the old append-once guard
+// left it frozen at the first backfill's count, #109) and any earlier gap
+// self-heals. The list is always the note's last section, so dropping from its
+// heading to EOF is safe. A no-op for a non-positive volume count.
+func SyncVolumeLinks(seriesNotePath, series string, volumes int) error {
 	if volumes <= 0 {
 		return nil
 	}
@@ -358,8 +387,8 @@ func AppendVolumeLinks(seriesNotePath, series string, volumes int) error {
 		return err
 	}
 	body := string(data)
-	if strings.Contains(body, volumeLinksHeading) {
-		return nil // already added
+	if i := strings.Index(body, volumeLinksHeading); i >= 0 {
+		body = body[:i]
 	}
 	var b strings.Builder
 	b.WriteString(strings.TrimRight(body, "\n"))

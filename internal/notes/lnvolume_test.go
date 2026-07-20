@@ -171,14 +171,14 @@ func TestVolumeDir(t *testing.T) {
 	}
 }
 
-func TestAppendVolumeLinks(t *testing.T) {
+func TestSyncVolumeLinks(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "Kumo Desu ga Nani ka.md")
 	seriesNote := "---\nSeries: Kumo Desu ga Nani ka\n---\n### Kumo Desu ga Nani ka\n\n![[c.jpg]]\n\n[[Light Novel]]\n\nA spider's tale.\n"
 	if err := os.WriteFile(p, []byte(seriesNote), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := AppendVolumeLinks(p, "Kumo Desu ga Nani ka", 3); err != nil {
+	if err := SyncVolumeLinks(p, "Kumo Desu ga Nani ka", 3); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := os.ReadFile(p)
@@ -196,13 +196,72 @@ func TestAppendVolumeLinks(t *testing.T) {
 	if strings.Index(string(got), "A spider's tale.") > strings.Index(string(got), "### Volumes") {
 		t.Error("volume links should follow the description")
 	}
-	// Idempotent — a second call must not duplicate the section.
-	if err := AppendVolumeLinks(p, "Kumo Desu ga Nani ka", 3); err != nil {
+	// No duplicate section on a re-run, and the list grows to the new count (#109).
+	if err := SyncVolumeLinks(p, "Kumo Desu ga Nani ka", 5); err != nil {
 		t.Fatal(err)
 	}
 	again, _ := os.ReadFile(p)
 	if strings.Count(string(again), "### Volumes") != 1 {
 		t.Errorf("expected exactly one Volumes section, got %d", strings.Count(string(again), "### Volumes"))
+	}
+	for _, want := range []string{
+		"- [[Kumo Desu ga Nani ka Volume 4]]",
+		"- [[Kumo Desu ga Nani ka Volume 5]]",
+	} {
+		if !strings.Contains(string(again), want) {
+			t.Errorf("regrown list missing %q\n---\n%s", want, again)
+		}
+	}
+	if strings.Contains(string(again), "A spider's tale.") == false {
+		t.Error("description dropped on regrow")
+	}
+}
+
+// TestUpdateVolumeNav covers #109's prev-note fix: a volume that was written as
+// the series' last one (no `Next:` link) must gain one when a gap-fill later adds
+// the following volume — without disturbing its cover/description.
+func TestUpdateVolumeNav(t *testing.T) {
+	vaultDir := t.TempDir()
+	o := Options{VaultDir: vaultDir, NewNoteDir: "LN", AttachmentsDir: "LN/_attachments"}
+	series := "Kumo Desu ga Nani ka"
+	seriesNote := filepath.Join(vaultDir, "LN", series+".md")
+
+	// Volume 1 created as the lone/last volume → no nav footer, no Next link.
+	if _, err := CreateLNVolume(o, series, 1, 1, "eng", "https://jnovels.com/k1/", "", "", "Blurb.", false); err != nil {
+		t.Fatal(err)
+	}
+	v1 := VolumePath(seriesNote, series, 1)
+	if before, _ := os.ReadFile(v1); strings.Contains(string(before), "Next:") {
+		t.Fatalf("vol 1 unexpectedly already has a Next link:\n%s", before)
+	}
+
+	// A later gap-fill bumps the total to 2 → vol 1 must gain Next → vol 2.
+	if err := UpdateVolumeNav(seriesNote, series, 1, 2); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := os.ReadFile(v1)
+	if !strings.Contains(string(after), "Next: [[Kumo Desu ga Nani ka Volume 2]]") {
+		t.Errorf("vol 1 missing Next link after nav update:\n%s", after)
+	}
+	if strings.Contains(string(after), "Previous:") {
+		t.Errorf("vol 1 should have no Previous link:\n%s", after)
+	}
+	if !strings.Contains(string(after), "Blurb.") {
+		t.Errorf("description dropped by nav update:\n%s", after)
+	}
+
+	// Re-running must not stack footers (exactly one Next line).
+	if err := UpdateVolumeNav(seriesNote, series, 1, 3); err != nil {
+		t.Fatal(err)
+	}
+	twice, _ := os.ReadFile(v1)
+	if got := strings.Count(string(twice), "Next:"); got != 1 {
+		t.Errorf("expected exactly one Next line, got %d:\n%s", got, twice)
+	}
+
+	// A missing note is a best-effort no-op, never an error.
+	if err := UpdateVolumeNav(seriesNote, series, 9, 10); err != nil {
+		t.Errorf("UpdateVolumeNav for a missing note should be nil, got %v", err)
 	}
 }
 

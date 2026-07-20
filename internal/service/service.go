@@ -27,6 +27,7 @@ var bundleRE = regexp.MustCompile(`(?i)\b(bundle|box(ed)?\s*set|collection|omnib
 type UpdateInfo struct {
 	Title      string `json:"title"`
 	Link       string `json:"link"`
+	Path       string `json:"path"` // series-note path, so an apply can build the new volume note (#109)
 	OldVolumes int    `json:"old_volumes"`
 	NewVolumes int    `json:"new_volumes"`
 	Wrote      bool   `json:"wrote"`
@@ -117,7 +118,7 @@ func RunCheck(sc *scraper.Client, st *store.Store, ol provider.Provider, lc prov
 			}
 		}
 		sum.Updates = append(sum.Updates, UpdateInfo{
-			Title: r.Entry.Title, Link: r.Entry.Link,
+			Title: r.Entry.Title, Link: r.Entry.Link, Path: r.Entry.Path,
 			OldVolumes: r.Entry.Volumes, NewVolumes: r.Latest, Wrote: wrote,
 		})
 
@@ -750,7 +751,7 @@ func ApplyPending(st *store.Store, today string, ids []int64) (ApplyResult, erro
 		}
 		res.Applied++
 		res.Updates = append(res.Updates, UpdateInfo{
-			Title: p.Title, Link: p.Link,
+			Title: p.Title, Link: p.Link, Path: p.Path,
 			OldVolumes: p.OldVolumes, NewVolumes: p.NewVolumes, Wrote: true,
 		})
 	}

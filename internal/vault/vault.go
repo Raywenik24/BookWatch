@@ -761,6 +761,34 @@ func notesSectionEnd(lines []string, headingIdx int) int {
 	return len(lines)
 }
 
+// SetVolumeNav replaces a volume note's prev/next reading-nav footer with
+// footerLines (each a full line, e.g. "Previous: [[…]]" / "Next: [[…]]"). Passing
+// no lines removes any existing footer (a volume with nothing left to link).
+// Used when a later gap-fill adds volumes and an existing note's `Next:` link must
+// be (re)written (#109): the frontmatter, cover, description, and `## Notes`
+// section are all preserved — only the trailing footer changes.
+func SetVolumeNav(path string, footerLines []string) error {
+	lines, nl, closeIdx, err := loadFrontmatter(path)
+	if err != nil {
+		return err
+	}
+	// Drop an existing nav footer (its `---` rule to EOF), then trim the blank
+	// separators above it, so the rewrite starts from a clean body tail.
+	if idx := navFooterIdx(lines, closeIdx); idx != -1 {
+		lines = lines[:idx]
+	}
+	for len(lines) > closeIdx+1 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+		lines = lines[:len(lines)-1]
+	}
+	out := lines
+	if len(footerLines) > 0 {
+		out = append(out, "", "---")
+		out = append(out, footerLines...)
+	}
+	out = append(out, "") // trailing newline
+	return AtomicWrite(path, []byte(strings.Join(out, nl)), 0o644)
+}
+
 // navFooterIdx returns the index of a volume note's nav-footer `---` rule — the
 // trailing `---` whose following non-blank lines are only Previous:/Next:
 // wikilinks (written by the #LNVolume builder) — or -1 when the body has none.
