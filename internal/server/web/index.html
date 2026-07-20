@@ -384,12 +384,15 @@
   .cover-picker-controls { display: flex; flex-direction: column; gap: .4rem; flex: 1; min-width: 0; }
   .cover-picker-controls input[type="url"] { width: 100%; background: var(--mantle); color: var(--text);
         border: 1px solid var(--surface0); border-radius: 6px; padding: .4rem .5rem; font: inherit; }
-  /* OpenLibrary cover picker strip (#107): on-demand thumbnails under the reviewer
-     cover — OL's work covers[0] is an unreliable guess, so the user picks. */
-  .cover-strip { margin-top: .5rem; max-width: 260px; }
-  .cover-strip-hd { font-size: .78rem; color: var(--subtext); margin-bottom: .3rem; }
-  .cover-strip-thumbs { display: flex; flex-wrap: wrap; gap: .35rem; max-height: 210px; overflow-y: auto; }
-  .cover-strip-thumb { width: 52px; height: 78px; object-fit: cover; border-radius: 4px; cursor: pointer;
+  /* OpenLibrary cover picker (#107): OL's work covers[0] is an unreliable guess,
+     so the user picks from every available cover in a dedicated modal (moved out
+     of the cramped reviewer column). Stacks above the review modal. */
+  #coverPickModalBackdrop { z-index: 56; }
+  #coverPickModalBackdrop .modal { max-width: 640px; }
+  .cover-strip-hd { font-size: .82rem; color: var(--subtext); margin: 0 0 .6rem; }
+  .cover-strip-thumbs { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+        gap: .6rem; max-height: 65vh; overflow-y: auto; padding: .1rem; }
+  .cover-strip-thumb { width: 100%; aspect-ratio: 2 / 3; object-fit: cover; border-radius: 6px; cursor: pointer;
         background: var(--surface0); border: 2px solid transparent; transition: border-color .15s, transform .1s; }
   .cover-strip-thumb:hover { border-color: var(--mauve); transform: translateY(-2px); }
   /* reading tab (#64): currently-reading / queue / completed row lists */
@@ -927,6 +930,13 @@
     <div class="modal" id="volEnlargeModal">
       <button class="modal-close" onclick="closeVolEnlarge()" aria-label="Close">&times;</button>
       <div id="volEnlargeBody"></div>
+    </div>
+  </div>
+  <!-- OpenLibrary cover picker (#107): pick a work's cover from a thumbnail grid -->
+  <div id="coverPickModalBackdrop" class="modal-backdrop" hidden onclick="if(event.target===this)closeCoverPickModal()">
+    <div class="modal">
+      <button class="modal-close" onclick="closeCoverPickModal()" aria-label="Close">&times;</button>
+      <div id="coverPickBody"></div>
     </div>
   </div>
   <!-- untrack-vs-delete choice (#58) -->
@@ -3147,6 +3157,7 @@ document.addEventListener('keydown', e => {
   if($('lightbox')) return closeLightbox(); // enlarged cover closes first
   if(_dpCal && !_dpCal.hidden) return hideDpCal(); // close the date calendar before its modal
   if(!$('confirmModalBackdrop').hidden) return _confirmModalResolve(false); // stacked above everything else
+  if(!$('coverPickModalBackdrop').hidden) return closeCoverPickModal(); // stacked above the review modal
   if(!$('reviewModalBackdrop').hidden) return closeReview();
   if(!$('readingModalBackdrop').hidden) return closeReadingModal();
   if(!$('volEnlargeBackdrop').hidden) return closeVolEnlarge(); // stacked above the note modal
@@ -3925,8 +3936,7 @@ function renderReviewItem(){
   let html = (flags ? `<div style="margin-bottom:.5rem">${flags}</div>` : '');
   html += `<div class="row" style="align-items:flex-start;gap:1rem">
       <div>${coverPicker({ id:'rvCover', currentSrc: d.cover_data||'', prompt:'Change cover — paste URL, upload, or drop' })}
-        <div class="muted" style="font-size:.75rem;margin-top:.2rem;text-align:center">click cover to enlarge</div>
-        <div id="rvCoverStrip"></div></div>
+        <div class="muted" style="font-size:.75rem;margin-top:.2rem;text-align:center">click cover to enlarge</div></div>
       <div style="flex:1;min-width:0">
         <div class="rule-grid" style="grid-template-columns:80px 1fr;gap:.4rem .6rem">
           <label>Title</label><input id="rvTitle" value="${esc(d.title||'')}">
@@ -4034,7 +4044,7 @@ async function reviewPullSource(what){
   renderReviewItem();
 }
 // OpenLibrary cover picker (#107): fetch every cover for a work and let the user
-// choose. One cover → pull it directly; several → expand a thumbnail strip.
+// choose. One cover → pull it directly; several → open the picker modal.
 async function reviewCoverPicker(id, url){
   const h = toast('Finding covers…','busy');
   const r = await send('GET','/api/import/calibre/review/covers?url='+encodeURIComponent(url));
@@ -4044,19 +4054,21 @@ async function reviewCoverPicker(id, url){
   if(!covers.length){ h.update('No covers found for this work.','info'); return; }
   if(covers.length===1){ h.update('Fetching cover…','busy'); return reviewSetCover(id, covers[0].full, h); }
   h.close();
-  renderCoverStrip(covers);
+  openCoverPickModal(id, covers);
 }
-function renderCoverStrip(covers){
-  const el = $('rvCoverStrip'); if(!el) return;
-  el.innerHTML = `<div class="cover-strip"><div class="cover-strip-hd">Pick a cover (${covers.length})</div>`
+function openCoverPickModal(id, covers){
+  const el = $('coverPickBody'); if(!el) return;
+  el.innerHTML = `<div class="cover-strip-hd">Pick a cover (${covers.length})</div>`
     + `<div class="cover-strip-thumbs">`
     + covers.map(c => `<img class="cover-strip-thumb" src="${esc(c.thumb)}" data-full="${esc(c.full)}" loading="lazy" alt="cover option">`).join('')
-    + `</div></div>`;
+    + `</div>`;
   el.querySelectorAll('.cover-strip-thumb').forEach(img => {
     img.onerror = () => img.remove(); // drop covers that 404 (OL blank/missing)
-    img.onclick = () => reviewSetCover(reviewCurrentId(), img.dataset.full);
+    img.onclick = () => { closeCoverPickModal(); reviewSetCover(id, img.dataset.full); };
   });
+  $('coverPickModalBackdrop').hidden = false;
 }
+function closeCoverPickModal(){ $('coverPickModalBackdrop').hidden = true; $('coverPickBody').innerHTML = ''; }
 // Download + set a specific chosen cover, reusing the existing cover-replace path.
 async function reviewSetCover(id, fullURL, h){
   if(!id || !fullURL) return;
