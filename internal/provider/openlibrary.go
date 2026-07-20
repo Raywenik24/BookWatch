@@ -484,3 +484,44 @@ func (c *OLClient) WorkByID(id string) (Candidate, error) {
 		OLURL:     c.baseURL + "/works/" + id,
 	}, nil
 }
+
+// CoverOption is one selectable cover for an OL work: a medium thumbnail (-M) for
+// the reviewer's picker strip and the large (-L) URL to download when chosen.
+type CoverOption struct {
+	Thumb string `json:"thumb"`
+	Full  string `json:"full"`
+}
+
+// WorkCovers returns every distinct cover for a work — the work record's own
+// covers plus each edition's — as {thumb (-M), full (-L)} URL pairs, deduped by
+// cover ID in first-seen order. OL's work covers[0] is an unreliable single
+// "the cover" guess (#107), so the reviewer offers the whole set as a picker.
+// Cover IDs ≤ 0 (OL's "no cover" sentinel) are dropped. A missing editions fetch
+// is non-fatal: the work's own covers are still returned.
+func (c *OLClient) WorkCovers(id string) ([]CoverOption, error) {
+	var w olWorkFull
+	if err := c.get(c.url("/works/"+id+".json"), &w); err != nil {
+		return nil, err
+	}
+	seen := map[int]bool{}
+	out := []CoverOption{}
+	add := func(cs []int) {
+		for _, cid := range cs {
+			if cid <= 0 || seen[cid] {
+				continue
+			}
+			seen[cid] = true
+			out = append(out, CoverOption{
+				Thumb: fmt.Sprintf("%s/b/id/%d-M.jpg", c.coversURL, cid),
+				Full:  fmt.Sprintf("%s/b/id/%d-L.jpg", c.coversURL, cid),
+			})
+		}
+	}
+	add(w.Covers)
+	if edResp, err := c.fetchEditions(id); err == nil {
+		for _, e := range edResp.Entries {
+			add(e.Covers)
+		}
+	}
+	return out, nil
+}

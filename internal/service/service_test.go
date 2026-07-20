@@ -527,6 +527,7 @@ type fakeProvider struct {
 func (f *fakeProvider) SearchByTitle(string) ([]provider.Candidate, error) { return nil, nil }
 func (f *fakeProvider) AuthorSearch(string) ([]provider.Author, error)     { return nil, nil }
 func (f *fakeProvider) WorkByID(string) (provider.Candidate, error)        { return provider.Candidate{}, nil }
+func (f *fakeProvider) WorkCovers(string) ([]provider.CoverOption, error)   { return nil, nil }
 
 func (f *fakeProvider) AuthorWorks(string) ([]provider.Work, error) {
 	if f.err != nil {

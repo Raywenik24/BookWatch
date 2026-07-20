@@ -160,6 +160,51 @@ func TestSearchByTitle(t *testing.T) {
 	}
 }
 
+func TestWorkCovers(t *testing.T) {
+	// Work record carries covers[0]=1043553 (the unreliable #107 guess) plus a
+	// second; editions add more, one duplicating a work cover and one with a
+	// blank (-1) sentinel that must be dropped.
+	const workFixture = `{"title":"Musashi","covers":[1043553, 5411839]}`
+	const edFixture = `{"entries":[
+      {"covers":[15091772]},
+      {"covers":[5411839]},
+      {"covers":[-1]},
+      {"covers":[]},
+      {"covers":[99001]}
+    ]}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/editions.json") {
+			w.Write([]byte(edFixture))
+			return
+		}
+		w.Write([]byte(workFixture))
+	}))
+	defer srv.Close()
+	c := NewOpenLibrary("bookwatch-test/1.0", 5*time.Second)
+	c.baseURL = srv.URL
+	c.coversURL = srv.URL
+
+	got, err := c.WorkCovers("OL4278593W")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// work covers first (in order), then new edition covers; 5411839 deduped,
+	// -1 and the empty list dropped.
+	wantIDs := []string{"1043553", "5411839", "15091772", "99001"}
+	if len(got) != len(wantIDs) {
+		t.Fatalf("want %d covers, got %d: %+v", len(wantIDs), len(got), got)
+	}
+	for i, id := range wantIDs {
+		if !strings.Contains(got[i].Thumb, "/b/id/"+id+"-M.jpg") {
+			t.Errorf("cover %d thumb %q want -M id %s", i, got[i].Thumb, id)
+		}
+		if !strings.Contains(got[i].Full, "/b/id/"+id+"-L.jpg") {
+			t.Errorf("cover %d full %q want -L id %s", i, got[i].Full, id)
+		}
+	}
+}
+
 func TestByISBN(t *testing.T) {
 	c, srv := newTestServer(t)
 	defer srv.Close()

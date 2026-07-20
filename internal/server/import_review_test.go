@@ -1,7 +1,10 @@
 package server
 
 import (
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"bookwatch/internal/provider"
@@ -14,6 +17,7 @@ type fakeCoverProvider struct {
 	work     provider.Candidate
 	workErr  error
 	editions []provider.Edition
+	covers   []provider.CoverOption
 }
 
 func (f *fakeCoverProvider) WorkByID(id string) (provider.Candidate, error) {
@@ -29,6 +33,44 @@ func (f *fakeCoverProvider) SearchByTitle(string) ([]provider.Candidate, error) 
 func (f *fakeCoverProvider) AuthorSearch(string) ([]provider.Author, error)     { return nil, nil }
 func (f *fakeCoverProvider) AuthorWorks(string) ([]provider.Work, error)        { return nil, nil }
 func (f *fakeCoverProvider) WorkDetail(string) (provider.Work, error)           { return provider.Work{}, nil }
+func (f *fakeCoverProvider) WorkCovers(string) ([]provider.CoverOption, error)  { return f.covers, nil }
+
+func TestHandleReviewCovers(t *testing.T) {
+	covers := []provider.CoverOption{
+		{Thumb: "https://covers.openlibrary.org/b/id/1-M.jpg", Full: "https://covers.openlibrary.org/b/id/1-L.jpg"},
+		{Thumb: "https://covers.openlibrary.org/b/id/2-M.jpg", Full: "https://covers.openlibrary.org/b/id/2-L.jpg"},
+	}
+	tests := []struct {
+		name string
+		url  string
+		want int
+	}{
+		{"OL work link returns all covers", "https://openlibrary.org/works/OL4278593W", 2},
+		{"non-OL link returns empty", "https://lubimyczytac.pl/ksiazka/123/foo", 0},
+		{"blank work id returns empty", "https://openlibrary.org/works/", 0},
+		{"missing url returns empty", "", 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := &Server{ol: &fakeCoverProvider{covers: covers}}
+			req := httptest.NewRequest("GET", "/api/import/calibre/review/covers?url="+tt.url, nil)
+			rec := httptest.NewRecorder()
+			s.handleReviewCovers(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status %d, want 200", rec.Code)
+			}
+			var body struct {
+				Covers []provider.CoverOption `json:"covers"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if len(body.Covers) != tt.want {
+				t.Errorf("got %d covers, want %d", len(body.Covers), tt.want)
+			}
+		})
+	}
+}
 
 func TestSourceCoverURL_OpenLibrary(t *testing.T) {
 	const olLink = "https://openlibrary.org/works/OL4278593W"

@@ -70,6 +70,9 @@ type Provider interface {
 	// WorkByID resolves a single work (e.g. from a pasted openlibrary.org/works/
 	// URL) into a Candidate, without going through title search.
 	WorkByID(workID string) (Candidate, error)
+	// WorkCovers returns every distinct cover for a work (its own + editions')
+	// as {thumb, full} URL pairs, for the reviewer's cover picker (#107).
+	WorkCovers(workID string) ([]CoverOption, error)
 }
 
 // MajorityLanguage returns the most common non-empty language among a

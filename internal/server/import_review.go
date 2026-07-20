@@ -441,6 +441,32 @@ func (s *Server) handleReviewPull(w http.ResponseWriter, r *http.Request) {
 	s.reviewDetail(w, it, np, map[string]any{"pull_found": found})
 }
 
+// handleReviewCovers returns every selectable cover for an OpenLibrary work link
+// as {thumb, full} URL pairs, for the reviewer's cover picker (#107). OL's work
+// covers[0] is an unreliable single guess, so the reviewer offers the whole set
+// (the work's covers + each edition's, deduped). Non-OL links (Lubimyczytać /
+// jnovels) don't reach this — they keep the single-cover ⬇ Cover path — so a
+// non-work URL just returns an empty list rather than an error.
+func (s *Server) handleReviewCovers(w http.ResponseWriter, r *http.Request) {
+	url := r.URL.Query().Get("url")
+	i := strings.Index(url, "/works/")
+	if i < 0 || s.ol == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"covers": []provider.CoverOption{}})
+		return
+	}
+	id := strings.Trim(url[i+len("/works/"):], "/")
+	if id == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"covers": []provider.CoverOption{}})
+		return
+	}
+	covers, err := s.ol.WorkCovers(id)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"covers": covers})
+}
+
 // sourceCoverURL returns a book's cover image URL from a resolved link —
 // Lubimyczytać book pages carry one directly; an OpenLibrary work resolves to
 // its own cover (via WorkByID), falling back to the first edition cover when

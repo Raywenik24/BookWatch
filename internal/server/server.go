@@ -187,6 +187,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/import/calibre/review/item", s.auth(s.handleReviewItem))
 	mux.HandleFunc("POST /api/import/calibre/review/pick", s.auth(s.handleReviewPick))
 	mux.HandleFunc("POST /api/import/calibre/review/pull", s.auth(s.handleReviewPull))
+	mux.HandleFunc("GET /api/import/calibre/review/covers", s.auth(s.handleReviewCovers))
 	mux.HandleFunc("PUT /api/import/calibre/review/item", s.auth(s.handleReviewEdit))
 	mux.HandleFunc("POST /api/import/calibre/review/cover", s.authLimited(s.handleReviewCover, maxCoverUploadBytes))
 	mux.HandleFunc("POST /api/import/calibre/review/accept", s.auth(s.handleReviewAccept))
