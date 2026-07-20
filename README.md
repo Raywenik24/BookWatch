@@ -7,10 +7,12 @@ say-so — writes the update back into the matching vault note. A single Go
 binary serves the web UI, the HTTP API, and a built-in scheduler; everything
 is stored in a local SQLite file.
 
-> **Status:** v1.1.0 — light-novel volume tracking (v1.0.0) plus general book
-> tracking: author watchlists, a reading queue/log, and a randomizer, all
-> alongside the original per-series scraper. Series tracking and full
-> dual-language (EN+PL) trackers are deferred to a later release.
+> **Status:** v1.2.0 — everything from v1.1.0 (light-novel volume tracking,
+> book tracking, author watchlists, a reading queue/log, and a randomizer) plus
+> a Calibre library importer, per-volume light-novel notes, a jnovels fallback
+> for adding light novels, a Discover tab, and an in-app update check. Series
+> tracking and full dual-language (EN+PL) trackers are deferred to a later
+> release.
 
 ## Features
 
@@ -36,6 +38,21 @@ is stored in a local SQLite file.
   for a light novel, or the book's own note.
 - **Randomizer** — reroll a handful of random Backlog picks, filterable by
   light novels or books, to decide what to read next.
+- **Calibre import** — point BookWatch at a Calibre library, and it reads the
+  `metadata.db` (read-only), matches each entry against your vault, and stages
+  new `#Book`/`#LightNovel` notes. A resumable, in-app reviewer lets you accept,
+  reject, or fix each match — with an OpenLibrary cover picker and description
+  pull — before anything is written to the vault.
+- **jnovels light-novel support** — when adding a book, a jnovels title-search
+  fallback finds the series, and per-volume `#LNVolume` notes are backfilled
+  from the series page. A **Discover** tab surfaces jnovels' latest releases and
+  a spoiler-safe find-new pass for series you already track.
+- **Per-volume notes** — each light-novel volume gets its own note with its own
+  `Status`; completing a volume writes to both the volume note and the series
+  note, and can save personal notes into the volume's completed entry.
+- **In-app update check** — the About tab compares your build against the latest
+  GitHub release and tells you when a newer version is out (notify-only; it
+  never downloads or installs anything).
 - **Scheduled checks** — a cron expression runs checks automatically (default:
   daily at 09:00).
 - **Configurable sources** — per-domain scrape rules (CSS selectors + regex for
@@ -68,10 +85,12 @@ forward and deep links both work):
 | **Books** | Everything tracked (light novels + books), with search, status filters, and sorting. |
 | **Reading** | Currently reading, a reorderable queue, and the completed-reads log. |
 | **Randomizer** | Random Backlog picks to decide what to read next. |
+| **Discover** | Browse jnovels' latest light novels and a spoiler-safe find-new pass, add straight to your library. |
 | **Sources** | Author watchlist (OpenLibrary/Lubimyczytać) and per-domain scrape rules, testable live. |
+| **Import** | Import a Calibre library — stage notes from `metadata.db` and review each match before it's written. |
 | **Settings** | Vault/scan paths (light novels and books can point at different folders), reading log path, the device-local write password, and the setup wizard. |
 | **Logs** | Activity and past check runs. |
-| **About** | Version, repo, license, and issue tracker links. |
+| **About** | Version, repo, license, issue-tracker links, and a check-for-updates button. |
 
 ## Screenshots
 
@@ -192,7 +211,7 @@ go run ./cmd/bookwatch serve
 # or build a binary:
 go build -o bookwatch ./cmd/bookwatch && ./bookwatch serve
 # or a release build with the version stamped (shown in the About tab + /api/version):
-go build -ldflags "-X bookwatch/internal/buildinfo.Version=v1.1.0" -o bookwatch ./cmd/bookwatch
+go build -ldflags "-X bookwatch/internal/buildinfo.Version=v1.2.0" -o bookwatch ./cmd/bookwatch
 ```
 
 Then open <http://localhost:8080>. On first run with no vault configured, the
@@ -234,6 +253,8 @@ cmd/bookwatch        entry point (serve / check / add)
 internal/config      env + .env configuration
 internal/vault       Obsidian note scan + atomic frontmatter writes
 internal/notes       frontmatter builders for LightNovel and Book notes
+internal/calibre     read-only Calibre metadata.db reader
+internal/importer    Calibre import staging, matching, review, and finalize
 internal/reading     completed-reads log parser, re-read counter, appender
 internal/scraper     HTTP fetch + goquery rule engine
 internal/sources     URL → scrape-rules resolution (per domain)
