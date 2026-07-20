@@ -277,9 +277,11 @@
   /* preview-modal header cover: the shared 64×96, but much larger in the wide LN
      series modal so the series art has real presence above the volume grid. */
   .bp-cover { width: 64px; height: 96px; }
-  #previewModal.modal--ln .bp-cover { width: 172px; height: 258px; }
-  /* description sits beside the tall LN cover, so give it more height before it scrolls */
-  #previewModal.modal--ln .bp-desc { max-height: 16rem; }
+  #previewModal.modal--ln .bp-cover,
+  #previewModal.modal--book .bp-cover { width: 172px; height: 258px; }
+  /* description sits beside the tall LN/book cover, so give it more height before it scrolls */
+  #previewModal.modal--ln .bp-desc,
+  #previewModal.modal--book .bp-desc { max-height: 16rem; }
   .bp-meta { font-size: .78rem; color: var(--subtext); margin-top: .3rem; }
   .bp-meta code { color: var(--subtext); background: var(--mantle); padding: 0 .25rem; border-radius: 3px; }
   .bp-desc { margin-top: .75rem; font-size: .9rem; line-height: 1.5; white-space: pre-wrap;
@@ -1554,7 +1556,7 @@ function openRelPreview(id){
       link:'https://openlibrary.org/works/' + x.work_id, workId:x.work_id,
       description: cached ? cached.description : null }, // null → spinner until fetched
     { mode:'read-only' });
-  $('previewModal').classList.remove('modal--ln');
+  $('previewModal').classList.remove('modal--ln', 'modal--book');
   $('previewModalBackdrop').hidden = false;
   if(!cached){
     fetchReleaseDetail(x).then(d => {
@@ -1617,7 +1619,7 @@ async function openNotePreview(id){
     { cover: n.cover ? '/api/cover/' + id + '?t=' + Date.now() : '', title:n.title, author:n.author,
       volumes: n.kind === 'book' ? 0 : n.volumes, description:n.description },
     { mode:'read-only' });
-  $('previewModal').classList.remove('modal--ln');
+  $('previewModal').classList.remove('modal--ln', 'modal--book');
   $('previewModalBackdrop').hidden = false;
 }
 
@@ -1662,9 +1664,11 @@ function renderNoteView(){
       released: isBook ? n.released_en : '', link: n.link, workId: n.work_id,
       volumes: isBook ? 0 : n.volumes, description: n.description },
     { mode:'read-only', linkLabel: isBook ? 'open on OL ↗' : 'open source ↗', headerActions,
-      descAside: !isBook && !!n.volumes });
+      descAside: isBook || !!n.volumes });
   // LN series with volumes get the wider modal (#98 #8) — room for the volume grid.
+  // Books get the enlarged cover / desc-aside layout too (#106) but keep 760px width.
   $('previewModal').classList.toggle('modal--ln', !isBook && !!n.volumes);
+  $('previewModal').classList.toggle('modal--book', isBook);
   if(!isBook && n.volumes){
     $('previewModalBody').insertAdjacentHTML('beforeend', `<div id="volPanel" class="card" style="margin-top:.7rem"></div>`);
     loadVolumePanel();
