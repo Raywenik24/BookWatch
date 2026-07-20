@@ -199,6 +199,10 @@
   /* ✓ Done on a currently-reading tile sits on the right, tucked under the ✗
      remove button, rather than in the top-left green corner (#97). */
   .cover-done { top: 2.05rem; left: auto; right: .3rem; }
+  /* ▶ Start on a queue tile likewise tucks under the ✗ remove button on the
+     right, matching the currently-reading layout; the Vol N badge keeps the
+     top-left corner to itself (#105). */
+  .cover-start { top: 2.05rem; left: auto; right: .3rem; }
   .cover-card:hover .cover-read, .cover-read:focus,
   .cover-card:hover .cover-done, .cover-done:focus,
   .cover-card:hover .cover-start, .cover-start:focus { opacity: 1; }
@@ -2477,7 +2481,7 @@ function renderReadingQueue(){
          ondragstart="rdDragStart(event,${it.id},'queue')" ondragend="rdDragEnd(event)"
          ondragover="rdListDragOver(event)" ondragleave="event.currentTarget.classList.remove('dragover')"
          ondrop="queueDrop(event,${it.id})">
-      ${rdTileInner(it)}
+      ${rdTileInner(it, undefined, true)}
       <button class="cover-start" title="Start reading" aria-label="Start reading" tabindex="-1" onclick="startQueuedItem(${it.id})">▶</button>
       <button class="cover-x" title="Remove from queue" aria-label="Remove" tabindex="-1" onclick="removeReadingItem(${it.id})">&times;</button>
     </div>`
